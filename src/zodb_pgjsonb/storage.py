@@ -81,6 +81,12 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
             prefix="zodb-pgjsonb-blobs-"
         )
 
+        # Cache for conflict resolution: (oid_bytes, tid_bytes) → pickle_bytes
+        # In history-free mode, loadSerial can't find old versions after they're
+        # overwritten. Caching data from load() makes it available for
+        # tryToResolveConflict's loadSerial(oid, oldSerial) calls.
+        self._serial_cache = {}
+
         # Database connection (schema init + admin queries)
         self._conn = psycopg.connect(dsn, row_factory=dict_row)
 
@@ -167,7 +173,9 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
             "@s": _unsanitize_from_pg(row["state"]),
         }
         data = zodb_json_codec.encode_zodb_record(record)
-        return data, p64(row["tid"])
+        tid = p64(row["tid"])
+        self._serial_cache[(oid, tid)] = data
+        return data, tid
 
     def loadBefore(self, oid, tid):
         """Load object data before a given TID."""
@@ -181,6 +189,12 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
 
     def loadSerial(self, oid, serial):
         """Load a specific revision of an object."""
+        # Check serial cache first (needed for conflict resolution in
+        # history-free mode where old versions are overwritten)
+        cached = self._serial_cache.get((oid, serial))
+        if cached is not None:
+            return cached
+
         zoid = u64(oid)
         tid_int = u64(serial)
         table = ("object_history" if self._history_preserving
@@ -591,6 +605,11 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
         self._transaction = None
         self._resolved = []
         self._blob_temp_dir = tempfile.mkdtemp(prefix="zodb-pgjsonb-blobs-")
+        # Cache for conflict resolution: (oid_bytes, tid_bytes) → pickle_bytes
+        self._serial_cache = {}
+        # Propagate conflict resolution transform hooks from main storage
+        self._crs_transform_record_data = main_storage._crs_transform_record_data
+        self._crs_untransform_record_data = main_storage._crs_untransform_record_data
 
     # ── IMVCCStorage ─────────────────────────────────────────────────
 
@@ -665,7 +684,9 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
             "@s": _unsanitize_from_pg(row["state"]),
         }
         data = zodb_json_codec.encode_zodb_record(record)
-        return data, p64(row["tid"])
+        tid = p64(row["tid"])
+        self._serial_cache[(oid, tid)] = data
+        return data, tid
 
     def loadBefore(self, oid, tid):
         """Load object data before a given TID."""
@@ -679,6 +700,12 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
 
     def loadSerial(self, oid, serial):
         """Load a specific revision of an object."""
+        # Check serial cache first (needed for conflict resolution in
+        # history-free mode where old versions are overwritten)
+        cached = self._serial_cache.get((oid, serial))
+        if cached is not None:
+            return cached
+
         zoid = u64(oid)
         tid_int = u64(serial)
         table = ("object_history" if self._history_preserving
