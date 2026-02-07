@@ -23,9 +23,13 @@ from psycopg.types.json import Json
 
 from persistent.TimeStamp import TimeStamp
 from ZODB.BaseStorage import BaseStorage
+from ZODB.BaseStorage import DataRecord
+from ZODB.BaseStorage import TransactionRecord
 from ZODB.ConflictResolution import ConflictResolvingStorage
 from ZODB.interfaces import IBlobStorage
 from ZODB.interfaces import IMVCCStorage
+from ZODB.interfaces import IStorageIteration
+from ZODB.interfaces import IStorageRestoreable
 from ZODB.interfaces import IStorageUndoable
 from ZODB.POSException import ConflictError
 from ZODB.POSException import POSKeyError
@@ -45,8 +49,20 @@ from .schema import install_schema
 logger = logging.getLogger(__name__)
 
 
+class PGTransactionRecord(TransactionRecord):
+    """Transaction record yielded by PGJsonbStorage.iterator()."""
+
+    def __init__(self, tid, status, user, description, extension, records):
+        super().__init__(tid, status, user, description, extension)
+        self._records = records
+
+    def __iter__(self):
+        return iter(self._records)
+
+
 @zope.interface.implementer(
     IPGJsonbStorage, IMVCCStorage, IBlobStorage, IStorageUndoable,
+    IStorageIteration, IStorageRestoreable,
 )
 class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
     """ZODB storage that stores object state as JSONB in PostgreSQL.
@@ -502,6 +518,57 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
                 })
 
         return oid_list
+
+    # ── IStorageIteration ─────────────────────────────────────────────
+
+    def iterator(self, start=None, stop=None):
+        """Iterate over transactions yielding TransactionRecord objects.
+
+        Uses a dedicated PG connection so iteration doesn't interfere
+        with other storage operations.
+
+        In history-free mode, each object appears once at its current TID.
+        In history-preserving mode, all revisions are included.
+        """
+        conn = psycopg.connect(self._dsn, row_factory=dict_row)
+        try:
+            table = ("object_history" if self._history_preserving
+                     else "object_state")
+            yield from _iter_transactions(conn, table, start, stop)
+        finally:
+            conn.close()
+
+    # ── IStorageRestoreable ──────────────────────────────────────────
+
+    def restore(self, oid, serial, data, version, prev_txn, transaction):
+        """Write pre-committed data without conflict checking.
+
+        Used by copyTransactionsFrom / zodbconvert to import data
+        from another storage.
+        """
+        if transaction is not self._transaction:
+            raise StorageTransactionError(self, transaction)
+        if data is None:
+            return  # undo of object creation
+        record = zodb_json_codec.decode_zodb_record(data)
+        class_mod, class_name = record["@cls"]
+        state = record["@s"]
+        refs = _extract_refs(state)
+        self._tmp.append({
+            "zoid": u64(oid),
+            "class_mod": class_mod,
+            "class_name": class_name,
+            "state": state,
+            "state_size": len(data),
+            "refs": refs,
+        })
+
+    def restoreBlob(self, oid, serial, data, blobfilename, prev_txn,
+                    transaction):
+        """Restore object data + blob without conflict checking."""
+        self.restore(oid, serial, data, '', prev_txn, transaction)
+        if blobfilename is not None:
+            self._blob_tmp.append((u64(oid), blobfilename))
 
     # ── IBlobStorage ─────────────────────────────────────────────────
 
@@ -1030,6 +1097,34 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
 
         return oid_list
 
+    # ── IStorageRestoreable ───────────────────────────────────────
+
+    def restore(self, oid, serial, data, version, prev_txn, transaction):
+        """Write pre-committed data without conflict checking."""
+        if transaction is not self._transaction:
+            raise StorageTransactionError(self, transaction)
+        if data is None:
+            return
+        record = zodb_json_codec.decode_zodb_record(data)
+        class_mod, class_name = record["@cls"]
+        state = record["@s"]
+        refs = _extract_refs(state)
+        self._tmp.append({
+            "zoid": u64(oid),
+            "class_mod": class_mod,
+            "class_name": class_name,
+            "state": state,
+            "state_size": len(data),
+            "refs": refs,
+        })
+
+    def restoreBlob(self, oid, serial, data, blobfilename, prev_txn,
+                    transaction):
+        """Restore object data + blob without conflict checking."""
+        self.restore(oid, serial, data, '', prev_txn, transaction)
+        if blobfilename is not None:
+            self._blob_tmp.append((u64(oid), blobfilename))
+
     def registerDB(self, db):
         pass
 
@@ -1258,3 +1353,74 @@ def _unsanitize_from_pg(obj):
             new.append(new_item)
         return new if changed else obj
     return obj
+
+
+def _iter_transactions(conn, table, start, stop):
+    """Yield PGTransactionRecord objects for each transaction.
+
+    Args:
+        conn: psycopg connection (dedicated for iteration)
+        table: 'object_state' (HF) or 'object_history' (HP)
+        start: start TID bytes or None
+        stop: stop TID bytes or None
+    """
+    conditions = []
+    params = []
+    if start is not None:
+        conditions.append("tid >= %s")
+        params.append(u64(start))
+    if stop is not None:
+        conditions.append("tid <= %s")
+        params.append(u64(stop))
+
+    where = " AND ".join(conditions) if conditions else "TRUE"
+
+    with conn.cursor() as cur:
+        cur.execute(
+            f"SELECT DISTINCT tid FROM {table} "
+            f"WHERE {where} ORDER BY tid",
+            params,
+        )
+        tids = [row["tid"] for row in cur.fetchall()]
+
+        for tid_int in tids:
+            tid_bytes = p64(tid_int)
+
+            cur.execute(
+                "SELECT username, description, extension "
+                "FROM transaction_log WHERE tid = %s",
+                (tid_int,),
+            )
+            txn_row = cur.fetchone()
+            if txn_row is None:
+                continue  # orphaned data
+
+            cur.execute(
+                f"SELECT zoid, class_mod, class_name, state "
+                f"FROM {table} WHERE tid = %s",
+                (tid_int,),
+            )
+            obj_rows = cur.fetchall()
+
+            records = []
+            for obj_row in obj_rows:
+                record = {
+                    "@cls": [obj_row["class_mod"], obj_row["class_name"]],
+                    "@s": _unsanitize_from_pg(obj_row["state"]),
+                }
+                data = zodb_json_codec.encode_zodb_record(record)
+                records.append(DataRecord(
+                    p64(obj_row["zoid"]),
+                    tid_bytes,
+                    data,
+                    None,
+                ))
+
+            yield PGTransactionRecord(
+                tid_bytes,
+                ' ',
+                txn_row["username"] or '',
+                txn_row["description"] or '',
+                txn_row["extension"] or b'',
+                records,
+            )
