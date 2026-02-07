@@ -1,0 +1,31 @@
+<component prefix="zodb_pgjsonb.config">
+
+  <import package="ZODB"/>
+
+  <sectiontype name="pgjsonb" implements="ZODB.storage"
+      datatype=".PGJsonbStorageFactory">
+
+    <key name="dsn" required="yes">
+      <description>
+        PostgreSQL connection string (libpq format).
+        Example: dbname=zodb user=zodb password=zodb host=localhost port=5433
+      </description>
+    </key>
+
+    <key name="name" default="pgjsonb">
+      <description>Storage name (used in sort keys).</description>
+    </key>
+
+    <key name="history-preserving" datatype="boolean" default="false">
+      <description>Enable history-preserving mode.</description>
+    </key>
+
+    <key name="blob-temp-dir" required="no">
+      <description>
+        Directory for temporary blob files. Auto-created if omitted.
+      </description>
+    </key>
+
+  </sectiontype>
+
+</component>

@@ -19,7 +19,7 @@ from zodb_pgjsonb.storage import PGJsonbStorage
 from zodb_pgjsonb.storage import PGJsonbStorageInstance
 
 
-DSN = "dbname=zodb user=zodb password=zodb host=localhost port=5433"
+DSN = "dbname=zodb_test user=zodb password=zodb host=localhost port=5433"
 
 
 @pytest.fixture
