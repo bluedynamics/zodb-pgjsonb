@@ -1438,6 +1438,12 @@ def _unsanitize_from_pg(obj):
 def _iter_transactions(conn, table, start, stop):
     """Yield PGTransactionRecord objects for each transaction.
 
+    Iterates from transaction_log (authoritative list of all transactions)
+    and joins to the object table for records.  In history-free mode, old
+    transactions whose objects were all updated later will yield with an
+    empty record list — this is correct and preserves transaction metadata
+    for zodbconvert.
+
     Args:
         conn: psycopg connection (dedicated for iteration)
         table: 'object_state' (HF) or 'object_history' (HP)
@@ -1457,23 +1463,15 @@ def _iter_transactions(conn, table, start, stop):
 
     with conn.cursor() as cur:
         cur.execute(
-            f"SELECT DISTINCT tid FROM {table} "
-            f"WHERE {where} ORDER BY tid",
+            f"SELECT tid, username, description, extension "
+            f"FROM transaction_log WHERE {where} ORDER BY tid",
             params,
         )
-        tids = [row["tid"] for row in cur.fetchall()]
+        txn_rows = cur.fetchall()
 
-        for tid_int in tids:
+        for txn_row in txn_rows:
+            tid_int = txn_row["tid"]
             tid_bytes = p64(tid_int)
-
-            cur.execute(
-                "SELECT username, description, extension "
-                "FROM transaction_log WHERE tid = %s",
-                (tid_int,),
-            )
-            txn_row = cur.fetchone()
-            if txn_row is None:
-                continue  # orphaned data
 
             cur.execute(
                 f"SELECT zoid, class_mod, class_name, state "
