@@ -12,7 +12,7 @@ Host: localhost, Docker-containerized PostgreSQL
 | | PGJsonbStorage | RelStorage |
 |---|---|---|
 | Storage format | JSONB (queryable via SQL) | bytea (opaque pickle) |
-| Load cache | OrderedDict LRU (Python), 64 MB, per-instance | Generational LRU (Cython), 10 MB, shared |
+| Load cache | OrderedDict LRU (Python), 16 MB, per-instance | Generational LRU (Cython), 10 MB, shared |
 | Cache miss cost | SQL SELECT + JSONB→pickle transcode (Rust) | SQL SELECT (raw bytes) |
 | Store cost | pickle→JSONB transcode (Rust) + INSERT | raw pickle INSERT |
 | Pack/GC | Pure SQL recursive CTE (refs column) | Load + unpickle every object |

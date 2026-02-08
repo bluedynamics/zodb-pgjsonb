@@ -1101,7 +1101,7 @@ def results_to_json(
         "config": {
             "pgjsonb": {
                 "cache_type": "OrderedDict LRU (pure Python)",
-                "cache_default_mb": 64,
+                "cache_default_mb": 16,
                 "cache_scope": "per-instance (not shared)",
                 "transcode": "zodb-json-codec (Rust/PyO3)",
                 "storage_format": "JSONB",

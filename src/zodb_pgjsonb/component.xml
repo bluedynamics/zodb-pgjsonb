@@ -26,12 +26,12 @@
       </description>
     </key>
 
-    <key name="cache-local-mb" datatype="integer" default="64">
+    <key name="cache-local-mb" datatype="integer" default="16">
       <description>
         Size of the per-instance object cache in megabytes.
         Caches load() results (pickle bytes) to avoid repeated
         PostgreSQL round-trips and JSONB transcoding. Set to 0
-        to disable. Default: 64.
+        to disable. Default: 16.
       </description>
     </key>
 

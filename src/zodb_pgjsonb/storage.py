@@ -48,8 +48,8 @@ import zope.interface
 
 logger = logging.getLogger(__name__)
 
-# Default cache size: 64 MB
-DEFAULT_CACHE_LOCAL_MB = 64
+# Default cache size: 16 MB per instance (tunable via cache_local_mb parameter)
+DEFAULT_CACHE_LOCAL_MB = 16
 
 
 class LoadCache:
