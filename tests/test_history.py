@@ -10,11 +10,8 @@ Requires PostgreSQL on localhost:5433.
 
 from persistent.mapping import PersistentMapping
 from tests.conftest import DSN
-from ZODB.Connection import TransactionMetaData
 from ZODB.interfaces import IStorageUndoable
 from ZODB.POSException import UndoError
-from ZODB.tests.MinPO import MinPO
-from ZODB.tests.StorageTestBase import zodb_pickle
 from ZODB.utils import p64
 from ZODB.utils import u64
 from ZODB.utils import z64

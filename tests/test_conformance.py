@@ -329,9 +329,7 @@ class PGJsonbPackHP(StorageTestBase, PackableUndoStorage):
             t = TransactionMetaData()
             t.description = "initial database creation"
             self._storage.tpc_begin(t)
-            self._storage.store(
-                ZERO, None, zodb_pickle(PersistentMapping()), "", t
-            )
+            self._storage.store(ZERO, None, zodb_pickle(PersistentMapping()), "", t)
             self._storage.tpc_vote(t)
             self._storage.tpc_finish(t)
 

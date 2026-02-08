@@ -9,7 +9,6 @@ Requires PostgreSQL on localhost:5433.
 from persistent.mapping import PersistentMapping
 from tests.conftest import DSN
 from ZODB.Connection import TransactionMetaData
-from ZODB.POSException import ConflictError
 from ZODB.POSException import ReadConflictError
 from ZODB.POSException import StorageTransactionError
 from ZODB.tests.MinPO import MinPO
@@ -29,14 +28,12 @@ import psycopg
 import pytest
 import tempfile
 import transaction as txn
-import zodb_json_codec
 import ZODB
 
 
 @pytest.fixture
 def storage():
     """Fresh PGJsonbStorage with clean database."""
-    import psycopg
 
     # Clean slate
     conn = psycopg.connect(DSN)
@@ -206,8 +203,6 @@ class TestZODBIntegration:
         """Verify that JSONB is actually stored in PostgreSQL."""
         from psycopg.rows import dict_row
 
-        import psycopg
-
         conn = db.open()
         root = conn.root()
         root["title"] = "JSONB Test"
@@ -236,8 +231,6 @@ class TestZODBIntegration:
     def test_refs_populated(self, db):
         """Verify refs column is populated for persistent references."""
         from psycopg.rows import dict_row
-
-        import psycopg
 
         conn = db.open()
         root = conn.root()
@@ -611,9 +604,7 @@ class TestMainStorageDirectPaths:
         oid = storage.new_oid()
         try:
             with pytest.raises(TypeError, match="versions"):
-                storage.storeBlob(
-                    oid, z64, zodb_pickle(MinPO(1)), blob_path, "ver1", t
-                )
+                storage.storeBlob(oid, z64, zodb_pickle(MinPO(1)), blob_path, "ver1", t)
         finally:
             if os.path.exists(blob_path):
                 os.unlink(blob_path)
@@ -630,9 +621,7 @@ class TestMainStorageDirectPaths:
         oid = storage.new_oid()
         try:
             with pytest.raises(StorageTransactionError):
-                storage.storeBlob(
-                    oid, z64, zodb_pickle(MinPO(1)), blob_path, "", t2
-                )
+                storage.storeBlob(oid, z64, zodb_pickle(MinPO(1)), blob_path, "", t2)
         finally:
             if os.path.exists(blob_path):
                 os.unlink(blob_path)
@@ -658,9 +647,7 @@ class TestMainStorageDirectPaths:
         t = TransactionMetaData()
         storage.tpc_begin(t)
         oid = storage.new_oid()
-        storage.restoreBlob(
-            oid, z64, zodb_pickle(MinPO(1)), blob_path, None, t
-        )
+        storage.restoreBlob(oid, z64, zodb_pickle(MinPO(1)), blob_path, None, t)
         storage.tpc_vote(t)
         tid = storage.tpc_finish(t)
 

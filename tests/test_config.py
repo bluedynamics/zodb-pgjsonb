@@ -105,7 +105,6 @@ class TestZConfig:
         """ZConfig with S3 config when zodb_s3blobs is not installed raises."""
         import sys
         import unittest.mock
-
         import ZODB.config
 
         _clean_db()
@@ -117,8 +116,15 @@ class TestZConfig:
         </pgjsonb>
         """
         # Mock zodb_s3blobs as not importable
-        with unittest.mock.patch.dict(sys.modules, {"zodb_s3blobs": None,
-                                                     "zodb_s3blobs.cache": None,
-                                                     "zodb_s3blobs.s3client": None}):
-            with pytest.raises(ImportError, match="S3 blob storage requires"):
-                ZODB.config.storageFromString(config_text)
+        with (
+            unittest.mock.patch.dict(
+                sys.modules,
+                {
+                    "zodb_s3blobs": None,
+                    "zodb_s3blobs.cache": None,
+                    "zodb_s3blobs.s3client": None,
+                },
+            ),
+            pytest.raises(ImportError, match="S3 blob storage requires"),
+        ):
+            ZODB.config.storageFromString(config_text)
