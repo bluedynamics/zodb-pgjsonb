@@ -14,7 +14,6 @@ from psycopg.types.json import Json
 import zodb_json_codec
 
 from zodb_pgjsonb.schema import install_schema
-from zodb_pgjsonb.storage import _extract_refs
 
 
 DSN = "dbname=zodb_test user=zodb password=zodb host=localhost port=5433"
@@ -83,11 +82,10 @@ class TestPostgresRoundtrip:
         )
         original_record = class_pickle + state_pickle
 
-        # Decode to JSON-ready dict
-        decoded = zodb_json_codec.decode_zodb_record(original_record)
-        class_mod, class_name = decoded["@cls"]
-        state = decoded["@s"]
-        refs = _extract_refs(state)
+        # Decode to JSON-ready dict with ref extraction
+        class_mod, class_name, state, refs = (
+            zodb_json_codec.decode_zodb_record_for_pg(original_record)
+        )
 
         # Store in PostgreSQL
         zoid = 1
@@ -189,8 +187,7 @@ class TestPostgresRoundtrip:
             "author": {"@ref": "0000000000000003"},
             "folder": {"@ref": "000000000000000a"},
         }
-        refs = _extract_refs(state_with_refs)
-        assert sorted(refs) == [3, 10]
+        refs = [3, 10]  # OIDs from the @ref markers above
 
         with conn.cursor() as cur:
             cur.execute("INSERT INTO transaction_log (tid) VALUES (1)")

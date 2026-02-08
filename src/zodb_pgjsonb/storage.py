@@ -415,14 +415,18 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
             desc = d.decode("utf-8") if isinstance(d, bytes) else d
             _write_txn_log(cur, tid_int, user, desc, e)
 
+            # Separate objects by action for batch writes
+            writes = []
+            deletes = []
             for obj in self._tmp:
                 if obj.get("action") == "delete":
-                    _delete_object(cur, obj["zoid"], tid_int, hp)
+                    deletes.append(obj["zoid"])
                 else:
-                    _write_object(cur, obj, tid_int, hp)
+                    writes.append(obj)
 
-            for zoid, blob_path in self._blob_tmp:
-                _write_blob(cur, zoid, tid_int, blob_path, hp)
+            _batch_write_objects(cur, writes, tid_int, hp)
+            _batch_delete_objects(cur, deletes, tid_int, hp)
+            _batch_write_blobs(cur, self._blob_tmp, tid_int, hp)
 
         return self._resolved or None
 
@@ -1079,14 +1083,18 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
                 desc = desc.decode("utf-8")
             _write_txn_log(cur, tid_int, user, desc, ext)
 
+            # Separate objects by action for batch writes
+            writes = []
+            deletes = []
             for obj in self._tmp:
                 if obj.get("action") == "delete":
-                    _delete_object(cur, obj["zoid"], tid_int, hp)
+                    deletes.append(obj["zoid"])
                 else:
-                    _write_object(cur, obj, tid_int, hp)
+                    writes.append(obj)
 
-            for zoid, blob_path in self._blob_tmp:
-                _write_blob(cur, zoid, tid_int, blob_path, hp)
+            _batch_write_objects(cur, writes, tid_int, hp)
+            _batch_delete_objects(cur, deletes, tid_int, hp)
+            _batch_write_blobs(cur, self._blob_tmp, tid_int, hp)
 
         return self._resolved or None
 
@@ -1515,42 +1523,36 @@ def _compute_undo(cur, tid_int, storage, pending=None):
     return undo_data
 
 
-def _delete_object(cur, zoid, tid_int, history_preserving=False):
-    """Delete an object (zombie/undo of creation).
+def _batch_write_objects(cur, objects, tid_int, history_preserving=False):
+    """Write multiple objects in batch using executemany (pipelined).
 
-    In history-preserving mode, records a tombstone with state=NULL.
-    Removes the object from object_state (current state table).
+    psycopg3's executemany() automatically uses pipeline mode, sending
+    all statements in a single network round-trip instead of waiting for
+    each individual result.
     """
+    if not objects:
+        return
+    params_list = [
+        {
+            "zoid": obj["zoid"],
+            "tid": tid_int,
+            "class_mod": obj["class_mod"],
+            "class_name": obj["class_name"],
+            "state": Json(obj["state"]),
+            "state_size": obj["state_size"],
+            "refs": obj["refs"],
+        }
+        for obj in objects
+    ]
     if history_preserving:
-        cur.execute(
-            "INSERT INTO object_history "
-            "(zoid, tid, class_mod, class_name, state, state_size, refs) "
-            "VALUES (%s, %s, '', '', NULL, 0, '{}')",
-            (zoid, tid_int),
-        )
-    cur.execute("DELETE FROM object_state WHERE zoid = %s", (zoid,))
-
-
-def _write_object(cur, obj, tid_int, history_preserving=False):
-    """Write a single object state to PostgreSQL."""
-    params = {
-        "zoid": obj["zoid"],
-        "tid": tid_int,
-        "class_mod": obj["class_mod"],
-        "class_name": obj["class_name"],
-        "state": Json(obj["state"]),
-        "state_size": obj["state_size"],
-        "refs": obj["refs"],
-    }
-    if history_preserving:
-        cur.execute(
+        cur.executemany(
             "INSERT INTO object_history "
             "(zoid, tid, class_mod, class_name, state, state_size, refs) "
             "VALUES (%(zoid)s, %(tid)s, %(class_mod)s, %(class_name)s, "
             "%(state)s, %(state_size)s, %(refs)s)",
-            params,
+            params_list,
         )
-    cur.execute(
+    cur.executemany(
         "INSERT INTO object_state "
         "(zoid, tid, class_mod, class_name, state, state_size, refs) "
         "VALUES (%(zoid)s, %(tid)s, %(class_mod)s, %(class_name)s, "
@@ -1559,29 +1561,55 @@ def _write_object(cur, obj, tid_int, history_preserving=False):
         "tid = EXCLUDED.tid, class_mod = EXCLUDED.class_mod, "
         "class_name = EXCLUDED.class_name, state = EXCLUDED.state, "
         "state_size = EXCLUDED.state_size, refs = EXCLUDED.refs",
-        params,
+        params_list,
     )
 
 
-def _write_blob(cur, zoid, tid_int, blob_path, history_preserving=False):
-    """Write a blob to blob_state and remove the temp file."""
-    size = os.path.getsize(blob_path)
-    with open(blob_path, 'rb') as f:
-        blob_data = f.read()
+def _batch_delete_objects(cur, zoids, tid_int, history_preserving=False):
+    """Delete multiple objects in batch.
+
+    In history-preserving mode, records tombstones with state=NULL.
+    Removes objects from object_state (current state table).
+    """
+    if not zoids:
+        return
     if history_preserving:
-        cur.execute(
+        cur.executemany(
+            "INSERT INTO object_history "
+            "(zoid, tid, class_mod, class_name, state, state_size, refs) "
+            "VALUES (%s, %s, '', '', NULL, 0, '{}')",
+            [(zoid, tid_int) for zoid in zoids],
+        )
+    cur.executemany(
+        "DELETE FROM object_state WHERE zoid = %s",
+        [(zoid,) for zoid in zoids],
+    )
+
+
+def _batch_write_blobs(cur, blobs, tid_int, history_preserving=False):
+    """Write multiple blobs in batch. Reads blob files and removes them."""
+    if not blobs:
+        return
+    params_list = []
+    for zoid, blob_path in blobs:
+        size = os.path.getsize(blob_path)
+        with open(blob_path, 'rb') as f:
+            blob_data = f.read()
+        params_list.append((zoid, tid_int, size, blob_data))
+        os.unlink(blob_path)
+    if history_preserving:
+        cur.executemany(
             "INSERT INTO blob_history (zoid, tid, blob_size, data) "
             "VALUES (%s, %s, %s, %s)",
-            (zoid, tid_int, size, blob_data),
+            params_list,
         )
-    cur.execute(
+    cur.executemany(
         "INSERT INTO blob_state (zoid, tid, blob_size, data) "
         "VALUES (%s, %s, %s, %s) "
         "ON CONFLICT (zoid, tid) DO UPDATE SET "
         "blob_size = EXCLUDED.blob_size, data = EXCLUDED.data",
-        (zoid, tid_int, size, blob_data),
+        params_list,
     )
-    os.unlink(blob_path)
 
 
 def _loadBefore_hf(cur, oid, zoid, tid_int):
@@ -1643,69 +1671,6 @@ def _loadBefore_hp(cur, oid, zoid, tid_int):
     next_row = cur.fetchone()
     end_tid = p64(next_row["next_tid"]) if next_row["next_tid"] else None
     return data, start_tid, end_tid
-
-
-def _extract_refs(state):
-    """Recursively walk decoded state and collect all @ref OIDs as integers.
-
-    Cross-database references (non-hex OID strings like 'm') are skipped
-    since they reference objects in other databases and are irrelevant for pack.
-    """
-    refs = []
-    if isinstance(state, dict):
-        if "@ref" in state:
-            ref_val = state["@ref"]
-            # @ref is hex OID string, or [hex_oid, class_path]
-            oid_hex = ref_val if isinstance(ref_val, str) else ref_val[0]
-            try:
-                refs.append(int(oid_hex, 16))
-            except (ValueError, TypeError):
-                pass  # cross-database or non-standard ref — skip
-        else:
-            for v in state.values():
-                refs.extend(_extract_refs(v))
-    elif isinstance(state, list):
-        for item in state:
-            refs.extend(_extract_refs(item))
-    return refs
-
-
-def _sanitize_for_pg(obj):
-    """Replace strings containing null bytes with @ns markers.
-
-    PostgreSQL JSONB cannot store \\u0000 in strings.  We base64-encode
-    such strings with a ``@ns`` marker for lossless round-tripping.
-
-    Returns the original objects unchanged when no null bytes are found
-    (zero allocations in the common case).
-    """
-    if isinstance(obj, str):
-        if '\x00' in obj:
-            return {
-                "@ns": base64.b64encode(
-                    obj.encode('utf-8', errors='surrogatepass')
-                ).decode('ascii'),
-            }
-        return obj
-    if isinstance(obj, dict):
-        new = {}
-        changed = False
-        for k, v in obj.items():
-            new_v = _sanitize_for_pg(v)
-            if new_v is not v:
-                changed = True
-            new[k] = new_v
-        return new if changed else obj
-    if isinstance(obj, list):
-        new = []
-        changed = False
-        for item in obj:
-            new_item = _sanitize_for_pg(item)
-            if new_item is not item:
-                changed = True
-            new.append(new_item)
-        return new if changed else obj
-    return obj
 
 
 def _unsanitize_from_pg(obj):
