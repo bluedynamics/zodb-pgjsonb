@@ -35,7 +35,7 @@ Repository = "https://github.com/bluedynamics/zodb-pgjsonb"
 Issues = "https://github.com/bluedynamics/zodb-pgjsonb/issues"
 
 [project.optional-dependencies]
-s3 = ["boto3>=1.26"]
+s3 = ["zodb-s3blobs", "boto3>=1.26"]
 test = [
     "pytest",
     "pytest-cov",

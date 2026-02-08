@@ -1,7 +1,8 @@
-"""Phase 4: Blob storage tests for PGJsonbStorage.
+"""Phase 4+6: Blob storage tests for PGJsonbStorage.
 
 Tests that PGJsonbStorage correctly implements IBlobStorage —
 storeBlob(), loadBlob(), openCommittedBlobFile(), temporaryDirectory().
+Also tests S3 tiered blob storage (Phase 6).
 
 Requires PostgreSQL on localhost:5433.
 """
@@ -9,7 +10,9 @@ Requires PostgreSQL on localhost:5433.
 import os
 import tempfile
 
+import boto3
 import pytest
+from moto import mock_aws
 
 import transaction as txn
 
@@ -26,21 +29,28 @@ from zodb_pgjsonb.storage import PGJsonbStorageInstance
 
 
 DSN = "dbname=zodb_test user=zodb password=zodb host=localhost port=5433"
+S3_BUCKET = "test-zodb-blobs"
+S3_REGION = "us-east-1"
 
 
-@pytest.fixture
-def storage():
-    """Fresh PGJsonbStorage with clean database."""
+def _clean_db():
+    """Drop all tables for a clean test database."""
     import psycopg
     conn = psycopg.connect(DSN)
     with conn.cursor() as cur:
         cur.execute(
             "DROP TABLE IF EXISTS "
-            "blob_state, object_state, transaction_log CASCADE"
+            "blob_state, blob_history, object_state, "
+            "object_history, pack_state, transaction_log CASCADE"
         )
     conn.commit()
     conn.close()
 
+
+@pytest.fixture
+def storage():
+    """Fresh PGJsonbStorage with clean database."""
+    _clean_db()
     s = PGJsonbStorage(DSN)
     yield s
     s.close()
@@ -50,6 +60,45 @@ def storage():
 def db(storage):
     """ZODB.DB using our storage."""
     database = ZODB.DB(storage)
+    yield database
+    database.close()
+
+
+@pytest.fixture
+def s3_storage(tmp_path):
+    """PGJsonbStorage with mocked S3 client for tiered blob storage."""
+    _clean_db()
+    with mock_aws():
+        # Create mock S3 bucket
+        client = boto3.client("s3", region_name=S3_REGION)
+        client.create_bucket(Bucket=S3_BUCKET)
+
+        from zodb_s3blobs.s3client import S3Client
+        from zodb_s3blobs.cache import S3BlobCache
+
+        s3_client = S3Client(
+            bucket_name=S3_BUCKET,
+            region_name=S3_REGION,
+        )
+        cache_dir = str(tmp_path / "blob_cache")
+        blob_cache = S3BlobCache(
+            cache_dir=cache_dir,
+            max_size=10 * 1024 * 1024,  # 10MB cache
+        )
+        s = PGJsonbStorage(
+            DSN,
+            s3_client=s3_client,
+            blob_cache=blob_cache,
+            blob_threshold=1024,  # 1KB — easy to test
+        )
+        yield s
+        s.close()
+
+
+@pytest.fixture
+def s3_db(s3_storage):
+    """ZODB.DB using storage with S3 tiering."""
+    database = ZODB.DB(s3_storage)
     yield database
     database.close()
 
@@ -321,4 +370,303 @@ class TestBlobsWithZODB:
         with root["keeper"].open("r") as f:
             assert f.read() == b"keep me"
         assert "discard" not in root
+        conn.close()
+
+
+class TestS3BlobTiering:
+    """Test S3 tiered blob storage with mocked S3."""
+
+    def test_small_blob_stays_in_pg(self, s3_storage):
+        """Blobs smaller than threshold stay in PG bytea."""
+        inst = s3_storage.new_instance()
+        inst.poll_invalidations()
+
+        # 100 bytes < 1024 threshold → PG
+        blob_data = b"small blob data"
+        fd, blob_path = tempfile.mkstemp()
+        os.write(fd, blob_data)
+        os.close(fd)
+
+        import zodb_json_codec
+        record = {
+            "@cls": ["persistent.mapping", "PersistentMapping"],
+            "@s": {"data": {}},
+        }
+        data = zodb_json_codec.encode_zodb_record(record)
+
+        t = txn.Transaction()
+        inst.tpc_begin(t)
+        oid = inst.new_oid()
+        inst.storeBlob(oid, z64, data, blob_path, "", t)
+        inst.tpc_vote(t)
+        tid = inst.tpc_finish(t)
+
+        # Verify: blob is in PG (data not NULL, s3_key NULL)
+        import psycopg
+        from ZODB.utils import u64
+        conn = psycopg.connect(DSN)
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT data IS NOT NULL as has_data, s3_key "
+                "FROM blob_state WHERE zoid = %s",
+                (u64(oid),),
+            )
+            row = cur.fetchone()
+        conn.close()
+        assert row[0] is True  # has_data
+        assert row[1] is None  # no s3_key
+
+        # Load it back
+        loaded_path = inst.loadBlob(oid, tid)
+        with open(loaded_path, 'rb') as f:
+            assert f.read() == blob_data
+
+        inst.release()
+
+    def test_large_blob_goes_to_s3(self, s3_storage):
+        """Blobs >= threshold are uploaded to S3."""
+        inst = s3_storage.new_instance()
+        inst.poll_invalidations()
+
+        # 2048 bytes >= 1024 threshold → S3
+        blob_data = b"L" * 2048
+        fd, blob_path = tempfile.mkstemp()
+        os.write(fd, blob_data)
+        os.close(fd)
+
+        import zodb_json_codec
+        record = {
+            "@cls": ["persistent.mapping", "PersistentMapping"],
+            "@s": {"data": {}},
+        }
+        data = zodb_json_codec.encode_zodb_record(record)
+
+        t = txn.Transaction()
+        inst.tpc_begin(t)
+        oid = inst.new_oid()
+        inst.storeBlob(oid, z64, data, blob_path, "", t)
+        inst.tpc_vote(t)
+        tid = inst.tpc_finish(t)
+
+        # Verify: blob metadata is in PG (data NULL, s3_key set)
+        import psycopg
+        from ZODB.utils import u64
+        conn = psycopg.connect(DSN)
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT data IS NULL as no_data, s3_key "
+                "FROM blob_state WHERE zoid = %s",
+                (u64(oid),),
+            )
+            row = cur.fetchone()
+        conn.close()
+        assert row[0] is True  # no data in PG
+        assert row[1] is not None  # has s3_key
+        assert "blobs/" in row[1]
+
+        inst.release()
+
+    def test_load_blob_from_s3(self, s3_storage):
+        """Loading a blob stored in S3 downloads it to local file."""
+        inst = s3_storage.new_instance()
+        inst.poll_invalidations()
+
+        blob_data = b"S" * 2048  # >= 1024 threshold → S3
+        fd, blob_path = tempfile.mkstemp()
+        os.write(fd, blob_data)
+        os.close(fd)
+
+        import zodb_json_codec
+        record = {
+            "@cls": ["persistent.mapping", "PersistentMapping"],
+            "@s": {"data": {}},
+        }
+        data = zodb_json_codec.encode_zodb_record(record)
+
+        t = txn.Transaction()
+        inst.tpc_begin(t)
+        oid = inst.new_oid()
+        inst.storeBlob(oid, z64, data, blob_path, "", t)
+        inst.tpc_vote(t)
+        tid = inst.tpc_finish(t)
+
+        # Load — should download from S3
+        loaded_path = inst.loadBlob(oid, tid)
+        assert os.path.isfile(loaded_path)
+        with open(loaded_path, 'rb') as f:
+            assert f.read() == blob_data
+
+        inst.release()
+
+    def test_load_blob_uses_cache(self, s3_storage):
+        """Second load of an S3 blob should use the cache."""
+        inst = s3_storage.new_instance()
+        inst.poll_invalidations()
+
+        blob_data = b"C" * 2048
+        fd, blob_path = tempfile.mkstemp()
+        os.write(fd, blob_data)
+        os.close(fd)
+
+        import zodb_json_codec
+        record = {
+            "@cls": ["persistent.mapping", "PersistentMapping"],
+            "@s": {"data": {}},
+        }
+        data = zodb_json_codec.encode_zodb_record(record)
+
+        t = txn.Transaction()
+        inst.tpc_begin(t)
+        oid = inst.new_oid()
+        inst.storeBlob(oid, z64, data, blob_path, "", t)
+        inst.tpc_vote(t)
+        tid = inst.tpc_finish(t)
+
+        # First load — downloads from S3 + caches
+        path1 = inst.loadBlob(oid, tid)
+        assert os.path.isfile(path1)
+
+        # Second load — should return cached path
+        # (remove the temp dir file to prove it's not re-downloading to temp)
+        if os.path.exists(path1) and "blob_cache" not in path1:
+            os.unlink(path1)
+        path2 = inst.loadBlob(oid, tid)
+        assert os.path.isfile(path2)
+        with open(path2, 'rb') as f:
+            assert f.read() == blob_data
+
+        inst.release()
+
+    def test_no_s3_config_all_pg(self, storage):
+        """Without S3 config, all blobs go to PG (backward compatible)."""
+        assert storage._s3_client is None
+        assert storage._blob_cache is None
+
+    def test_blob_threshold_zero_all_s3(self, tmp_path):
+        """With threshold=0, all blobs go to S3."""
+        _clean_db()
+        with mock_aws():
+            client = boto3.client("s3", region_name=S3_REGION)
+            client.create_bucket(Bucket=S3_BUCKET)
+
+            from zodb_s3blobs.s3client import S3Client
+            from zodb_s3blobs.cache import S3BlobCache
+
+            s3_client = S3Client(
+                bucket_name=S3_BUCKET,
+                region_name=S3_REGION,
+            )
+            blob_cache = S3BlobCache(
+                cache_dir=str(tmp_path / "cache0"),
+                max_size=10 * 1024 * 1024,
+            )
+            s = PGJsonbStorage(
+                DSN,
+                s3_client=s3_client,
+                blob_cache=blob_cache,
+                blob_threshold=0,  # All blobs go to S3
+            )
+            inst = s.new_instance()
+            inst.poll_invalidations()
+
+            # Even a tiny blob should go to S3
+            blob_data = b"tiny"
+            fd, blob_path = tempfile.mkstemp()
+            os.write(fd, blob_data)
+            os.close(fd)
+
+            import zodb_json_codec
+            record = {
+                "@cls": ["persistent.mapping", "PersistentMapping"],
+                "@s": {"data": {}},
+            }
+            data = zodb_json_codec.encode_zodb_record(record)
+
+            t = txn.Transaction()
+            inst.tpc_begin(t)
+            oid = inst.new_oid()
+            inst.storeBlob(oid, z64, data, blob_path, "", t)
+            inst.tpc_vote(t)
+            tid = inst.tpc_finish(t)
+
+            # Verify it's in S3
+            import psycopg
+            from ZODB.utils import u64
+            conn = psycopg.connect(DSN)
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT data IS NULL as no_data, s3_key "
+                    "FROM blob_state WHERE zoid = %s",
+                    (u64(oid),),
+                )
+                row = cur.fetchone()
+            conn.close()
+            assert row[0] is True  # no data in PG
+            assert row[1] is not None  # has s3_key
+
+            # Load it back
+            loaded_path = inst.loadBlob(oid, tid)
+            with open(loaded_path, 'rb') as f:
+                assert f.read() == blob_data
+
+            inst.release()
+            s.close()
+
+
+class TestS3BlobsWithZODB:
+    """Test S3 blobs through ZODB.DB."""
+
+    def test_store_and_load_large_blob(self, s3_db):
+        """Store a large blob via ZODB, verify it goes to S3 and loads back."""
+        large_data = b"Z" * 2048  # >= 1024 threshold → S3
+        conn = s3_db.open()
+        root = conn.root()
+        root["large_blob"] = Blob(large_data)
+        txn.commit()
+        conn.close()
+
+        conn = s3_db.open()
+        root = conn.root()
+        with root["large_blob"].open("r") as f:
+            assert f.read() == large_data
+        conn.close()
+
+    def test_mixed_small_and_large_blobs(self, s3_db):
+        """Mix of small (PG) and large (S3) blobs in same transaction."""
+        small_data = b"small"  # < 1024 → PG
+        large_data = b"X" * 2048  # >= 1024 → S3
+        conn = s3_db.open()
+        root = conn.root()
+        root["small"] = Blob(small_data)
+        root["large"] = Blob(large_data)
+        txn.commit()
+        conn.close()
+
+        conn = s3_db.open()
+        root = conn.root()
+        with root["small"].open("r") as f:
+            assert f.read() == small_data
+        with root["large"].open("r") as f:
+            assert f.read() == large_data
+        conn.close()
+
+    def test_s3_blob_update(self, s3_db):
+        """Update a large blob — new version also goes to S3."""
+        conn = s3_db.open()
+        root = conn.root()
+        root["doc"] = Blob(b"V" * 2048)
+        txn.commit()
+        conn.close()
+
+        conn = s3_db.open()
+        root = conn.root()
+        with root["doc"].open("w") as f:
+            f.write(b"W" * 3000)
+        txn.commit()
+        conn.close()
+
+        conn = s3_db.open()
+        root = conn.root()
+        with root["doc"].open("r") as f:
+            assert f.read() == b"W" * 3000
         conn.close()

@@ -149,13 +149,19 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
 
     def __init__(self, dsn, name="pgjsonb", history_preserving=False,
                  blob_temp_dir=None, cache_local_mb=DEFAULT_CACHE_LOCAL_MB,
-                 pool_size=1, pool_max_size=10):
+                 pool_size=1, pool_max_size=10,
+                 s3_client=None, blob_cache=None, blob_threshold=1_048_576):
         BaseStorage.__init__(self, name)
         self._dsn = dsn
         self._history_preserving = history_preserving
         self._cache_local_mb = cache_local_mb
         self._ltid = z64
         self._pack_tid = None  # Integer TID of last pack time
+
+        # S3 tiered blob storage (optional)
+        self._s3_client = s3_client       # None = PG-only mode
+        self._blob_cache = blob_cache     # S3BlobCache for local caching
+        self._blob_threshold = blob_threshold  # bytes; blobs >= this go to S3
 
         # Pending stores for current transaction (direct use only)
         self._tmp = []
@@ -426,7 +432,11 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
 
             _batch_write_objects(cur, writes, tid_int, hp)
             _batch_delete_objects(cur, deletes, tid_int, hp)
-            _batch_write_blobs(cur, self._blob_tmp, tid_int, hp)
+            _batch_write_blobs(
+                cur, self._blob_tmp, tid_int, hp,
+                s3_client=self._s3_client,
+                blob_threshold=self._blob_threshold,
+            )
 
         return self._resolved or None
 
@@ -542,7 +552,7 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
         return result
 
     def pack(self, t, referencesf):
-        """Pack the storage — remove unreachable objects."""
+        """Pack the storage — remove unreachable objects and S3 blobs."""
         from .packer import pack as do_pack
         pack_time = None
         if self._history_preserving and t is not None:
@@ -551,11 +561,18 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
                 *time.gmtime(t)[:5] + (t % 60,)
             ).raw()
             self._pack_tid = u64(pack_time)
-        do_pack(
+        _deleted_objects, _deleted_blobs, s3_keys = do_pack(
             self._conn,
             pack_time=pack_time,
             history_preserving=self._history_preserving,
         )
+        # Clean up S3 blobs that were removed during pack
+        if s3_keys and self._s3_client:
+            for key in s3_keys:
+                try:
+                    self._s3_client.delete_object(key)
+                except Exception:
+                    logger.warning("Failed to delete S3 blob: %s", key)
 
     # ── IStorageUndoable ─────────────────────────────────────────────
 
@@ -749,6 +766,11 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
         )
         if os.path.exists(path):
             return path
+        # Check S3 blob cache before hitting the database
+        if self._blob_cache is not None:
+            cached = self._blob_cache.get(oid, serial)
+            if cached:
+                return cached
         with self._conn.cursor() as cur:
             cur.execute(
                 "SELECT data, s3_key FROM blob_state "
@@ -759,7 +781,10 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
         if row is None:
             raise POSKeyError(oid)
         if row["s3_key"]:
-            raise NotImplementedError("S3 blob loading not yet implemented")
+            return _load_blob_from_s3(
+                self._s3_client, self._blob_cache,
+                row["s3_key"], oid, serial, path,
+            )
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
         try:
             os.write(fd, row["data"])
@@ -828,6 +853,10 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
         self._transaction = None
         self._resolved = []
         self._blob_temp_dir = tempfile.mkdtemp(prefix="zodb-pgjsonb-blobs-")
+        # S3 tiered blob storage (inherited from main)
+        self._s3_client = main_storage._s3_client
+        self._blob_cache = main_storage._blob_cache
+        self._blob_threshold = main_storage._blob_threshold
         # Load cache: zoid → (pickle_bytes, tid_bytes), bounded LRU
         self._load_cache = LoadCache(max_mb=main_storage._cache_local_mb)
         # Cache for conflict resolution: (oid_bytes, tid_bytes) → pickle_bytes
@@ -1094,7 +1123,11 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
 
             _batch_write_objects(cur, writes, tid_int, hp)
             _batch_delete_objects(cur, deletes, tid_int, hp)
-            _batch_write_blobs(cur, self._blob_tmp, tid_int, hp)
+            _batch_write_blobs(
+                cur, self._blob_tmp, tid_int, hp,
+                s3_client=self._s3_client,
+                blob_threshold=self._blob_threshold,
+            )
 
         return self._resolved or None
 
@@ -1166,6 +1199,11 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
         )
         if os.path.exists(path):
             return path
+        # Check S3 blob cache before hitting the database
+        if self._blob_cache is not None:
+            cached = self._blob_cache.get(oid, serial)
+            if cached:
+                return cached
         with self._conn.cursor() as cur:
             cur.execute(
                 "SELECT data, s3_key FROM blob_state "
@@ -1176,7 +1214,10 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
         if row is None:
             raise POSKeyError(oid)
         if row["s3_key"]:
-            raise NotImplementedError("S3 blob loading not yet implemented")
+            return _load_blob_from_s3(
+                self._s3_client, self._blob_cache,
+                row["s3_key"], oid, serial, path,
+            )
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
         try:
             os.write(fd, row["data"])
@@ -1586,30 +1627,89 @@ def _batch_delete_objects(cur, zoids, tid_int, history_preserving=False):
     )
 
 
-def _batch_write_blobs(cur, blobs, tid_int, history_preserving=False):
-    """Write multiple blobs in batch. Reads blob files and removes them."""
+def _batch_write_blobs(cur, blobs, tid_int, history_preserving=False,
+                       s3_client=None, blob_threshold=1_048_576):
+    """Write multiple blobs in batch with optional S3 tiering.
+
+    When s3_client is set, blobs >= blob_threshold are uploaded to S3
+    and only metadata (s3_key, no data) is stored in PG. Smaller blobs
+    go directly to PG bytea.
+    """
     if not blobs:
         return
-    params_list = []
+
+    pg_params = []      # (zoid, tid, size, data) — PG bytea blobs
+    s3_params = []      # (zoid, tid, size, s3_key) — S3 metadata-only rows
+
     for zoid, blob_path in blobs:
         size = os.path.getsize(blob_path)
-        with open(blob_path, 'rb') as f:
-            blob_data = f.read()
-        params_list.append((zoid, tid_int, size, blob_data))
-        os.unlink(blob_path)
-    if history_preserving:
+        if s3_client is not None and size >= blob_threshold:
+            # Large blob → S3
+            s3_key = f"blobs/{zoid:016x}/{tid_int:016x}.blob"
+            s3_client.upload_file(blob_path, s3_key)
+            s3_params.append((zoid, tid_int, size, s3_key))
+            os.unlink(blob_path)
+        else:
+            # Small blob or no S3 → PG bytea
+            with open(blob_path, 'rb') as f:
+                blob_data = f.read()
+            pg_params.append((zoid, tid_int, size, blob_data))
+            os.unlink(blob_path)
+
+    # Batch insert PG bytea blobs
+    if pg_params:
+        if history_preserving:
+            cur.executemany(
+                "INSERT INTO blob_history (zoid, tid, blob_size, data) "
+                "VALUES (%s, %s, %s, %s)",
+                pg_params,
+            )
         cur.executemany(
-            "INSERT INTO blob_history (zoid, tid, blob_size, data) "
-            "VALUES (%s, %s, %s, %s)",
-            params_list,
+            "INSERT INTO blob_state (zoid, tid, blob_size, data) "
+            "VALUES (%s, %s, %s, %s) "
+            "ON CONFLICT (zoid, tid) DO UPDATE SET "
+            "blob_size = EXCLUDED.blob_size, data = EXCLUDED.data",
+            pg_params,
         )
-    cur.executemany(
-        "INSERT INTO blob_state (zoid, tid, blob_size, data) "
-        "VALUES (%s, %s, %s, %s) "
-        "ON CONFLICT (zoid, tid) DO UPDATE SET "
-        "blob_size = EXCLUDED.blob_size, data = EXCLUDED.data",
-        params_list,
-    )
+
+    # Batch insert S3 metadata (data=NULL, s3_key=key)
+    if s3_params:
+        if history_preserving:
+            cur.executemany(
+                "INSERT INTO blob_history "
+                "(zoid, tid, blob_size, s3_key) "
+                "VALUES (%s, %s, %s, %s)",
+                s3_params,
+            )
+        cur.executemany(
+            "INSERT INTO blob_state "
+            "(zoid, tid, blob_size, s3_key) "
+            "VALUES (%s, %s, %s, %s) "
+            "ON CONFLICT (zoid, tid) DO UPDATE SET "
+            "blob_size = EXCLUDED.blob_size, "
+            "s3_key = EXCLUDED.s3_key, data = NULL",
+            s3_params,
+        )
+
+
+def _load_blob_from_s3(s3_client, blob_cache, s3_key, oid, serial, path):
+    """Download a blob from S3 and optionally cache it locally.
+
+    Args:
+        s3_client: S3Client instance
+        blob_cache: S3BlobCache instance or None
+        s3_key: S3 key string
+        oid: OID bytes
+        serial: TID bytes
+        path: local file path to write to
+
+    Returns:
+        Path to the local blob file.
+    """
+    s3_client.download_file(s3_key, path)
+    if blob_cache is not None:
+        blob_cache.put(oid, serial, path)
+    return path
 
 
 def _loadBefore_hf(cur, oid, zoid, tid_int):

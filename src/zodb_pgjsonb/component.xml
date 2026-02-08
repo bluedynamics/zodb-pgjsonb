@@ -49,6 +49,67 @@
       </description>
     </key>
 
+    <!-- S3 tiered blob storage (optional, requires zodb-pgjsonb[s3]) -->
+
+    <key name="blob-threshold" datatype="byte-size" default="1MB">
+      <description>
+        Blobs larger than this are stored in S3 (if configured).
+        Blobs smaller than this stay in PostgreSQL bytea.
+        Set to 0 to send all blobs to S3. Default: 1MB.
+        Requires s3-bucket-name to be set.
+      </description>
+    </key>
+
+    <key name="s3-bucket-name" required="no">
+      <description>
+        S3 bucket name for large blob storage.
+        If omitted, all blobs are stored in PostgreSQL bytea.
+      </description>
+    </key>
+
+    <key name="s3-prefix" default="">
+      <description>S3 key prefix for namespace isolation.</description>
+    </key>
+
+    <key name="s3-endpoint-url" required="no">
+      <description>
+        S3 endpoint URL (for MinIO, Ceph, or other S3-compatible stores).
+      </description>
+    </key>
+
+    <key name="s3-region" required="no">
+      <description>AWS region name.</description>
+    </key>
+
+    <key name="s3-access-key" required="no">
+      <description>
+        AWS access key ID. Uses boto3 credential chain if omitted.
+      </description>
+    </key>
+
+    <key name="s3-secret-key" required="no">
+      <description>
+        AWS secret access key. Uses boto3 credential chain if omitted.
+      </description>
+    </key>
+
+    <key name="s3-use-ssl" datatype="boolean" default="true">
+      <description>Enable SSL for S3 connections. Default: true.</description>
+    </key>
+
+    <key name="blob-cache-dir" required="no">
+      <description>
+        Local cache directory for S3 blobs. Uses blob-temp-dir if omitted.
+        Recommended for production to avoid repeated S3 downloads.
+      </description>
+    </key>
+
+    <key name="blob-cache-size" datatype="byte-size" default="1GB">
+      <description>
+        Maximum size of local blob cache. Default: 1GB.
+      </description>
+    </key>
+
   </sectiontype>
 
 </component>
