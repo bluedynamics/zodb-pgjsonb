@@ -1,0 +1,316 @@
+{
+  "timestamp": "2026-02-08T01:24:45.732516+00:00",
+  "python_version": "3.13.9 (main, Oct 14 2025, 21:29:44) [Clang 20.1.4 ]",
+  "iterations": 100,
+  "warmup": 10,
+  "pgjsonb_version": "dev",
+  "relstorage_version": "unknown",
+  "storage": {
+    "store single": {
+      "PGJsonbStorage": {
+        "count": 100,
+        "mean_ms": 5.343,
+        "median_ms": 5.249,
+        "p95_ms": 6.282,
+        "p99_ms": 6.75,
+        "min_ms": 4.378,
+        "max_ms": 7.0,
+        "stddev_ms": 0.542
+      },
+      "RelStorage": {
+        "count": 100,
+        "mean_ms": 8.144,
+        "median_ms": 7.79,
+        "p95_ms": 11.169,
+        "p99_ms": 11.793,
+        "min_ms": 5.443,
+        "max_ms": 14.302,
+        "stddev_ms": 1.843
+      }
+    },
+    "store batch 10": {
+      "PGJsonbStorage": {
+        "count": 100,
+        "mean_ms": 9.113,
+        "median_ms": 9.356,
+        "p95_ms": 10.85,
+        "p99_ms": 11.941,
+        "min_ms": 4.896,
+        "max_ms": 13.368,
+        "stddev_ms": 1.377
+      },
+      "RelStorage": {
+        "count": 100,
+        "mean_ms": 9.438,
+        "median_ms": 9.108,
+        "p95_ms": 11.424,
+        "p99_ms": 12.119,
+        "min_ms": 6.676,
+        "max_ms": 14.653,
+        "stddev_ms": 1.446
+      }
+    },
+    "store batch 100": {
+      "PGJsonbStorage": {
+        "count": 20,
+        "mean_ms": 18.364,
+        "median_ms": 17.153,
+        "p95_ms": 24.311,
+        "p99_ms": 26.651,
+        "min_ms": 15.792,
+        "max_ms": 27.236,
+        "stddev_ms": 3.015
+      },
+      "RelStorage": {
+        "count": 20,
+        "mean_ms": 9.464,
+        "median_ms": 8.834,
+        "p95_ms": 13.051,
+        "p99_ms": 13.315,
+        "min_ms": 6.754,
+        "max_ms": 13.382,
+        "stddev_ms": 2.108
+      }
+    },
+    "load single": {
+      "PGJsonbStorage": {
+        "count": 100,
+        "mean_ms": 0.158,
+        "median_ms": 0.155,
+        "p95_ms": 0.275,
+        "p99_ms": 0.312,
+        "min_ms": 0.082,
+        "max_ms": 0.33,
+        "stddev_ms": 0.063
+      },
+      "RelStorage": {
+        "count": 100,
+        "mean_ms": 0.002,
+        "median_ms": 0.002,
+        "p95_ms": 0.003,
+        "p99_ms": 0.004,
+        "min_ms": 0.002,
+        "max_ms": 0.006,
+        "stddev_ms": 0.0
+      }
+    },
+    "load batch 100": {
+      "PGJsonbStorage": {
+        "count": 20,
+        "mean_ms": 8.55,
+        "median_ms": 8.151,
+        "p95_ms": 10.517,
+        "p99_ms": 11.236,
+        "min_ms": 7.32,
+        "max_ms": 11.415,
+        "stddev_ms": 1.007
+      },
+      "RelStorage": {
+        "count": 20,
+        "mean_ms": 0.098,
+        "median_ms": 0.098,
+        "p95_ms": 0.101,
+        "p99_ms": 0.104,
+        "min_ms": 0.093,
+        "max_ms": 0.105,
+        "stddev_ms": 0.003
+      }
+    }
+  },
+  "zodb": {
+    "zodb write simple": {
+      "PGJsonbStorage": {
+        "count": 100,
+        "mean_ms": 7.476,
+        "median_ms": 8.015,
+        "p95_ms": 10.791,
+        "p99_ms": 12.444,
+        "min_ms": 4.478,
+        "max_ms": 12.858,
+        "stddev_ms": 2.382
+      },
+      "RelStorage": {
+        "count": 100,
+        "mean_ms": 8.263,
+        "median_ms": 7.917,
+        "p95_ms": 11.034,
+        "p99_ms": 12.183,
+        "min_ms": 5.834,
+        "max_ms": 12.262,
+        "stddev_ms": 1.631
+      }
+    },
+    "zodb write btree": {
+      "PGJsonbStorage": {
+        "count": 100,
+        "mean_ms": 6.258,
+        "median_ms": 6.359,
+        "p95_ms": 8.079,
+        "p99_ms": 10.305,
+        "min_ms": 4.052,
+        "max_ms": 10.504,
+        "stddev_ms": 1.228
+      },
+      "RelStorage": {
+        "count": 100,
+        "mean_ms": 8.33,
+        "median_ms": 8.137,
+        "p95_ms": 11.195,
+        "p99_ms": 12.022,
+        "min_ms": 5.893,
+        "max_ms": 12.366,
+        "stddev_ms": 1.672
+      }
+    },
+    "zodb read": {
+      "PGJsonbStorage": {
+        "count": 100,
+        "mean_ms": 0.003,
+        "median_ms": 0.002,
+        "p95_ms": 0.004,
+        "p99_ms": 0.004,
+        "min_ms": 0.001,
+        "max_ms": 0.009,
+        "stddev_ms": 0.001
+      },
+      "RelStorage": {
+        "count": 100,
+        "mean_ms": 0.002,
+        "median_ms": 0.002,
+        "p95_ms": 0.003,
+        "p99_ms": 0.003,
+        "min_ms": 0.001,
+        "max_ms": 0.005,
+        "stddev_ms": 0.001
+      }
+    },
+    "zodb connection cycle": {
+      "PGJsonbStorage": {
+        "count": 100,
+        "mean_ms": 0.397,
+        "median_ms": 0.3,
+        "p95_ms": 0.814,
+        "p99_ms": 1.016,
+        "min_ms": 0.219,
+        "max_ms": 1.02,
+        "stddev_ms": 0.204
+      },
+      "RelStorage": {
+        "count": 100,
+        "mean_ms": 0.269,
+        "median_ms": 0.257,
+        "p95_ms": 0.368,
+        "p99_ms": 0.616,
+        "min_ms": 0.154,
+        "max_ms": 0.646,
+        "stddev_ms": 0.086
+      }
+    },
+    "zodb write batch 10": {
+      "PGJsonbStorage": {
+        "count": 20,
+        "mean_ms": 10.677,
+        "median_ms": 9.741,
+        "p95_ms": 14.224,
+        "p99_ms": 14.435,
+        "min_ms": 7.618,
+        "max_ms": 14.488,
+        "stddev_ms": 2.171
+      },
+      "RelStorage": {
+        "count": 20,
+        "mean_ms": 10.779,
+        "median_ms": 11.209,
+        "p95_ms": 12.191,
+        "p99_ms": 12.675,
+        "min_ms": 8.58,
+        "max_ms": 12.796,
+        "stddev_ms": 1.287
+      }
+    }
+  },
+  "pack": {
+    "100": {
+      "PGJsonbStorage": {
+        "time_ms": 7.595
+      },
+      "RelStorage": {
+        "time_ms": 179.812
+      }
+    },
+    "1000": {
+      "PGJsonbStorage": {
+        "time_ms": 7.628
+      },
+      "RelStorage": {
+        "time_ms": 191.096
+      }
+    },
+    "10000": {
+      "PGJsonbStorage": {
+        "time_ms": 18.22
+      },
+      "RelStorage": {
+        "time_ms": 612.854
+      }
+    }
+  },
+  "plone": {
+    "PGJsonbStorage": {
+      "backend": "PGJsonbStorage",
+      "site_creation_ms": 1178.922,
+      "content_creation": {
+        "count": 50,
+        "mean_ms": 30.086,
+        "median_ms": 29.754,
+        "min_ms": 26.995,
+        "max_ms": 48.527,
+        "total_ms": 1504.282
+      },
+      "catalog_query": {
+        "count": 50,
+        "mean_ms": 0.201,
+        "median_ms": 0.18,
+        "min_ms": 0.165,
+        "max_ms": 0.885,
+        "total_ms": 10.063
+      },
+      "content_modification": {
+        "count": 50,
+        "mean_ms": 7.393,
+        "median_ms": 7.3,
+        "min_ms": 6.234,
+        "max_ms": 8.733,
+        "total_ms": 369.667
+      }
+    },
+    "RelStorage": {
+      "backend": "RelStorage",
+      "site_creation_ms": 1056.127,
+      "content_creation": {
+        "count": 50,
+        "mean_ms": 27.032,
+        "median_ms": 26.564,
+        "min_ms": 23.678,
+        "max_ms": 45.331,
+        "total_ms": 1351.583
+      },
+      "catalog_query": {
+        "count": 50,
+        "mean_ms": 0.19,
+        "median_ms": 0.185,
+        "min_ms": 0.165,
+        "max_ms": 0.334,
+        "total_ms": 9.52
+      },
+      "content_modification": {
+        "count": 50,
+        "mean_ms": 6.596,
+        "median_ms": 6.357,
+        "min_ms": 5.951,
+        "max_ms": 8.095,
+        "total_ms": 329.807
+      }
+    }
+  }
+}

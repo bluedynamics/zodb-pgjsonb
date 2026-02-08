@@ -13,13 +13,16 @@ import base64
 import logging
 import os
 import shutil
+import sys
 import tempfile
 import time
+from collections import OrderedDict
 
 import psycopg
 import zope.interface
 from psycopg.rows import dict_row
 from psycopg.types.json import Json
+from psycopg_pool import ConnectionPool
 
 from persistent.TimeStamp import TimeStamp
 from ZODB.BaseStorage import BaseStorage
@@ -47,6 +50,69 @@ from .schema import install_schema
 
 
 logger = logging.getLogger(__name__)
+
+# Default cache size: 64 MB
+DEFAULT_CACHE_LOCAL_MB = 64
+
+
+class LoadCache:
+    """Bounded LRU cache for load() results.
+
+    Stores (pickle_bytes, tid_bytes) keyed by zoid (int).
+    Evicts least-recently-used entries when byte size exceeds the limit.
+    Thread-safety is not needed: each PGJsonbStorageInstance has its own.
+    """
+
+    __slots__ = ("_data", "_size", "_max_size", "hits", "misses")
+
+    def __init__(self, max_mb=DEFAULT_CACHE_LOCAL_MB):
+        self._data = OrderedDict()  # zoid → (data, tid, entry_size)
+        self._size = 0
+        self._max_size = int(max_mb * 1_000_000)
+        self.hits = 0
+        self.misses = 0
+
+    def get(self, zoid):
+        """Look up by zoid. Returns (data, tid) or None. Promotes on hit."""
+        entry = self._data.get(zoid)
+        if entry is not None:
+            self.hits += 1
+            self._data.move_to_end(zoid)
+            return entry[0], entry[1]
+        self.misses += 1
+        return None
+
+    def set(self, zoid, data, tid):
+        """Store (data, tid) for zoid. Evicts LRU if over budget."""
+        entry_size = sys.getsizeof(data) + sys.getsizeof(tid) + 64  # overhead
+        # Remove old entry if exists
+        old = self._data.pop(zoid, None)
+        if old is not None:
+            self._size -= old[2]
+        # Evict LRU until we fit
+        while self._size + entry_size > self._max_size and self._data:
+            _, evicted = self._data.popitem(last=False)
+            self._size -= evicted[2]
+        self._data[zoid] = (data, tid, entry_size)
+        self._size += entry_size
+
+    def invalidate(self, zoid):
+        """Remove a single zoid from the cache."""
+        old = self._data.pop(zoid, None)
+        if old is not None:
+            self._size -= old[2]
+
+    def clear(self):
+        """Remove all entries."""
+        self._data.clear()
+        self._size = 0
+
+    def __len__(self):
+        return len(self._data)
+
+    @property
+    def size_mb(self):
+        return self._size / 1_000_000
 
 
 class PGTransactionRecord(TransactionRecord):
@@ -82,10 +148,12 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
     """
 
     def __init__(self, dsn, name="pgjsonb", history_preserving=False,
-                 blob_temp_dir=None):
+                 blob_temp_dir=None, cache_local_mb=DEFAULT_CACHE_LOCAL_MB,
+                 pool_size=1, pool_max_size=10):
         BaseStorage.__init__(self, name)
         self._dsn = dsn
         self._history_preserving = history_preserving
+        self._cache_local_mb = cache_local_mb
         self._ltid = z64
         self._pack_tid = None  # Integer TID of last pack time
 
@@ -98,6 +166,9 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
             prefix="zodb-pgjsonb-blobs-"
         )
 
+        # Load cache: zoid → (pickle_bytes, tid_bytes), bounded LRU
+        self._load_cache = LoadCache(max_mb=cache_local_mb)
+
         # Cache for conflict resolution: (oid_bytes, tid_bytes) → pickle_bytes
         # In history-free mode, loadSerial can't find old versions after they're
         # overwritten. Caching data from load() makes it available for
@@ -106,6 +177,16 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
 
         # Database connection (schema init + admin queries)
         self._conn = psycopg.connect(dsn, row_factory=dict_row)
+
+        # Connection pool for MVCC instances (autocommit=True, dict_row)
+        self._instance_pool = ConnectionPool(
+            dsn,
+            min_size=pool_size,
+            max_size=pool_max_size,
+            kwargs={"row_factory": dict_row},
+            configure=lambda conn: setattr(conn, "autocommit", True),
+            open=True,
+        )
 
         # Initialize schema
         install_schema(self._conn, history_preserving=history_preserving)
@@ -174,6 +255,12 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
     def load(self, oid, version=""):
         """Load current object state, returning (pickle_bytes, tid_bytes)."""
         zoid = u64(oid)
+
+        # Check load cache first
+        cached = self._load_cache.get(zoid)
+        if cached is not None:
+            return cached
+
         with self._conn.cursor() as cur:
             cur.execute(
                 "SELECT tid, class_mod, class_name, state "
@@ -192,6 +279,7 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
         data = zodb_json_codec.encode_zodb_record(record)
         tid = p64(row["tid"])
         self._serial_cache[(oid, tid)] = data
+        self._load_cache.set(zoid, data, tid)
         return data, tid
 
     def loadBefore(self, oid, tid):
@@ -587,19 +675,20 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
     def iterator(self, start=None, stop=None):
         """Iterate over transactions yielding TransactionRecord objects.
 
-        Uses a dedicated PG connection so iteration doesn't interfere
+        Borrows a connection from the pool so iteration doesn't interfere
         with other storage operations.
 
         In history-free mode, each object appears once at its current TID.
         In history-preserving mode, all revisions are included.
         """
-        conn = psycopg.connect(self._dsn, row_factory=dict_row)
+        conn = self._instance_pool.getconn()
         try:
+            conn.execute("BEGIN ISOLATION LEVEL REPEATABLE READ")
             table = ("object_history" if self._history_preserving
                      else "object_state")
             yield from _iter_transactions(conn, table, start, stop)
         finally:
-            conn.close()
+            self._instance_pool.putconn(conn)
 
     # ── IStorageRestoreable ──────────────────────────────────────────
 
@@ -691,9 +780,11 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
     # ── IStorage: close ──────────────────────────────────────────────
 
     def close(self):
-        """Close all database connections and clean up temp dir."""
+        """Close all database connections, pool, and clean up temp dir."""
         if self._conn and not self._conn.closed:
             self._conn.close()
+        if hasattr(self, "_instance_pool"):
+            self._instance_pool.close()
         if os.path.exists(self._blob_temp_dir):
             shutil.rmtree(self._blob_temp_dir, ignore_errors=True)
 
@@ -725,9 +816,8 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
     def __init__(self, main_storage):
         self._main = main_storage
         self._history_preserving = main_storage._history_preserving
-        self._conn = psycopg.connect(
-            main_storage._dsn, row_factory=dict_row, autocommit=True,
-        )
+        self._instance_pool = main_storage._instance_pool
+        self._conn = self._instance_pool.getconn()
         self._polled_tid = None  # None = never polled, int = last seen TID
         self._in_read_txn = False  # True when inside REPEATABLE READ snapshot
         self._tmp = []
@@ -736,6 +826,8 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
         self._transaction = None
         self._resolved = []
         self._blob_temp_dir = tempfile.mkdtemp(prefix="zodb-pgjsonb-blobs-")
+        # Load cache: zoid → (pickle_bytes, tid_bytes), bounded LRU
+        self._load_cache = LoadCache(max_mb=main_storage._cache_local_mb)
         # Cache for conflict resolution: (oid_bytes, tid_bytes) → pickle_bytes
         self._serial_cache = {}
         # Propagate conflict resolution transform hooks from main storage
@@ -749,10 +841,11 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
         return self._main.new_instance()
 
     def release(self):
-        """Close this instance's PG connection and clean up temp dir."""
+        """Return connection to pool and clean up temp dir."""
         if self._conn and not self._conn.closed:
             self._end_read_txn()
-            self._conn.close()
+            self._instance_pool.putconn(self._conn)
+            self._conn = None
         if os.path.exists(self._blob_temp_dir):
             shutil.rmtree(self._blob_temp_dir, ignore_errors=True)
 
@@ -809,7 +902,10 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
                     (self._polled_tid, new_tid),
                 )
                 rows = cur.fetchall()
-            result = [p64(r["zoid"]) for r in rows]
+            for r in rows:
+                zoid = r["zoid"]
+                result.append(p64(zoid))
+                self._load_cache.invalidate(zoid)
 
         self._polled_tid = new_tid
         return result
@@ -826,6 +922,12 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
     def load(self, oid, version=""):
         """Load current object state."""
         zoid = u64(oid)
+
+        # Check load cache first
+        cached = self._load_cache.get(zoid)
+        if cached is not None:
+            return cached
+
         with self._conn.cursor() as cur:
             cur.execute(
                 "SELECT tid, class_mod, class_name, state "
@@ -844,6 +946,7 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
         data = zodb_json_codec.encode_zodb_record(record)
         tid = p64(row["tid"])
         self._serial_cache[(oid, tid)] = data
+        self._load_cache.set(zoid, data, tid)
         return data, tid
 
     def loadBefore(self, oid, tid):

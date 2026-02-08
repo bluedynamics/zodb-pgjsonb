@@ -43,6 +43,10 @@ test = [
     "testcontainers[postgres]",
     "moto[s3]>=4.0",
 ]
+bench = [
+    "relstorage>=4.0",
+    "psycopg2-binary",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/zodb_pgjsonb"]
@@ -105,3 +109,4 @@ max-doc-length = 120
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["T201"]
+"benchmarks/*" = ["T201"]

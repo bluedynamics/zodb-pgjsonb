@@ -73,17 +73,30 @@ class TestIMVCCStorageInterface:
         inst1.release()
         inst2.release()
 
-    def test_release_closes_connection(self, storage):
+    def test_release_returns_to_pool(self, storage):
         inst = storage.new_instance()
         pg_conn = inst._conn
         assert not pg_conn.closed
         inst.release()
-        assert pg_conn.closed
+        # Connection returned to pool, not closed
+        assert not pg_conn.closed
+        # Instance no longer holds a reference
+        assert inst._conn is None
 
     def test_release_idempotent(self, storage):
         inst = storage.new_instance()
         inst.release()
         inst.release()  # should not raise
+
+    def test_connection_reused_after_release(self, storage):
+        """Released connections are reused by new instances."""
+        inst1 = storage.new_instance()
+        conn1 = inst1._conn
+        inst1.release()
+        # Pool may reuse the same connection
+        inst2 = storage.new_instance()
+        assert not conn1.closed
+        inst2.release()
 
 
 class TestPollInvalidations:

@@ -26,6 +26,29 @@
       </description>
     </key>
 
+    <key name="cache-local-mb" datatype="integer" default="64">
+      <description>
+        Size of the per-instance object cache in megabytes.
+        Caches load() results (pickle bytes) to avoid repeated
+        PostgreSQL round-trips and JSONB transcoding. Set to 0
+        to disable. Default: 64.
+      </description>
+    </key>
+
+    <key name="pool-size" datatype="integer" default="1">
+      <description>
+        Minimum number of connections in the instance connection pool.
+        Set to 0 for on-demand creation. Default: 1.
+      </description>
+    </key>
+
+    <key name="pool-max-size" datatype="integer" default="10">
+      <description>
+        Maximum number of connections in the instance connection pool.
+        Default: 10.
+      </description>
+    </key>
+
   </sectiontype>
 
 </component>
