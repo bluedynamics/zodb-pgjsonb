@@ -269,11 +269,32 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
         - ``get_extra_columns() -> list[ExtraColumn]``
         - ``process(zoid, class_mod, class_name, state) -> dict | None``
 
+        Optionally:
+
+        - ``get_schema_sql() -> str | None``
+          Return DDL to apply (e.g. ALTER TABLE, CREATE INDEX).  Applied
+          once via the storage's own connection (no REPEATABLE READ locks).
+
         ``process`` may modify *state* in-place (e.g. pop annotation keys).
         It returns a dict of ``{column_name: value}`` to be written as extra
         columns alongside the object, or *None* when no extra data applies.
         """
         self._state_processors.append(processor)
+        # Apply processor schema DDL if available
+        if hasattr(processor, "get_schema_sql"):
+            try:
+                sql = processor.get_schema_sql()
+                if sql:
+                    self._conn.execute(sql)
+                    self._conn.commit()
+                    logger.info("Applied schema DDL from %s", type(processor).__name__)
+            except Exception:
+                self._conn.rollback()
+                logger.warning(
+                    "Failed to apply schema DDL from %s",
+                    type(processor).__name__,
+                    exc_info=True,
+                )
 
     def _process_state(self, zoid, class_mod, class_name, state):
         """Run all registered state processors, return merged extra data."""
