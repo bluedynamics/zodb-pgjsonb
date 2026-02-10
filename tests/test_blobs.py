@@ -723,3 +723,210 @@ class TestBlobsHistoryPreserving:
 
         assert state_count >= 1
         assert history_count >= 1
+
+
+class TestSavepointBlobs:
+    """Test that blobs work correctly with ZODB savepoints."""
+
+    def test_savepoint_then_commit(self, db):
+        """Basic savepoint + commit with a blob should work."""
+        conn = db.open()
+        root = conn.root()
+
+        blob = Blob()
+        with blob.open("w") as f:
+            f.write(b"savepoint blob data")
+        root["blob1"] = blob
+
+        txn.savepoint()
+        txn.commit()
+
+        conn2 = db.open()
+        root2 = conn2.root()
+        with root2["blob1"].open("r") as f:
+            assert f.read() == b"savepoint blob data"
+        conn2.close()
+        conn.close()
+
+    def test_multiple_savepoints_with_blobs(self, db):
+        """Multiple savepoints, each adding blobs, then commit."""
+        conn = db.open()
+        root = conn.root()
+
+        blob1 = Blob()
+        with blob1.open("w") as f:
+            f.write(b"blob one")
+        root["blob1"] = blob1
+        txn.savepoint()
+
+        blob2 = Blob()
+        with blob2.open("w") as f:
+            f.write(b"blob two")
+        root["blob2"] = blob2
+        txn.savepoint()
+
+        blob3 = Blob()
+        with blob3.open("w") as f:
+            f.write(b"blob three")
+        root["blob3"] = blob3
+
+        txn.commit()
+
+        conn2 = db.open()
+        root2 = conn2.root()
+        with root2["blob1"].open("r") as f:
+            assert f.read() == b"blob one"
+        with root2["blob2"].open("r") as f:
+            assert f.read() == b"blob two"
+        with root2["blob3"].open("r") as f:
+            assert f.read() == b"blob three"
+        conn2.close()
+        conn.close()
+
+    def test_savepoint_blob_accessible_after_commit(self, db):
+        """Blob from savepoint + dirty object in final commit phase."""
+        conn = db.open()
+        root = conn.root()
+
+        blob = Blob()
+        with blob.open("w") as f:
+            f.write(b"important data")
+        root["myblob"] = blob
+        txn.savepoint()
+
+        root["other"] = PersistentMapping()
+        root["other"]["key"] = "value"
+
+        txn.commit()
+
+        conn2 = db.open()
+        root2 = conn2.root()
+        with root2["myblob"].open("r") as f:
+            assert f.read() == b"important data"
+        assert root2["other"]["key"] == "value"
+        conn2.close()
+        conn.close()
+
+    def test_savepoint_rollback_then_new_blob_commit(self, db):
+        """Rollback a savepoint, add a new blob, commit."""
+        conn = db.open()
+        root = conn.root()
+
+        sp = txn.savepoint()
+
+        blob1 = Blob()
+        with blob1.open("w") as f:
+            f.write(b"will be rolled back")
+        root["blob1"] = blob1
+
+        sp.rollback()
+
+        blob2 = Blob()
+        with blob2.open("w") as f:
+            f.write(b"this one survives")
+        root["blob2"] = blob2
+
+        txn.commit()
+
+        conn2 = db.open()
+        root2 = conn2.root()
+        assert "blob1" not in root2
+        with root2["blob2"].open("r") as f:
+            assert f.read() == b"this one survives"
+        conn2.close()
+        conn.close()
+
+
+class TestBatchSavepointBlobs:
+    """Stress test: batch import with periodic savepoints — mimics plone.exportimport.
+
+    plone.exportimport creates objects with blobs in a loop, calling
+    transaction.savepoint() every N objects. During savepoint commit,
+    TmpStore.close() deletes the savepoint directory (.spb files).
+    The real storage must have staged the blob data before that happens.
+    """
+
+    def _batch_import(self, database, total=20, savepoint_interval=5):
+        conn = database.open()
+        root = conn.root()
+        root["content"] = PersistentMapping()
+
+        for i in range(total):
+            blob = Blob()
+            with blob.open("w") as f:
+                f.write(f"blob content {i:04d}".encode())
+            root["content"][f"item-{i:04d}"] = PersistentMapping()
+            root["content"][f"item-{i:04d}"]["file"] = blob
+
+            if (i + 1) % savepoint_interval == 0:
+                txn.savepoint()
+
+        txn.commit()
+
+        # Verify all blobs survived
+        conn2 = database.open()
+        root2 = conn2.root()
+        for i in range(total):
+            with root2["content"][f"item-{i:04d}"]["file"].open("r") as f:
+                assert f.read() == f"blob content {i:04d}".encode()
+        conn2.close()
+        conn.close()
+
+    def test_batch_import_pg(self, db):
+        """20 blobs with savepoints every 5, PG-only storage."""
+        self._batch_import(db)
+
+    def test_batch_import_s3(self, s3_db):
+        """20 blobs with savepoints every 5, S3-tiered storage."""
+        self._batch_import(s3_db)
+
+    def test_mixed_blob_sizes_s3(self, s3_db):
+        """Mix of small and large blobs with savepoints (tests S3 threshold)."""
+        conn = s3_db.open()
+        root = conn.root()
+        root["content"] = PersistentMapping()
+
+        for i in range(10):
+            blob = Blob()
+            # Alternate small (<1KB) and large (>1KB) to exercise both paths
+            size = 100 if i % 2 == 0 else 2048
+            with blob.open("w") as f:
+                f.write(bytes([i % 256]) * size)
+            root["content"][f"item-{i}"] = blob
+
+            if (i + 1) % 3 == 0:
+                txn.savepoint()
+
+        txn.commit()
+
+        conn2 = s3_db.open()
+        root2 = conn2.root()
+        for i in range(10):
+            size = 100 if i % 2 == 0 else 2048
+            with root2["content"][f"item-{i}"].open("r") as f:
+                assert f.read() == bytes([i % 256]) * size
+        conn2.close()
+        conn.close()
+
+    def test_savepoint_then_modify_blob_then_commit(self, db):
+        """Savepoint, then overwrite same blob, then commit (last write wins)."""
+        conn = db.open()
+        root = conn.root()
+
+        blob = Blob()
+        with blob.open("w") as f:
+            f.write(b"version 1")
+        root["doc"] = blob
+        txn.savepoint()
+
+        # Overwrite the same blob
+        with root["doc"].open("w") as f:
+            f.write(b"version 2")
+        txn.commit()
+
+        conn2 = db.open()
+        root2 = conn2.root()
+        with root2["doc"].open("r") as f:
+            assert f.read() == b"version 2"
+        conn2.close()
+        conn.close()

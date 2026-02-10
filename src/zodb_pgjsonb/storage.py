@@ -198,7 +198,7 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
 
         # Pending stores for current transaction (direct use only)
         self._tmp = []
-        self._blob_tmp = []  # pending blob stores: [(oid_int, blob_path), ...]
+        self._blob_tmp = {}  # pending blob stores: {oid_int: blob_path}
 
         # Blob temp directory
         self._blob_temp_dir = blob_temp_dir or tempfile.mkdtemp(
@@ -556,7 +556,7 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
             _batch_delete_objects(cur, deletes, tid_int, hp)
             _batch_write_blobs(
                 cur,
-                self._blob_tmp,
+                self._blob_tmp.items(),
                 tid_int,
                 hp,
                 s3_client=self._s3_client,
@@ -611,7 +611,7 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
         except Exception:  # pragma: no cover
             logger.exception("Error during rollback")
         # Clean up queued blob temp files
-        for _, blob_path in self._blob_tmp:
+        for blob_path in self._blob_tmp.values():
             if os.path.exists(blob_path):
                 os.unlink(blob_path)
         self._blob_tmp.clear()
@@ -858,7 +858,10 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
         """Restore object data + blob without conflict checking."""
         self.restore(oid, serial, data, "", prev_txn, transaction)
         if blobfilename is not None:
-            self._blob_tmp.append((u64(oid), blobfilename))
+            zoid = u64(oid)
+            staged = os.path.join(self._blob_temp_dir, f"{zoid:016x}.pending.blob")
+            shutil.move(blobfilename, staged)
+            self._blob_tmp[zoid] = staged
 
     # ── IBlobStorage ─────────────────────────────────────────────────
 
@@ -869,7 +872,12 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
         if version:
             raise TypeError("versions are not supported")
         self.store(oid, oldserial, data, "", transaction)
-        self._blob_tmp.append((u64(oid), blobfilename))
+        # Stage the blob to a stable location — the caller (e.g. TmpStore
+        # during savepoint commit) may delete the source after we return.
+        zoid = u64(oid)
+        staged = os.path.join(self._blob_temp_dir, f"{zoid:016x}.pending.blob")
+        shutil.move(blobfilename, staged)
+        self._blob_tmp[zoid] = staged
 
     def loadBlob(self, oid, serial):
         """Return path to a file containing the blob data.
@@ -879,6 +887,10 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
         """
         zoid = u64(oid)
         tid_int = u64(serial)
+        # Check pending blobs first (staged in current txn, not yet in DB)
+        pending = self._blob_tmp.get(zoid)
+        if pending is not None and os.path.exists(pending):
+            return pending
         path = os.path.join(self._blob_temp_dir, f"{zoid:016x}-{tid_int:016x}.blob")
         if os.path.exists(path):
             return path
@@ -968,7 +980,7 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
         self._polled_tid = None  # None = never polled, int = last seen TID
         self._in_read_txn = False  # True when inside REPEATABLE READ snapshot
         self._tmp = []
-        self._blob_tmp = []  # pending blob stores: [(oid_int, blob_path), ...]
+        self._blob_tmp = {}  # pending blob stores: {oid_int: blob_path}
         self._tid = None
         self._transaction = None
         self._resolved = []
@@ -1193,7 +1205,7 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
         self._transaction = transaction
         self._resolved = []
         self._tmp = []
-        self._blob_tmp = []
+        self._blob_tmp = {}
         self._read_conflicts = []
         self._conn.execute("BEGIN")
         self._conn.execute("SELECT pg_advisory_xact_lock(0)")
@@ -1244,7 +1256,7 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
             _batch_delete_objects(cur, deletes, tid_int, hp)
             _batch_write_blobs(
                 cur,
-                self._blob_tmp,
+                self._blob_tmp.items(),
                 tid_int,
                 hp,
                 s3_client=self._s3_client,
@@ -1273,7 +1285,7 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
             logger.exception("Error during rollback")
         self._tmp.clear()
         # Clean up queued blob temp files
-        for _, blob_path in self._blob_tmp:
+        for blob_path in self._blob_tmp.values():
             if os.path.exists(blob_path):
                 os.unlink(blob_path)
         self._blob_tmp.clear()
@@ -1294,7 +1306,12 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
         if version:
             raise TypeError("versions are not supported")
         self.store(oid, oldserial, data, "", transaction)
-        self._blob_tmp.append((u64(oid), blobfilename))
+        # Stage the blob to a stable location — the caller (e.g. TmpStore
+        # during savepoint commit) may delete the source after we return.
+        zoid = u64(oid)
+        staged = os.path.join(self._blob_temp_dir, f"{zoid:016x}.pending.blob")
+        shutil.move(blobfilename, staged)
+        self._blob_tmp[zoid] = staged
 
     def loadBlob(self, oid, serial):
         """Return path to a file containing the blob data.
@@ -1304,6 +1321,10 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
         """
         zoid = u64(oid)
         tid_int = u64(serial)
+        # Check pending blobs first (staged in current txn, not yet in DB)
+        pending = self._blob_tmp.get(zoid)
+        if pending is not None and os.path.exists(pending):
+            return pending
         path = os.path.join(self._blob_temp_dir, f"{zoid:016x}-{tid_int:016x}.blob")
         if os.path.exists(path):
             return path
@@ -1454,7 +1475,10 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
         """Restore object data + blob without conflict checking."""
         self.restore(oid, serial, data, "", prev_txn, transaction)
         if blobfilename is not None:
-            self._blob_tmp.append((u64(oid), blobfilename))
+            zoid = u64(oid)
+            staged = os.path.join(self._blob_temp_dir, f"{zoid:016x}.pending.blob")
+            shutil.move(blobfilename, staged)
+            self._blob_tmp[zoid] = staged
 
     def registerDB(self, db):
         pass
