@@ -405,6 +405,7 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
                 "SELECT tid, class_mod, class_name, state "
                 "FROM object_state WHERE zoid = %s",
                 (zoid,),
+                prepare=True,
             )
             row = cur.fetchone()
 
@@ -447,6 +448,7 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
                 f"SELECT class_mod, class_name, state "
                 f"FROM {table} WHERE zoid = %s AND tid = %s",
                 (zoid, tid_int),
+                prepare=True,
             )
             row = cur.fetchone()
 
@@ -1077,6 +1079,7 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
                 "SELECT tid, class_mod, class_name, state "
                 "FROM object_state WHERE zoid = %s",
                 (zoid,),
+                prepare=True,
             )
             row = cur.fetchone()
 
@@ -1119,6 +1122,7 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
                 f"SELECT class_mod, class_name, state "
                 f"FROM {table} WHERE zoid = %s AND tid = %s",
                 (zoid, tid_int),
+                prepare=True,
             )
             row = cur.fetchone()
 
@@ -2025,6 +2029,7 @@ def _loadBefore_hf(cur, oid, zoid, tid_int):
     cur.execute(
         "SELECT tid, class_mod, class_name, state FROM object_state WHERE zoid = %s",
         (zoid,),
+        prepare=True,
     )
     row = cur.fetchone()
     if row is None:
@@ -2051,6 +2056,7 @@ def _loadBefore_hp(cur, oid, zoid, tid_int):
         "FROM object_history WHERE zoid = %s AND tid < %s "
         "ORDER BY tid DESC LIMIT 1",
         (zoid, tid_int),
+        prepare=True,
     )
     row = cur.fetchone()
     if row is None:
@@ -2069,6 +2075,7 @@ def _loadBefore_hp(cur, oid, zoid, tid_int):
     cur.execute(
         "SELECT MIN(tid) AS next_tid FROM object_history WHERE zoid = %s AND tid > %s",
         (zoid, row["tid"]),
+        prepare=True,
     )
     next_row = cur.fetchone()
     end_tid = p64(next_row["next_tid"]) if next_row["next_tid"] else None
