@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.0.0
 
 ### Added
 
@@ -37,3 +37,43 @@
 
 - **Prepared statements**: Added `prepare=True` to hot-path queries
   (`load`, `loadSerial`, `loadBefore`) for faster repeated execution.
+
+- **Removed GIN index on state JSONB**: The `jsonb_path_ops` GIN index
+  indexed every key-path and value, causing significant write amplification.
+  With plone-pgcatalog providing dedicated query columns, direct state
+  JSONB queries are no longer needed in production.
+
+## 1.0.0a1
+
+Initial feature-complete release.
+
+### Added
+
+- **Core IStorage**: Full two-phase commit (2PC) with ZODB.DB integration.
+- **IMVCCStorage**: Per-connection MVCC instances with REPEATABLE READ
+  snapshot isolation and advisory lock TID serialization.
+- **IBlobStorage**: Blob support using PostgreSQL bytea with deterministic
+  filenames for `Blob.committed()` compatibility.
+- **S3 tiered blob storage**: Configurable threshold to offload large blobs
+  to S3 while keeping small blobs in PostgreSQL.
+- **History-preserving mode**: Dual-write to `object_state` and
+  `object_history` with full `IStorageUndoable` support (undo, undoLog,
+  undoInfo).
+- **IStorageIteration / IStorageRestoreable**: Transaction and record
+  iteration for backup/restore tooling.
+- **Conflict resolution**: Inherited `tryToResolveConflict` with serial
+  cache for correct `loadSerial` during conflict resolution.
+- **ZConfig integration**: `%import zodb_pgjsonb` with `<pgjsonb>` section
+  for Zope/Plone deployments.
+- **PG null-byte sanitization**: Automatic `\u0000` handling with `@ns`
+  marker for JSONB compatibility.
+
+### Optimized
+
+- **LRU load cache**: Configurable in-memory cache for `load()` calls.
+- **Connection pooling**: psycopg3 connection pool with configurable size.
+- **Batch SQL writes**: `executemany()` for pipelined store performance
+  during `tpc_vote()`.
+- **Single-pass store**: `decode_zodb_record_for_pg` for combined class
+  extraction and state decoding.
+- **Reduced default cache**: 16 MB per instance (down from 64 MB).
