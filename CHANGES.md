@@ -27,3 +27,13 @@
   (e.g. `ALTER TABLE`, `CREATE INDEX`). The DDL is applied using the
   storage's own connection during `register_state_processor()`, avoiding
   REPEATABLE READ lock conflicts with pool connections.
+
+### Optimized
+
+- **Batch conflict detection**: Conflict checks are now batched into a
+  single `SELECT ... WHERE zoid = ANY(...)` query in `tpc_vote()` instead
+  of individual per-object queries in `store()`. Eliminates N-1 SQL
+  round trips per transaction while holding the advisory lock.
+
+- **Prepared statements**: Added `prepare=True` to hot-path queries
+  (`load`, `loadSerial`, `loadBefore`) for faster repeated execution.

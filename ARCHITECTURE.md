@@ -113,7 +113,7 @@ CREATE TABLE pack_state (
 - **`state` is `@s` only**: the `@cls` marker is extracted into `class_mod`/`class_name` columns, saving JSONB space and enabling efficient class-based queries
 - **`state_size`**: original pickle size, useful for monitoring
 - **Advisory locks** for commit serialization: `pg_advisory_xact_lock(0)`, released automatically on transaction end
-- **GIN index with `jsonb_path_ops`**: enables `@>` containment queries efficiently
+- **GIN index on `refs`**: enables `@>` containment queries for pack/GC
 - **`refs` column**: pre-extracted persistent reference OIDs, enables pure SQL pack/GC
 
 ### Pack via Pure SQL Graph Traversal
