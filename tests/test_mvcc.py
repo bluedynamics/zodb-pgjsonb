@@ -60,6 +60,12 @@ class TestIMVCCStorageInterface:
         assert inst._conn is not storage._conn
         inst.release()
 
+    def test_pg_connection_property(self, storage):
+        inst = storage.new_instance()
+        assert inst.pg_connection is inst._conn
+        inst.release()
+        assert inst.pg_connection is None
+
     def test_multiple_instances(self, storage):
         inst1 = storage.new_instance()
         inst2 = storage.new_instance()

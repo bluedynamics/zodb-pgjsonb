@@ -1015,6 +1015,15 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
         self._crs_transform_record_data = main_storage._crs_transform_record_data
         self._crs_untransform_record_data = main_storage._crs_untransform_record_data
 
+    @property
+    def pg_connection(self):
+        """The underlying psycopg connection for read queries.
+
+        Shares the same REPEATABLE READ snapshot used for ZODB loads,
+        so catalog queries see a consistent point-in-time view.
+        """
+        return self._conn
+
     # ── IMVCCStorage ─────────────────────────────────────────────────
 
     def new_instance(self):

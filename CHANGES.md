@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.1.0
+
+- Added `pg_connection` read-only property to `PGJsonbStorageInstance`,
+  exposing the underlying psycopg connection for read queries that need
+  to share the same REPEATABLE READ snapshot as ZODB loads (e.g. catalog
+  queries in plone-pgcatalog).
+
 ## 1.0.2
 
 - Security hardening: validate `ExtraColumn.name` against SQL identifier pattern to prevent injection via state processor plugins.
