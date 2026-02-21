@@ -24,6 +24,56 @@ def _clean_db():
     conn.close()
 
 
+class TestDsnValidation:
+    def test_empty_dsn_rejected(self):
+        """Empty DSN should raise ValueError."""
+        from unittest.mock import MagicMock
+        from zodb_pgjsonb.config import PGJsonbStorageFactory
+
+        factory = PGJsonbStorageFactory.__new__(PGJsonbStorageFactory)
+        factory.config = MagicMock()
+        factory.config.dsn = ""
+        with pytest.raises(ValueError, match="must not be empty"):
+            factory.open()
+
+    def test_invalid_dsn_format_rejected(self):
+        """DSN without = or postgresql:// prefix should raise."""
+        from unittest.mock import MagicMock
+        from zodb_pgjsonb.config import PGJsonbStorageFactory
+
+        factory = PGJsonbStorageFactory.__new__(PGJsonbStorageFactory)
+        factory.config = MagicMock()
+        factory.config.dsn = "not a valid dsn"
+        with pytest.raises(ValueError, match="Invalid DSN format"):
+            factory.open()
+
+    def test_keyvalue_dsn_accepted(self):
+        """Key=value DSN should pass validation (may fail later on connect)."""
+        from unittest.mock import MagicMock
+        from zodb_pgjsonb.config import PGJsonbStorageFactory
+
+        factory = PGJsonbStorageFactory.__new__(PGJsonbStorageFactory)
+        factory.config = MagicMock()
+        factory.config.dsn = "dbname=test host=localhost"
+        # Will fail at PGJsonbStorage() creation but should pass DSN validation
+        with pytest.raises(Exception) as exc_info:
+            factory.open()
+        # Should NOT be a ValueError about DSN format
+        assert "Invalid DSN format" not in str(exc_info.value)
+
+    def test_uri_dsn_accepted(self):
+        """PostgreSQL URI should pass validation."""
+        from unittest.mock import MagicMock
+        from zodb_pgjsonb.config import PGJsonbStorageFactory
+
+        factory = PGJsonbStorageFactory.__new__(PGJsonbStorageFactory)
+        factory.config = MagicMock()
+        factory.config.dsn = "postgresql://user:pass@localhost/db"
+        with pytest.raises(Exception) as exc_info:
+            factory.open()
+        assert "Invalid DSN format" not in str(exc_info.value)
+
+
 class TestZConfig:
     """Test that ZConfig <pgjsonb> section creates a working storage."""
 

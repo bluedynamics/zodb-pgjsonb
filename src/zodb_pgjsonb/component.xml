@@ -49,6 +49,14 @@
       </description>
     </key>
 
+    <key name="pool-timeout" datatype="float" default="30.0">
+      <description>
+        Connection pool acquisition timeout in seconds.
+        Raises StorageError if a connection cannot be acquired within
+        this time.
+      </description>
+    </key>
+
     <!-- S3 tiered blob storage (optional, requires zodb-pgjsonb[s3]) -->
 
     <key name="blob-threshold" datatype="byte-size" default="1MB">

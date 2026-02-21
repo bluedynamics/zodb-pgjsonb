@@ -11,6 +11,21 @@ class PGJsonbStorageFactory(BaseConfig):
 
         config = self.config
 
+        # Basic DSN validation
+        dsn = config.dsn
+        if not dsn or not dsn.strip():
+            raise ValueError("DSN must not be empty")
+        if not (
+            "=" in dsn  # key=value format
+            or dsn.startswith("postgresql://")  # URI format
+            or dsn.startswith("postgres://")  # URI format (alias)
+        ):
+            raise ValueError(
+                f"Invalid DSN format: {dsn!r}. "
+                "Expected key=value format (e.g. 'dbname=mydb host=localhost') "
+                "or URI format (e.g. 'postgresql://user:pass@host/db')"
+            )
+
         # Build S3 client + blob cache if bucket is configured.
         # Imports are lazy so zodb_s3blobs is only required when S3
         # is actually configured (optional dependency via [s3] extra).
@@ -50,6 +65,7 @@ class PGJsonbStorageFactory(BaseConfig):
             cache_local_mb=config.cache_local_mb,
             pool_size=config.pool_size,
             pool_max_size=config.pool_max_size,
+            pool_timeout=config.pool_timeout,
             s3_client=s3_client,
             blob_cache=blob_cache,
             blob_threshold=getattr(config, "blob_threshold", 1024 * 1024),

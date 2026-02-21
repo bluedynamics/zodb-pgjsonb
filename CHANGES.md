@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.2.1
+
+Security review fixes (addresses #7):
+
+- **PG-H1:** Strengthen ExtraColumn / register_state_processor docstrings with
+  security guidance for SQL expressions.
+- **PG-H2:** Replace unrestricted `zodb_loads` with `_RestrictedUnpickler` for
+  legacy pickle extension data (blocks arbitrary code execution).
+- **PG-H3:** Fix DSN password masking regex to handle quoted passwords.
+- **PG-M1:** Add SECURITY NOTE to `_batch_write_objects()` about dynamic SQL
+  from `ExtraColumn.value_expr`.
+- **PG-M2:** Expand `_new_tid()` docstring about advisory lock serialization.
+- **PG-M3:** Add `pool_timeout` parameter (default 30s) to prevent unbounded
+  connection waits; exposed in ZConfig as `pool-timeout`.
+- **PG-M4:** Remove `errors="surrogatepass"` from `_unsanitize_from_pg()` to
+  reject invalid surrogate bytes instead of silently accepting them.
+- **PG-L1:** Document PostgreSQL recursive CTE depth behavior in packer.
+- **PG-L2:** Add DSN format validation in ZConfig factory (`config.py`).
+
 ## 1.2.0
 
 - Add `finalize(cursor)` hook to state processor protocol [#5]

@@ -12,7 +12,11 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# Reachability query: find all objects reachable from root (zoid=0)
+# Reachability query: find all objects reachable from root (zoid=0).
+# PostgreSQL recursive CTEs terminate naturally when the recursive term
+# produces no new rows — there is no explicit depth limit.  For very
+# large databases with deep reference chains, ensure adequate work_mem
+# and consider setting statement_timeout to prevent runaway queries.
 REACHABLE_QUERY = """\
 WITH RECURSIVE reachable AS (
     SELECT zoid FROM object_state WHERE zoid = 0

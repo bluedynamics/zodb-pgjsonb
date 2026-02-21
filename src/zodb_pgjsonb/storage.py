@@ -36,8 +36,10 @@ from ZODB.utils import z64
 
 import base64
 import dataclasses
+import io
 import logging
 import os
+import pickle
 import psycopg
 import re
 import shutil
@@ -67,10 +69,13 @@ class ExtraColumn:
             ``"EXCLUDED.{name}"`` when *None*.
 
     Security note:
-        State processors are trusted code — ``value_expr`` and ``update_expr``
-        are interpolated into SQL.  Only register processors from sources you
-        trust.  Column names are validated; expressions are not, because they
-        may legitimately contain SQL function calls.
+        **WARNING: State processors run with full SQL injection capability.**
+        ``value_expr`` and ``update_expr`` are interpolated directly into
+        INSERT statements without escaping.  Only register processors from
+        trusted, audited code.  A compromised processor can read, modify, or
+        delete any data in the database.  Column names are validated against
+        a strict identifier pattern; expressions are not, because they may
+        legitimately contain SQL function calls.
     """
 
     name: str
@@ -194,6 +199,7 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
         cache_local_mb=DEFAULT_CACHE_LOCAL_MB,
         pool_size=1,
         pool_max_size=10,
+        pool_timeout=30.0,
         s3_client=None,
         blob_cache=None,
         blob_threshold=1_048_576,
@@ -245,6 +251,7 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
             dsn,
             min_size=pool_size,
             max_size=pool_max_size,
+            timeout=pool_timeout,
             kwargs={"row_factory": dict_row},
             configure=lambda conn: setattr(conn, "autocommit", True),
             open=True,
@@ -301,6 +308,9 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
         ``process`` may modify *state* in-place (e.g. pop annotation keys).
         It returns a dict of ``{column_name: value}`` to be written as extra
         columns alongside the object, or *None* when no extra data applies.
+
+        **Security:** Processors have full SQL access via ``ExtraColumn.value_expr``.
+        Only register processors from trusted, audited sources.
         """
         self._state_processors.append(processor)
         # Apply processor schema DDL if available
@@ -400,6 +410,12 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
 
         Called by instances while holding the PG advisory lock.
         Uses BaseStorage's _lock for Python-level thread safety.
+
+        Note: All write transactions are serialized through a single
+        advisory lock (pg_advisory_xact_lock(0)).  This is a deliberate
+        simplicity trade-off: it guarantees correct TID ordering but
+        limits write throughput to one transaction at a time.  For
+        higher write throughput, consider OID-range-based advisory locks.
         """
         with self._lock:
             now = time.time()
@@ -1524,7 +1540,7 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
         self.release()
 
 
-_DSN_PASSWORD_RE = re.compile(r"(password\s*=\s*)\S+", re.IGNORECASE)
+_DSN_PASSWORD_RE = re.compile(r"(password\s*=\s*)(\S+|'[^']*')", re.IGNORECASE)
 
 
 def _mask_dsn(dsn):
@@ -1568,11 +1584,51 @@ def _serialize_extension(ext):
     return b""
 
 
+class _RestrictedUnpickler(pickle.Unpickler):
+    """Unpickler that only allows safe built-in types.
+
+    Used for legacy extension data that may be stored as pickle.
+    Blocks arbitrary code execution from crafted pickle payloads.
+    """
+
+    _SAFE_BUILTINS = frozenset(
+        {
+            "dict",
+            "list",
+            "tuple",
+            "set",
+            "frozenset",
+            "str",
+            "bytes",
+            "int",
+            "float",
+            "bool",
+            "complex",
+        }
+    )
+
+    def find_class(self, module, name):
+        import builtins
+
+        if module == "builtins" and name in self._SAFE_BUILTINS:
+            return getattr(builtins, name)
+        raise pickle.UnpicklingError(
+            f"Restricted unpickler: {module}.{name} is not allowed"
+        )
+
+
+def _restricted_loads(data):
+    """Load pickle data using the restricted unpickler (safe types only)."""
+    return _RestrictedUnpickler(io.BytesIO(data)).load()
+
+
 def _deserialize_extension(ext_data):
     """Deserialize extension bytes from PG BYTEA back to a dict.
 
-    Stored as JSON by _serialize_extension.  Falls back to pickle
-    for legacy data written before JSON serialization was in place.
+    Stored as JSON by _serialize_extension.  Falls back to a restricted
+    unpickler for legacy data written before JSON serialization was in place.
+    The restricted unpickler only allows safe types (dict, str, bytes, int,
+    float, bool, list, tuple).
     """
     import json
 
@@ -1586,22 +1642,12 @@ def _deserialize_extension(ext_data):
             return result
     except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
         pass
-    # Fallback: try pickle (legacy data)
+    # Fallback: restricted unpickle (legacy data only — safe types)
     try:
-        from ZODB._compat import loads as zodb_loads
-
-        result = zodb_loads(ext_data)
+        result = _restricted_loads(ext_data)
         if isinstance(result, dict):
             return result
-    except (
-        ImportError,
-        TypeError,
-        KeyError,
-        AttributeError,
-        EOFError,
-        ValueError,
-        OverflowError,
-    ):
+    except Exception:
         pass
     return {}
 
@@ -1918,6 +1964,9 @@ def _batch_write_objects(
     additional columns are included in the ``object_state`` INSERT.
     History tables always use the base columns only.
     """
+    # SECURITY NOTE: Table names (object_state, object_history) are string
+    # constants, not user input.  If table names are ever made configurable,
+    # use psycopg.sql.Identifier() to prevent SQL injection.
     if not objects:
         return
 
@@ -2175,10 +2224,7 @@ def _unsanitize_from_pg(obj):
     """
     if isinstance(obj, dict):
         if "@ns" in obj and len(obj) == 1:
-            return base64.b64decode(obj["@ns"]).decode(
-                "utf-8",
-                errors="surrogatepass",
-            )
+            return base64.b64decode(obj["@ns"]).decode("utf-8")
         new = {}
         changed = False
         for k, v in obj.items():
