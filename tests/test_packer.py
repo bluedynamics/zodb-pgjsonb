@@ -74,10 +74,10 @@ def _seed_root_and_orphan(cur):
 
 
 class TestPackerHPWithoutPackTid:
-    """HP mode with pack_time=None — covers lines 103, 118, 125-126."""
+    """HP mode with pack_time=None — covers unreachable object/blob cleanup."""
 
     def test_hp_no_pack_tid_cleans_unreachable_history(self, hp_conn):
-        """object_history + blob_history of unreachable objects are deleted."""
+        """object_history + blob_state of unreachable objects are deleted."""
         with hp_conn.cursor() as cur:
             tid = _seed_root_and_orphan(cur)
 
@@ -88,25 +88,27 @@ class TestPackerHPWithoutPackTid:
                 "VALUES (99, %s, 'some.module', 'Orphan', '{}', 2, '{}')",
                 (tid,),
             )
+            # Blob for the orphan in blob_state (with S3 key)
             cur.execute(
-                "INSERT INTO blob_history (zoid, tid, blob_size, s3_key) "
+                "INSERT INTO blob_state (zoid, tid, blob_size, s3_key) "
                 "VALUES (99, %s, 100, 'orphan/blob.dat')",
                 (tid,),
             )
         hp_conn.commit()
 
-        deleted_objects, _deleted_blobs, s3_keys = pack(
+        deleted_objects, deleted_blobs, s3_keys = pack(
             hp_conn, pack_time=None, history_preserving=True
         )
 
         assert deleted_objects == 1  # orphan removed from object_state
-        assert s3_keys == ["orphan/blob.dat"]  # s3_key collected from blob_history
+        assert deleted_blobs == 1  # orphan blob removed from blob_state
+        assert s3_keys == ["orphan/blob.dat"]  # s3_key collected
 
         # Verify history tables are clean
         with hp_conn.cursor() as cur:
             cur.execute("SELECT COUNT(*) FROM object_history WHERE zoid = 99")
             assert cur.fetchone()[0] == 0
-            cur.execute("SELECT COUNT(*) FROM blob_history WHERE zoid = 99")
+            cur.execute("SELECT COUNT(*) FROM blob_state WHERE zoid = 99")
             assert cur.fetchone()[0] == 0
 
 
@@ -136,10 +138,11 @@ class TestPackerS3KeyCollection:
         assert deleted_blobs == 1
         assert s3_keys == ["blobs/orphan-99.dat"]
 
-    def test_hp_old_blob_history_s3_keys_collected(self, hp_conn):
-        """Old blob_history S3 keys returned when packing with pack_tid (HP).
+    def test_hp_old_blob_state_revisions_cleaned(self, hp_conn):
+        """Old blob_state revisions for reachable objects are cleaned by pack.
 
-        Covers lines 159-160.
+        blob_state PK is (zoid, tid), so old versions accumulate. Pack
+        removes superseded revisions and collects their S3 keys.
         """
         from ZODB.utils import p64
 
@@ -166,21 +169,14 @@ class TestPackerS3KeyCollection:
                 "'{\"v\": 1}', 10, '{}')",
                 (tid1,),
             )
+            # Two blob_state revisions for root, both with S3 keys
             cur.execute(
-                "INSERT INTO object_history "
-                "(zoid, tid, class_mod, class_name, state, state_size, refs) "
-                "VALUES (0, %s, 'persistent.mapping', 'PersistentMapping', "
-                "'{\"v\": 2}', 10, '{}')",
-                (tid2,),
-            )
-            # Two blob_history revisions for root, both with S3 keys
-            cur.execute(
-                "INSERT INTO blob_history (zoid, tid, blob_size, s3_key) "
+                "INSERT INTO blob_state (zoid, tid, blob_size, s3_key) "
                 "VALUES (0, %s, 100, 'blobs/root-v1.dat')",
                 (tid1,),
             )
             cur.execute(
-                "INSERT INTO blob_history (zoid, tid, blob_size, s3_key) "
+                "INSERT INTO blob_state (zoid, tid, blob_size, s3_key) "
                 "VALUES (0, %s, 200, 'blobs/root-v2.dat')",
                 (tid2,),
             )
@@ -192,10 +188,10 @@ class TestPackerS3KeyCollection:
             hp_conn, pack_time=pack_time, history_preserving=True
         )
 
-        # The old blob_history revision (tid1) should be deleted, its s3_key collected
+        # The old blob_state revision (tid1) should be deleted, its s3_key collected
         assert "blobs/root-v1.dat" in s3_keys
         # The current revision (tid2) should survive
         with hp_conn.cursor() as cur:
-            cur.execute("SELECT s3_key FROM blob_history WHERE zoid = 0")
+            cur.execute("SELECT s3_key FROM blob_state WHERE zoid = 0")
             remaining = [r[0] for r in cur.fetchall()]
         assert "blobs/root-v2.dat" in remaining

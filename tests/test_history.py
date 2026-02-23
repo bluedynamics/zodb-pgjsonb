@@ -70,8 +70,10 @@ class TestHistoryPreservingSchema:
         pg_conn.close()
 
         assert "object_history" in tables
-        assert "blob_history" in tables
         assert "pack_state" in tables
+        # blob_history is no longer created for new installations
+        # (blob_state keeps all versions via PK (zoid, tid))
+        assert "blob_history" not in tables
 
     def test_history_preserving_flag(self, hp_storage):
         assert hp_storage._history_preserving is True

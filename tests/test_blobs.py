@@ -701,8 +701,8 @@ class TestBlobsHistoryPreserving:
         yield database
         database.close()
 
-    def test_blob_writes_to_blob_history(self, hp_db):
-        """HP mode writes blobs to both blob_state and blob_history."""
+    def test_blob_stored_in_blob_state(self, hp_db):
+        """HP mode writes blobs to blob_state (single source of truth)."""
         from psycopg.rows import dict_row
 
         import psycopg
@@ -717,12 +717,13 @@ class TestBlobsHistoryPreserving:
         with pg_conn.cursor() as cur:
             cur.execute("SELECT COUNT(*) AS cnt FROM blob_state")
             state_count = cur.fetchone()["cnt"]
-            cur.execute("SELECT COUNT(*) AS cnt FROM blob_history")
-            history_count = cur.fetchone()["cnt"]
+            # blob_history is no longer created for new installations
+            cur.execute("SELECT to_regclass('blob_history') IS NOT NULL AS exists")
+            has_blob_history = cur.fetchone()["exists"]
         pg_conn.close()
 
         assert state_count >= 1
-        assert history_count >= 1
+        assert not has_blob_history
 
 
 class TestSavepointBlobs:

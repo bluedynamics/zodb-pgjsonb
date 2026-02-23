@@ -478,14 +478,26 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
 
         zoid = u64(oid)
         tid_int = u64(serial)
-        table = "object_history" if self._history_preserving else "object_state"
         with self._conn.cursor() as cur:
-            cur.execute(
-                f"SELECT class_mod, class_name, state "
-                f"FROM {table} WHERE zoid = %s AND tid = %s",
-                (zoid, tid_int),
-                prepare=True,
-            )
+            if self._history_preserving:
+                cur.execute(
+                    "SELECT class_mod, class_name, state FROM ("
+                    "  SELECT class_mod, class_name, state"
+                    "  FROM object_history WHERE zoid = %s AND tid = %s"
+                    "  UNION"
+                    "  SELECT class_mod, class_name, state"
+                    "  FROM object_state WHERE zoid = %s AND tid = %s"
+                    ") sub LIMIT 1",
+                    (zoid, tid_int, zoid, tid_int),
+                    prepare=True,
+                )
+            else:
+                cur.execute(
+                    "SELECT class_mod, class_name, state "
+                    "FROM object_state WHERE zoid = %s AND tid = %s",
+                    (zoid, tid_int),
+                    prepare=True,
+                )
             row = cur.fetchone()
 
         if row is None:
@@ -687,17 +699,30 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
     def history(self, oid, size=1):
         """Return revision history for an object."""
         zoid = u64(oid)
-        table = "object_history" if self._history_preserving else "object_state"
         with self._conn.cursor() as cur:
-            cur.execute(
-                f"SELECT o.tid, o.state_size, "
-                f"t.username, t.description "
-                f"FROM {table} o "
-                f"LEFT JOIN transaction_log t ON o.tid = t.tid "
-                f"WHERE o.zoid = %s "
-                f"ORDER BY o.tid DESC LIMIT %s",
-                (zoid, size),
-            )
+            if self._history_preserving:
+                cur.execute(
+                    "SELECT sub.tid, sub.state_size, "
+                    "t.username, t.description "
+                    "FROM ("
+                    "  SELECT tid, state_size FROM object_history WHERE zoid = %s"
+                    "  UNION"
+                    "  SELECT tid, state_size FROM object_state WHERE zoid = %s"
+                    ") sub "
+                    "LEFT JOIN transaction_log t ON sub.tid = t.tid "
+                    "ORDER BY sub.tid DESC LIMIT %s",
+                    (zoid, zoid, size),
+                )
+            else:
+                cur.execute(
+                    "SELECT o.tid, o.state_size, "
+                    "t.username, t.description "
+                    "FROM object_state o "
+                    "LEFT JOIN transaction_log t ON o.tid = t.tid "
+                    "WHERE o.zoid = %s "
+                    "ORDER BY o.tid DESC LIMIT %s",
+                    (zoid, size),
+                )
             rows = cur.fetchall()
 
         if not rows:
@@ -1039,13 +1064,57 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
             cur.execute("DELETE FROM blob_state")
             cur.execute("DELETE FROM object_state")
             if self._history_preserving:
-                cur.execute("DELETE FROM blob_history")
+                if _table_exists(cur, "blob_history"):
+                    cur.execute("DELETE FROM blob_history")
                 cur.execute("DELETE FROM object_history")
                 cur.execute("DELETE FROM pack_state")
             cur.execute("DELETE FROM transaction_log")
         self._conn.commit()
         self._ltid = z64
         self._oid = z64
+
+    def compact_history(self):
+        """Remove duplicate entries created by the old dual-write mode.
+
+        In the old storage model, every store() wrote the same data to both
+        ``object_state`` and ``object_history`` (and ``blob_state`` /
+        ``blob_history``).  The optimized model only keeps *previous* versions
+        in ``object_history`` and eliminates ``blob_history`` entirely.
+
+        This method removes the overlap so that ``object_history`` contains
+        only previous versions, and truncates ``blob_history``.  The UNION
+        queries used by the optimized read paths handle the overlap correctly,
+        so running this is optional — but it reclaims significant disk space.
+
+        Returns:
+            Tuple of (deleted_object_history_rows, deleted_blob_history_rows).
+        """
+        if not self._history_preserving:
+            return 0, 0
+
+        with self._conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM object_history oh "
+                "WHERE EXISTS ("
+                "  SELECT 1 FROM object_state os "
+                "  WHERE os.zoid = oh.zoid AND os.tid = oh.tid"
+                ")"
+            )
+            deleted_objects = cur.rowcount
+
+            deleted_blobs = 0
+            if _table_exists(cur, "blob_history"):
+                cur.execute("DELETE FROM blob_history")
+                deleted_blobs = cur.rowcount
+
+        self._conn.commit()
+
+        logger.info(
+            "compact_history: removed %d object_history rows, %d blob_history rows",
+            deleted_objects,
+            deleted_blobs,
+        )
+        return deleted_objects, deleted_blobs
 
 
 @zope.interface.implementer(IBlobStorage)
@@ -1223,14 +1292,26 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
 
         zoid = u64(oid)
         tid_int = u64(serial)
-        table = "object_history" if self._history_preserving else "object_state"
         with self._conn.cursor() as cur:
-            cur.execute(
-                f"SELECT class_mod, class_name, state "
-                f"FROM {table} WHERE zoid = %s AND tid = %s",
-                (zoid, tid_int),
-                prepare=True,
-            )
+            if self._history_preserving:
+                cur.execute(
+                    "SELECT class_mod, class_name, state FROM ("
+                    "  SELECT class_mod, class_name, state"
+                    "  FROM object_history WHERE zoid = %s AND tid = %s"
+                    "  UNION"
+                    "  SELECT class_mod, class_name, state"
+                    "  FROM object_state WHERE zoid = %s AND tid = %s"
+                    ") sub LIMIT 1",
+                    (zoid, tid_int, zoid, tid_int),
+                    prepare=True,
+                )
+            else:
+                cur.execute(
+                    "SELECT class_mod, class_name, state "
+                    "FROM object_state WHERE zoid = %s AND tid = %s",
+                    (zoid, tid_int),
+                    prepare=True,
+                )
             row = cur.fetchone()
 
         if row is None:
@@ -1590,6 +1671,17 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
 _DSN_PASSWORD_RE = re.compile(r"(password\s*=\s*)(\S+|'[^']*')", re.IGNORECASE)
 
 
+def _table_exists(cur, table_name):
+    """Check if a table exists in the current schema."""
+    cur.execute(
+        "SELECT to_regclass(%s) IS NOT NULL AS exists",
+        (table_name,),
+    )
+    row = cur.fetchone()
+    # Support both tuple rows and dict rows
+    return row["exists"] if isinstance(row, dict) else row[0]
+
+
 def _mask_dsn(dsn):
     """Mask password in a PostgreSQL DSN string for safe logging."""
     return _DSN_PASSWORD_RE.sub(r"\1***", dsn)
@@ -1743,8 +1835,11 @@ def _compute_undo(cur, tid_int, storage, pending=None):
     # Find all objects modified in that transaction
     cur.execute(
         "SELECT zoid, class_mod, class_name, state, state_size, refs "
-        "FROM object_history WHERE tid = %s",
-        (tid_int,),
+        "FROM object_history WHERE tid = %s "
+        "UNION "
+        "SELECT zoid, class_mod, class_name, state, state_size, refs "
+        "FROM object_state WHERE tid = %s",
+        (tid_int, tid_int),
     )
     undone_objects = cur.fetchall()
 
@@ -1766,11 +1861,14 @@ def _compute_undo(cur, tid_int, storage, pending=None):
         # Find previous revision (state before the undone transaction)
         cur.execute(
             "SELECT tid, class_mod, class_name, state, "
-            "state_size, refs "
-            "FROM object_history "
-            "WHERE zoid = %s AND tid < %s "
-            "ORDER BY tid DESC LIMIT 1",
-            (zoid, tid_int),
+            "state_size, refs FROM ("
+            "  SELECT tid, class_mod, class_name, state, state_size, refs"
+            "  FROM object_history WHERE zoid = %s AND tid < %s"
+            "  UNION"
+            "  SELECT tid, class_mod, class_name, state, state_size, refs"
+            "  FROM object_state WHERE zoid = %s AND tid < %s"
+            ") sub ORDER BY tid DESC LIMIT 1",
+            (zoid, tid_int, zoid, tid_int),
         )
         prev = cur.fetchone()
 
@@ -2055,14 +2153,16 @@ def _batch_write_objects(
                 params[ec.name] = obj_extra.get(ec.name)
         params_list.append(params)
 
-    # ── History table (base columns only) ────────────────────────
+    # ── History: preserve old versions before overwrite ──────────
     if history_preserving:
-        cur.executemany(
+        zoid_list = [obj["zoid"] for obj in objects]
+        cur.execute(
             "INSERT INTO object_history "
             "(zoid, tid, class_mod, class_name, state, state_size, refs) "
-            "VALUES (%(zoid)s, %(tid)s, %(class_mod)s, %(class_name)s, "
-            "%(state)s, %(state_size)s, %(refs)s)",
-            params_list,
+            "SELECT zoid, tid, class_mod, class_name, state, state_size, refs "
+            "FROM object_state WHERE zoid = ANY(%s) "
+            "ON CONFLICT (zoid, tid) DO NOTHING",
+            (zoid_list,),
         )
 
     # ── object_state INSERT with extra columns ───────────────────
@@ -2098,6 +2198,17 @@ def _batch_delete_objects(cur, zoids, tid_int, history_preserving=False):
     if not zoids:
         return
     if history_preserving:
+        # Preserve pre-delete state in history
+        zoid_list = list(zoids)
+        cur.execute(
+            "INSERT INTO object_history "
+            "(zoid, tid, class_mod, class_name, state, state_size, refs) "
+            "SELECT zoid, tid, class_mod, class_name, state, state_size, refs "
+            "FROM object_state WHERE zoid = ANY(%s) "
+            "ON CONFLICT (zoid, tid) DO NOTHING",
+            (zoid_list,),
+        )
+        # Record tombstone (state=NULL) marking deletion at this tid
         cur.executemany(
             "INSERT INTO object_history "
             "(zoid, tid, class_mod, class_name, state, state_size, refs) "
@@ -2145,14 +2256,8 @@ def _batch_write_blobs(
             pg_params.append((zoid, tid_int, size, blob_data))
             os.unlink(blob_path)
 
-    # Batch insert PG bytea blobs
+    # Batch insert PG bytea blobs (blob_state keeps all versions via PK (zoid, tid))
     if pg_params:
-        if history_preserving:
-            cur.executemany(
-                "INSERT INTO blob_history (zoid, tid, blob_size, data) "
-                "VALUES (%s, %s, %s, %s)",
-                pg_params,
-            )
         cur.executemany(
             "INSERT INTO blob_state (zoid, tid, blob_size, data) "
             "VALUES (%s, %s, %s, %s) "
@@ -2163,13 +2268,6 @@ def _batch_write_blobs(
 
     # Batch insert S3 metadata (data=NULL, s3_key=key)
     if s3_params:
-        if history_preserving:
-            cur.executemany(
-                "INSERT INTO blob_history "
-                "(zoid, tid, blob_size, s3_key) "
-                "VALUES (%s, %s, %s, %s)",
-                s3_params,
-            )
         cur.executemany(
             "INSERT INTO blob_state "
             "(zoid, tid, blob_size, s3_key) "
@@ -2228,15 +2326,19 @@ def _loadBefore_hf(cur, oid, zoid, tid_int):
 def _loadBefore_hp(cur, oid, zoid, tid_int):
     """Load object data before tid — history-preserving mode.
 
-    Queries object_history for the most recent revision with tid < requested
-    tid.  Also looks up end_tid (the next revision's tid) so ZODB can cache
-    the validity window.
+    Queries object_history + object_state for the most recent revision with
+    tid < requested tid.  Also looks up end_tid (the next revision's tid)
+    so ZODB can cache the validity window.
     """
     cur.execute(
-        "SELECT tid, class_mod, class_name, state "
-        "FROM object_history WHERE zoid = %s AND tid < %s "
-        "ORDER BY tid DESC LIMIT 1",
-        (zoid, tid_int),
+        "SELECT tid, class_mod, class_name, state FROM ("
+        "  SELECT tid, class_mod, class_name, state"
+        "  FROM object_history WHERE zoid = %s AND tid < %s"
+        "  UNION"
+        "  SELECT tid, class_mod, class_name, state"
+        "  FROM object_state WHERE zoid = %s AND tid < %s"
+        ") sub ORDER BY tid DESC LIMIT 1",
+        (zoid, tid_int, zoid, tid_int),
         prepare=True,
     )
     row = cur.fetchone()
@@ -2254,8 +2356,12 @@ def _loadBefore_hp(cur, oid, zoid, tid_int):
     start_tid = p64(row["tid"])
     # Find end_tid: next revision's tid
     cur.execute(
-        "SELECT MIN(tid) AS next_tid FROM object_history WHERE zoid = %s AND tid > %s",
-        (zoid, row["tid"]),
+        "SELECT MIN(tid) AS next_tid FROM ("
+        "  SELECT tid FROM object_history WHERE zoid = %s AND tid > %s"
+        "  UNION ALL"
+        "  SELECT tid FROM object_state WHERE zoid = %s AND tid > %s"
+        ") sub",
+        (zoid, row["tid"], zoid, row["tid"]),
         prepare=True,
     )
     next_row = cur.fetchone()
@@ -2296,10 +2402,11 @@ def _iter_transactions(conn, table, start, stop):
     """Yield PGTransactionRecord objects for each transaction.
 
     Iterates from transaction_log (authoritative list of all transactions)
-    and joins to the object table for records.  In history-free mode, old
-    transactions whose objects were all updated later will yield with an
-    empty record list — this is correct and preserves transaction metadata
-    for zodbconvert.
+    and joins to the object table for records.  In history-preserving mode,
+    queries both object_history and object_state via UNION.  In history-free
+    mode, old transactions whose objects were all updated later will yield
+    with an empty record list — this is correct and preserves transaction
+    metadata for zodbconvert.
 
     Args:
         conn: psycopg connection (dedicated for iteration)
@@ -2317,6 +2424,7 @@ def _iter_transactions(conn, table, start, stop):
         params.append(u64(stop))
 
     where = " AND ".join(conditions) if conditions else "TRUE"
+    hp = table == "object_history"
 
     with conn.cursor() as cur:
         cur.execute(
@@ -2330,11 +2438,21 @@ def _iter_transactions(conn, table, start, stop):
             tid_int = txn_row["tid"]
             tid_bytes = p64(tid_int)
 
-            cur.execute(
-                f"SELECT zoid, class_mod, class_name, state "
-                f"FROM {table} WHERE tid = %s",
-                (tid_int,),
-            )
+            if hp:
+                cur.execute(
+                    "SELECT zoid, class_mod, class_name, state "
+                    "FROM object_history WHERE tid = %s "
+                    "UNION "
+                    "SELECT zoid, class_mod, class_name, state "
+                    "FROM object_state WHERE tid = %s",
+                    (tid_int, tid_int),
+                )
+            else:
+                cur.execute(
+                    "SELECT zoid, class_mod, class_name, state "
+                    "FROM object_state WHERE tid = %s",
+                    (tid_int,),
+                )
             obj_rows = cur.fetchall()
 
             records = []

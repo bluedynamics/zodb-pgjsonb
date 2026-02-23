@@ -5,6 +5,7 @@ to extract references, we use the pre-extracted `refs` column for a
 server-side recursive CTE query. No data leaves PostgreSQL during pack.
 """
 
+from .storage import _table_exists
 from ZODB.utils import u64
 
 import logging
@@ -92,7 +93,7 @@ def pack(conn, pack_time=None, history_preserving=False):
 
         # Phase 4: History cleanup (history-preserving mode only)
         deleted_history = 0
-        deleted_blob_history = 0
+        deleted_blob_revisions = 0
         if history_preserving:
             if pack_tid is not None:
                 # Delete history for unreachable objects only before pack_time
@@ -110,58 +111,89 @@ def pack(conn, pack_time=None, history_preserving=False):
                 )
             deleted_history += cur.rowcount
 
-            if pack_tid is not None:
-                cur.execute(
-                    "DELETE FROM blob_history "
-                    "WHERE zoid NOT IN (SELECT zoid FROM reachable_oids) "
-                    "AND tid <= %s "
-                    "RETURNING s3_key",
-                    (pack_tid,),
-                )
-            else:
-                cur.execute(
-                    "DELETE FROM blob_history "
-                    "WHERE zoid NOT IN (SELECT zoid FROM reachable_oids) "
-                    "RETURNING s3_key"
-                )
-            deleted_blob_history += cur.rowcount
-            for row in cur.fetchall():
-                if row[0]:
-                    s3_keys.append(row[0])
+            # Clean up blob_history for unreachable objects (backward compat
+            # for databases upgraded from dual-write mode)
+            if _table_exists(cur, "blob_history"):
+                if pack_tid is not None:
+                    cur.execute(
+                        "DELETE FROM blob_history "
+                        "WHERE zoid NOT IN (SELECT zoid FROM reachable_oids) "
+                        "AND tid <= %s "
+                        "RETURNING s3_key",
+                        (pack_tid,),
+                    )
+                else:
+                    cur.execute(
+                        "DELETE FROM blob_history "
+                        "WHERE zoid NOT IN (SELECT zoid FROM reachable_oids) "
+                        "RETURNING s3_key"
+                    )
+                for row in cur.fetchall():
+                    if row[0]:
+                        s3_keys.append(row[0])
 
             # Remove old revisions for reachable objects before pack_time
             if pack_tid is not None:
                 # For each reachable object, keep the most recent revision
-                # at or before pack_time, delete all older ones
+                # at or before pack_time, delete all older ones.
+                # Check both object_history and object_state for newer versions
+                # (object_state holds the current version, not object_history).
                 cur.execute(
                     "DELETE FROM object_history oh "
                     "WHERE oh.tid < %s "
                     "AND oh.zoid IN (SELECT zoid FROM reachable_oids) "
-                    "AND EXISTS ("
-                    "  SELECT 1 FROM object_history oh2 "
-                    "  WHERE oh2.zoid = oh.zoid "
-                    "  AND oh2.tid > oh.tid AND oh2.tid <= %s"
+                    "AND ("
+                    "  EXISTS ("
+                    "    SELECT 1 FROM object_history oh2 "
+                    "    WHERE oh2.zoid = oh.zoid "
+                    "    AND oh2.tid > oh.tid AND oh2.tid <= %s"
+                    "  )"
+                    "  OR EXISTS ("
+                    "    SELECT 1 FROM object_state os "
+                    "    WHERE os.zoid = oh.zoid "
+                    "    AND os.tid > oh.tid AND os.tid <= %s"
+                    "  )"
                     ")",
-                    (pack_tid, pack_tid),
+                    (pack_tid, pack_tid, pack_tid),
                 )
                 deleted_history += cur.rowcount
 
+                # Clean old blob_state revisions for reachable objects.
+                # blob_state has PK (zoid, tid) and accumulates all versions.
                 cur.execute(
-                    "DELETE FROM blob_history bh "
-                    "WHERE bh.tid < %s "
-                    "AND bh.zoid IN (SELECT zoid FROM reachable_oids) "
+                    "DELETE FROM blob_state bs "
+                    "WHERE bs.tid < %s "
+                    "AND bs.zoid IN (SELECT zoid FROM reachable_oids) "
                     "AND EXISTS ("
-                    "  SELECT 1 FROM blob_history bh2 "
-                    "  WHERE bh2.zoid = bh.zoid "
-                    "  AND bh2.tid > bh.tid AND bh2.tid <= %s"
+                    "  SELECT 1 FROM blob_state bs2 "
+                    "  WHERE bs2.zoid = bs.zoid "
+                    "  AND bs2.tid > bs.tid AND bs2.tid <= %s"
                     ") "
                     "RETURNING s3_key",
                     (pack_tid, pack_tid),
                 )
-                deleted_blob_history += cur.rowcount
+                deleted_blob_revisions += cur.rowcount
                 for row in cur.fetchall():
                     if row[0]:
                         s3_keys.append(row[0])
+
+                # Clean old blob_history revisions (backward compat)
+                if _table_exists(cur, "blob_history"):
+                    cur.execute(
+                        "DELETE FROM blob_history bh "
+                        "WHERE bh.tid < %s "
+                        "AND bh.zoid IN (SELECT zoid FROM reachable_oids) "
+                        "AND EXISTS ("
+                        "  SELECT 1 FROM blob_history bh2 "
+                        "  WHERE bh2.zoid = bh.zoid "
+                        "  AND bh2.tid > bh.tid AND bh2.tid <= %s"
+                        ") "
+                        "RETURNING s3_key",
+                        (pack_tid, pack_tid),
+                    )
+                    for row in cur.fetchall():
+                        if row[0]:
+                            s3_keys.append(row[0])
 
         # Phase 5: Clean up transaction_log entries at or before pack_time
         # that are no longer referenced by object_state (FK constraint).
@@ -186,12 +218,12 @@ def pack(conn, pack_time=None, history_preserving=False):
 
     logger.info(
         "Pack complete: removed %d objects, %d blobs, "
-        "%d history rows, %d blob history rows, "
+        "%d history rows, %d blob revisions, "
         "%d S3 keys to clean",
         deleted_objects,
         deleted_blobs,
         deleted_history,
-        deleted_blob_history,
+        deleted_blob_revisions,
         len(s3_keys),
     )
 

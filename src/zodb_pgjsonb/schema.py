@@ -53,7 +53,10 @@ CREATE TRIGGER trg_notify_commit
     FOR EACH ROW EXECUTE FUNCTION notify_commit();
 """
 
-# History-preserving mode: adds history tables
+# History-preserving mode: adds object_history for previous revisions.
+# Note: blob_history is no longer created — blob_state (PK: zoid, tid)
+# already keeps all blob versions.  Old databases with blob_history are
+# handled gracefully by the packer and compact_history().
 HISTORY_PRESERVING_ADDITIONS = """\
 CREATE TABLE IF NOT EXISTS object_history (
     zoid        BIGINT NOT NULL,
@@ -63,15 +66,6 @@ CREATE TABLE IF NOT EXISTS object_history (
     state       JSONB,
     state_size  INTEGER NOT NULL,
     refs        BIGINT[] NOT NULL DEFAULT '{}',
-    PRIMARY KEY (zoid, tid)
-);
-
-CREATE TABLE IF NOT EXISTS blob_history (
-    zoid        BIGINT NOT NULL,
-    tid         BIGINT NOT NULL,
-    blob_size   BIGINT NOT NULL,
-    data        BYTEA,
-    s3_key      TEXT,
     PRIMARY KEY (zoid, tid)
 );
 
