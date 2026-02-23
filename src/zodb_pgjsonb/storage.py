@@ -20,6 +20,7 @@ from ZODB.BaseStorage import BaseStorage
 from ZODB.BaseStorage import DataRecord
 from ZODB.BaseStorage import TransactionRecord
 from ZODB.ConflictResolution import ConflictResolvingStorage
+from ZODB.blob import is_blob_record
 from ZODB.interfaces import IBlobStorage
 from ZODB.interfaces import IMVCCStorage
 from ZODB.interfaces import IStorageIteration
@@ -543,6 +544,7 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
 
     def _begin(self, tid, u, d, e):
         """Called by BaseStorage.tpc_begin after acquiring commit lock."""
+        # self._tid = tid
         self._ude = (u, d, e)
         self._voted = False
         self._read_conflicts = []
@@ -901,6 +903,39 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
             staged = os.path.join(self._blob_temp_dir, f"{zoid:016x}.pending.blob")
             shutil.move(blobfilename, staged)
             self._blob_tmp[zoid] = staged
+
+    def copyTransactionsFrom(self, other):
+        """Copy all transactions from other to this storage.
+
+        Correctly handles blobs by using restoreBlob when appropriate.
+        """
+        for transaction in other.iterator():
+            self.tpc_begin(transaction, transaction.tid, transaction.status)
+            for record in transaction:
+                # If it's a blob, we need to use restoreBlob
+                if is_blob_record(record.data):
+                    # We need to get the blob file path from the source
+                    # loadBlob returns the path to the blob file
+                    blob_path = other.loadBlob(record.oid, record.tid)
+                    self.restoreBlob(
+                        record.oid,
+                        record.tid,
+                        record.data,
+                        blob_path,
+                        record.data_txn,
+                        transaction,
+                    )
+                else:
+                    self.restore(
+                        record.oid,
+                        record.tid,
+                        record.data,
+                        record.version,
+                        record.data_txn,
+                        transaction,
+                    )
+            self.tpc_vote(transaction)
+            self.tpc_finish(transaction)
 
     # ── IBlobStorage ─────────────────────────────────────────────────
 
