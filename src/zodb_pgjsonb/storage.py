@@ -19,6 +19,7 @@ from psycopg_pool import ConnectionPool
 from ZODB.BaseStorage import BaseStorage
 from ZODB.BaseStorage import DataRecord
 from ZODB.BaseStorage import TransactionRecord
+from ZODB.blob import is_blob_record
 from ZODB.ConflictResolution import ConflictResolvingStorage
 from ZODB.interfaces import IBlobStorage
 from ZODB.interfaces import IMVCCStorage
@@ -35,6 +36,7 @@ from ZODB.utils import u64
 from ZODB.utils import z64
 
 import base64
+import contextlib
 import dataclasses
 import io
 import logging
@@ -901,6 +903,51 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
             staged = os.path.join(self._blob_temp_dir, f"{zoid:016x}.pending.blob")
             shutil.move(blobfilename, staged)
             self._blob_tmp[zoid] = staged
+
+    def copyTransactionsFrom(self, other):
+        """Copy all transactions from another storage, including blobs.
+
+        Overrides BaseStorage.copyTransactionsFrom to correctly handle
+        blob records.  The default implementation only calls restore()
+        and silently drops blob data.
+
+        Blob files are copied (not moved) from the source storage so
+        the source remains intact after migration.
+        """
+        for txn_info in other.iterator():
+            self.tpc_begin(txn_info, txn_info.tid, txn_info.status)
+            for record in txn_info:
+                if record.data is None:
+                    continue
+                blobfilename = None
+                if is_blob_record(record.data):
+                    with contextlib.suppress(POSKeyError):
+                        blobfilename = other.loadBlob(record.oid, record.tid)
+                if blobfilename is not None:
+                    # Copy blob to temp file — restoreBlob moves the file,
+                    # which would corrupt the source storage otherwise.
+                    fd, tmp = tempfile.mkstemp(suffix=".blob", dir=self._blob_temp_dir)
+                    os.close(fd)
+                    shutil.copy2(blobfilename, tmp)
+                    self.restoreBlob(
+                        record.oid,
+                        record.tid,
+                        record.data,
+                        tmp,
+                        record.data_txn,
+                        txn_info,
+                    )
+                else:
+                    self.restore(
+                        record.oid,
+                        record.tid,
+                        record.data,
+                        "",
+                        record.data_txn,
+                        txn_info,
+                    )
+            self.tpc_vote(txn_info)
+            self.tpc_finish(txn_info)
 
     # ── IBlobStorage ─────────────────────────────────────────────────
 
