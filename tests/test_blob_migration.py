@@ -5,8 +5,8 @@ Verifies that copyTransactionsFrom correctly handles blobs.
 
 from persistent.mapping import PersistentMapping
 from tests.conftest import DSN
-from ZODB.FileStorage import FileStorage
 from ZODB.blob import Blob
+from ZODB.FileStorage import FileStorage
 from zodb_pgjsonb.storage import PGJsonbStorage
 
 import os
@@ -135,8 +135,8 @@ def test_blob_migration_history_preserving(temp_dir):
 
     # Check history (optional but good)
     # We can use storage.loadBefore to see old version
-    oid = blob._p_oid
-    tid = blob._p_serial
+    # oid = blob._p_oid
+    # tid = blob._p_serial
 
     # Re-open another connection or use storage directly
     # To check "before" we need a TID. Let's just check the current one exists.
