@@ -525,8 +525,8 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
 
         zoid = u64(oid)
 
-        class_mod, class_name, state, refs = zodb_json_codec.decode_zodb_record_for_pg(
-            data
+        class_mod, class_name, state, refs = (
+            zodb_json_codec.decode_zodb_record_for_pg_json(data)
         )
 
         entry = {
@@ -904,8 +904,8 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
         if data is None:
             return  # undo of object creation
         zoid = u64(oid)
-        class_mod, class_name, state, refs = zodb_json_codec.decode_zodb_record_for_pg(
-            data
+        class_mod, class_name, state, refs = (
+            zodb_json_codec.decode_zodb_record_for_pg_json(data)
         )
         entry = {
             "zoid": zoid,
@@ -1344,8 +1344,8 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
 
         zoid = u64(oid)
 
-        class_mod, class_name, state, refs = zodb_json_codec.decode_zodb_record_for_pg(
-            data
+        class_mod, class_name, state, refs = (
+            zodb_json_codec.decode_zodb_record_for_pg_json(data)
         )
 
         entry = {
@@ -1636,8 +1636,8 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
         if data is None:
             return
         zoid = u64(oid)
-        class_mod, class_name, state, refs = zodb_json_codec.decode_zodb_record_for_pg(
-            data
+        class_mod, class_name, state, refs = (
+            zodb_json_codec.decode_zodb_record_for_pg_json(data)
         )
         entry = {
             "zoid": zoid,
@@ -1967,7 +1967,7 @@ def _compute_undo(cur, tid_int, storage, pending=None):
 
                 # Decode resolved pickle back to JSONB
                 r_mod, r_name, r_state, r_refs = (
-                    zodb_json_codec.decode_zodb_record_for_pg(resolved)
+                    zodb_json_codec.decode_zodb_record_for_pg_json(resolved)
                 )
                 undo_data.append(
                     {
@@ -2048,7 +2048,7 @@ def _batch_resolve_conflicts(cur, tmp, resolved, storage):
         if result:
             # Re-decode resolved pickle and update entry in-place
             class_mod, class_name, state, refs = (
-                zodb_json_codec.decode_zodb_record_for_pg(result)
+                zodb_json_codec.decode_zodb_record_for_pg_json(result)
             )
             entry["class_mod"] = class_mod
             entry["class_name"] = class_name
@@ -2143,7 +2143,11 @@ def _batch_write_objects(
             "tid": tid_int,
             "class_mod": obj["class_mod"],
             "class_name": obj["class_name"],
-            "state": Json(obj["state"]),
+            "state": (
+                Json(obj["state"], dumps=lambda s: s)
+                if isinstance(obj["state"], str)
+                else Json(obj["state"])
+            ),
             "state_size": obj["state_size"],
             "refs": obj["refs"],
         }

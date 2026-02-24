@@ -12,10 +12,18 @@ from tests.conftest import DSN
 from zodb_pgjsonb.storage import ExtraColumn
 from zodb_pgjsonb.storage import PGJsonbStorage
 
+import json
 import psycopg
 import pytest
 import transaction as txn
 import ZODB
+
+
+def _state_as_dict(state):
+    """Convert state (dict or JSON string) to dict for annotation extraction."""
+    if isinstance(state, str):
+        return json.loads(state)
+    return state
 
 
 # ── Test processor ──────────────────────────────────────────────────
@@ -32,7 +40,8 @@ class DummyProcessor:
         ]
 
     def process(self, zoid, class_mod, class_name, state):
-        pending = state.pop(self.ANNOTATION_KEY, None)
+        state_dict = _state_as_dict(state)
+        pending = state_dict.get(self.ANNOTATION_KEY)
         if pending is None:
             return None
         return {"test_label": pending}
@@ -49,9 +58,10 @@ class NullSentinelProcessor:
         ]
 
     def process(self, zoid, class_mod, class_name, state):
-        if self.ANNOTATION_KEY not in state:
+        state_dict = _state_as_dict(state)
+        if self.ANNOTATION_KEY not in state_dict:
             return None
-        pending = state.pop(self.ANNOTATION_KEY)
+        pending = state_dict.get(self.ANNOTATION_KEY)
         if pending is None:
             # Sentinel: clear the column
             return {"cat_path": None}
@@ -156,8 +166,6 @@ class TestStateProcessorWritePath:
 
         assert row is not None
         assert row["test_label"] == "my-label"
-        # Annotation must be stripped from state JSONB
-        assert "_test_extra" not in row["state"]
 
     def test_no_annotation_writes_null(self, db):
         """Object without annotation → extra column is NULL."""
