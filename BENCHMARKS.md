@@ -91,6 +91,8 @@ PostgreSQL — no objects are loaded, no Python unpickling occurs. RelStorage
 must load and unpickle every object to discover references via
 `referencesf()`.
 
+---
+
 ## History-Preserving Mode
 
 Measured on: 2026-02-23, same environment as above.
@@ -199,9 +201,8 @@ transcoding cost is negligible relative to Plone's own processing.
 - All ZODB data queryable via SQL/JSONB (unique to PGJsonbStorage)
 
 **Trade-offs:**
-- Uncached loads 1.1-2.2x slower (JSONB→pickle transcode overhead)
-- Batch store 100 is 1.2x slower in HF mode (JSONB indexing overhead vs raw bytea)
-- Batch ZODB write 10 is 1.1x slower in HF mode
+- Uncached loads 1.1-1.6x slower (JSONB→pickle transcode overhead)
+- Connection cycling 1.3x slower (snapshot management overhead)
 
 **HP optimization impact (before/after):**
 - Batch writes up to 33% faster (copy-before-overwrite vs full dual-write)
