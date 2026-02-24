@@ -124,7 +124,7 @@ ZODB.DB
 
 ## Performance
 
-See [BENCHMARKS.md](BENCHMARKS.md) for detailed comparison with RelStorage.
+See [BENCHMARKS.md](https://github.com/bluedynamics/zodb-pgjsonb/blob/main/BENCHMARKS.md) for detailed comparison with RelStorage.
 
 Summary (100 iterations, PostgreSQL 17):
 
@@ -137,7 +137,7 @@ Summary (100 iterations, PostgreSQL 17):
 
 ## Try It Out
 
-The [example/](example/) directory contains a Docker Compose setup with PostgreSQL, MinIO, and pgAdmin to try zodb-pgjsonb with a full Plone 6 site. See [example/README.md](example/README.md) for instructions.
+The [example/](https://github.com/bluedynamics/zodb-pgjsonb/tree/main/example) directory contains a Docker Compose setup with PostgreSQL, MinIO, and pgAdmin to try zodb-pgjsonb with a full Plone 6 site. See [example/README.md](https://github.com/bluedynamics/zodb-pgjsonb/blob/main/example/README.md) for instructions.
 
 ## Development
 
