@@ -84,8 +84,9 @@ CREATE TABLE IF NOT EXISTS pack_state (
 def _table_exists(conn, name):
     """Check if a table exists (lightweight, no ACCESS EXCLUSIVE lock)."""
     with conn.cursor() as cur:
-        cur.execute("SELECT to_regclass(%s) IS NOT NULL", (name,))
-        return cur.fetchone()[0]
+        cur.execute("SELECT to_regclass(%s) IS NOT NULL AS exists", (name,))
+        row = cur.fetchone()
+        return row["exists"] if isinstance(row, dict) else row[0]
 
 
 def install_schema(conn, *, history_preserving=False):
