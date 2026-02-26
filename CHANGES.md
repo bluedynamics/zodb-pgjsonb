@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.3.1
+
+- Add progress logging to `copyTransactionsFrom()` for `zodbconvert` usage:
+  per-transaction TID, record count, throughput (MB/s), and completion summary.
+  [mamico] [#16]
+
 ## 1.3.0
 
 - **Direct JSON string decode path**: Use `decode_zodb_record_for_pg_json()`

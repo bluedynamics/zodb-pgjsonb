@@ -939,8 +939,18 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
         Blob files are copied (not moved) from the source storage so
         the source remains intact after migration.
         """
+        begin_time = time.time()
+        txnum = 0
+        total_size = 0
+        num_txns = 0
+        logger.info("Counting the transactions to copy.")
+        for _ in other.iterator():
+            num_txns += 1
+        logger.info("Copying the transactions.")
         for txn_info in other.iterator():
+            txnum += 1
             self.tpc_begin(txn_info, txn_info.tid, txn_info.status)
+            num_txn_records = 0
             for record in txn_info:
                 if record.data is None:
                     continue
@@ -971,8 +981,30 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
                         record.data_txn,
                         txn_info,
                     )
+                num_txn_records += 1
+                if record.data:
+                    total_size += len(record.data)
             self.tpc_vote(txn_info)
             self.tpc_finish(txn_info)
+            pct_complete = "%1.2f%%" % (txnum * 100.0 / num_txns)
+            elapsed = time.time() - begin_time
+            rate = total_size / 1000000.0 / elapsed if elapsed else 0.0
+            rate_str = f"{rate:.3f}"
+            logger.info(
+                "Copied tid %d,%5d records | %6s MB/s (%6d/%6d,%7s)",
+                u64(txn_info.tid),
+                num_txn_records,
+                rate_str,
+                txnum,
+                num_txns,
+                pct_complete,
+            )
+        elapsed = time.time() - begin_time
+        logger.info(
+            "All %d transactions copied successfully in %4.1f minutes.",
+            txnum,
+            elapsed / 60.0,
+        )
 
     # ── IBlobStorage ─────────────────────────────────────────────────
 
