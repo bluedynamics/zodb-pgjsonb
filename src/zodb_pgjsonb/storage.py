@@ -10,6 +10,9 @@ snapshot isolation through separate PostgreSQL connections.
 """
 
 from .interfaces import IPGJsonbStorage
+from .schema import _table_exists as schema_table_exists
+from .schema import drop_history_tables
+from .schema import HISTORY_PRESERVING_ADDITIONS
 from .schema import install_schema
 from collections import OrderedDict
 from persistent.TimeStamp import TimeStamp
@@ -264,6 +267,15 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
         logger.debug("Installing schema (history_preserving=%s)", history_preserving)
         install_schema(self._conn, history_preserving=history_preserving)
         logger.debug("Schema installed")
+
+        # Warn if HP tables exist but running in HF mode
+        if not history_preserving and schema_table_exists(self._conn, "object_history"):
+            logger.warning(
+                "History-preserving tables (object_history, pack_state) exist "
+                "but storage is running in history-free mode. "
+                "Call storage.convert_to_history_free() to remove them and "
+                "reclaim disk space."
+            )
 
         # Load max OID and last TID from database
         self._restore_state()
@@ -1147,6 +1159,66 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
             deleted_blobs,
         )
         return deleted_objects, deleted_blobs
+
+    def convert_to_history_free(self):
+        """Convert a history-preserving database to history-free mode.
+
+        Drops ``object_history``, ``pack_state``, and the deprecated
+        ``blob_history`` table.  Also removes old blob versions from
+        ``blob_state`` (keeps only the latest tid per zoid) and orphaned
+        ``transaction_log`` entries.
+
+        This is an offline maintenance operation — no ZODB connections
+        should be active while it runs.  After calling this method,
+        reconfigure the storage with ``history_preserving=False`` and
+        restart.
+
+        Returns:
+            Dict with removal counts (see :func:`drop_history_tables`).
+
+        Raises:
+            RuntimeError: If no history tables exist to clean up.
+        """
+        if not schema_table_exists(self._conn, "object_history"):
+            raise RuntimeError(
+                "No history tables found — database is already history-free."
+            )
+        counts = drop_history_tables(self._conn)
+        logger.info(
+            "convert_to_history_free: removed %d history rows, "
+            "%d pack rows, %d blob_history rows, "
+            "%d old blob versions, %d orphan transactions",
+            counts["history_rows"],
+            counts["pack_rows"],
+            counts["blob_history_rows"],
+            counts["old_blob_versions"],
+            counts["orphan_transactions"],
+        )
+        return counts
+
+    def convert_to_history_preserving(self):
+        """Convert a history-free database to history-preserving mode.
+
+        Creates the ``object_history`` and ``pack_state`` tables.
+        Existing objects will only gain history tracking on their next
+        modification.
+
+        After calling this method, reconfigure the storage with
+        ``history_preserving=True`` and restart.
+
+        Raises:
+            RuntimeError: If history tables already exist.
+        """
+        if schema_table_exists(self._conn, "object_history"):
+            raise RuntimeError(
+                "History tables already exist — database is already history-preserving."
+            )
+        self._conn.execute(HISTORY_PRESERVING_ADDITIONS)
+        self._conn.commit()
+        logger.info(
+            "convert_to_history_preserving: created object_history "
+            "and pack_state tables"
+        )
 
 
 @zope.interface.implementer(IBlobStorage)

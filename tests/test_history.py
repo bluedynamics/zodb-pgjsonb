@@ -554,3 +554,226 @@ class TestInstanceHistoryDelegates:
         inst = hp_storage.new_instance()
         inst.pack(time.time(), None)  # should not raise
         inst.release()
+
+
+def _clean_db():
+    """Drop all tables for a fresh start."""
+    import psycopg
+
+    conn = psycopg.connect(DSN)
+    with conn.cursor() as cur:
+        cur.execute(
+            "DROP TABLE IF EXISTS "
+            "pack_state, blob_history, object_history, "
+            "blob_state, object_state, transaction_log CASCADE"
+        )
+    conn.commit()
+    conn.close()
+
+
+def _table_exists_raw(table_name):
+    """Check if a table exists using a raw connection."""
+    import psycopg
+
+    conn = psycopg.connect(DSN)
+    with conn.cursor() as cur:
+        cur.execute("SELECT to_regclass(%s) IS NOT NULL", (table_name,))
+        result = cur.fetchone()[0]
+    conn.close()
+    return result
+
+
+class TestModeConversion:
+    """Test switching between HF and HP modes."""
+
+    def test_hp_to_hf_conversion(self):
+        """HP storage with data can be converted to HF."""
+        _clean_db()
+        # Create HP storage and write data with history
+        storage = PGJsonbStorage(DSN, history_preserving=True)
+        db = ZODB.DB(storage)
+        conn = db.open()
+        root = conn.root()
+        root["key"] = "v1"
+        txn.commit()
+        root["key"] = "v2"
+        txn.commit()
+        conn.close()
+        db.close()
+
+        # HP tables should exist
+        assert _table_exists_raw("object_history")
+        assert _table_exists_raw("pack_state")
+
+        # Convert to HF
+        storage = PGJsonbStorage(DSN, history_preserving=True)
+        counts = storage.convert_to_history_free()
+        storage.close()
+
+        # HP tables should be gone
+        assert not _table_exists_raw("object_history")
+        assert not _table_exists_raw("pack_state")
+
+        # History rows were removed
+        assert counts["history_rows"] > 0
+
+        # Data should still be intact — reopen as HF
+        storage = PGJsonbStorage(DSN, history_preserving=False)
+        db = ZODB.DB(storage)
+        conn = db.open()
+        root = conn.root()
+        assert root["key"] == "v2"
+        conn.close()
+        db.close()
+
+    def test_hf_to_hp_conversion(self):
+        """HF storage can be converted to HP."""
+        _clean_db()
+        # Create HF storage with data
+        storage = PGJsonbStorage(DSN, history_preserving=False)
+        db = ZODB.DB(storage)
+        conn = db.open()
+        root = conn.root()
+        root["key"] = "value"
+        txn.commit()
+        conn.close()
+        db.close()
+
+        assert not _table_exists_raw("object_history")
+
+        # Convert to HP
+        storage = PGJsonbStorage(DSN, history_preserving=False)
+        storage.convert_to_history_preserving()
+        storage.close()
+
+        assert _table_exists_raw("object_history")
+        assert _table_exists_raw("pack_state")
+
+        # Reopen as HP — data intact, new writes create history
+        storage = PGJsonbStorage(DSN, history_preserving=True)
+        db = ZODB.DB(storage)
+        conn = db.open()
+        root = conn.root()
+        assert root["key"] == "value"
+        root["key"] = "updated"
+        txn.commit()
+        conn.close()
+        db.close()
+
+    def test_convert_to_hf_raises_if_already_hf(self):
+        """convert_to_history_free() raises if no HP tables exist."""
+        _clean_db()
+        storage = PGJsonbStorage(DSN, history_preserving=False)
+        with pytest.raises(RuntimeError, match="already history-free"):
+            storage.convert_to_history_free()
+        storage.close()
+
+    def test_convert_to_hp_raises_if_already_hp(self):
+        """convert_to_history_preserving() raises if HP tables exist."""
+        _clean_db()
+        storage = PGJsonbStorage(DSN, history_preserving=True)
+        with pytest.raises(RuntimeError, match="already history-preserving"):
+            storage.convert_to_history_preserving()
+        storage.close()
+
+    def test_startup_warning_hp_tables_in_hf_mode(self, caplog):
+        """Opening HF storage with leftover HP tables logs a warning."""
+        import logging
+
+        _clean_db()
+        # Create HP storage to establish tables
+        storage = PGJsonbStorage(DSN, history_preserving=True)
+        storage.close()
+
+        # Reopen as HF — should warn
+        with caplog.at_level(logging.WARNING, logger="zodb_pgjsonb.storage"):
+            storage = PGJsonbStorage(DSN, history_preserving=False)
+        storage.close()
+
+        assert any(
+            "convert_to_history_free" in record.message for record in caplog.records
+        )
+
+    def test_convert_to_hf_cleans_old_blob_versions(self):
+        """convert_to_history_free removes old blob_state versions."""
+        from ZODB.blob import Blob
+
+        import psycopg
+
+        _clean_db()
+        storage = PGJsonbStorage(DSN, history_preserving=True)
+        db = ZODB.DB(storage)
+
+        # Write a blob, then update the same blob object to create
+        # two blob_state rows with the same zoid but different tids.
+        conn = db.open()
+        root = conn.root()
+        blob = Blob(b"version1")
+        root["blob"] = blob
+        txn.commit()
+
+        blob.open("w").write(b"version2")
+        txn.commit()
+        conn.close()
+        db.close()
+
+        # Should have 2 blob_state rows for the same zoid
+        raw = psycopg.connect(DSN)
+        with raw.cursor() as cur:
+            cur.execute(
+                "SELECT zoid, count(*) AS cnt FROM blob_state "
+                "GROUP BY zoid HAVING count(*) > 1"
+            )
+            row = cur.fetchone()
+            assert row is not None, "expected multiple blob versions"
+        raw.close()
+
+        # Convert
+        storage = PGJsonbStorage(DSN, history_preserving=True)
+        counts = storage.convert_to_history_free()
+        storage.close()
+
+        assert counts["old_blob_versions"] >= 1
+
+        # Only latest version remains
+        raw = psycopg.connect(DSN)
+        with raw.cursor() as cur:
+            cur.execute(
+                "SELECT count(*) FROM blob_state GROUP BY zoid HAVING count(*) > 1"
+            )
+            assert cur.fetchone() is None  # no zoid with multiple versions
+        raw.close()
+
+    def test_convert_to_hf_cleans_orphan_transactions(self):
+        """convert_to_history_free removes unreferenced transaction_log rows."""
+        import psycopg
+
+        _clean_db()
+        storage = PGJsonbStorage(DSN, history_preserving=True)
+        db = ZODB.DB(storage)
+        conn = db.open()
+        root = conn.root()
+        root["a"] = 1
+        txn.commit()
+        root["a"] = 2
+        txn.commit()
+        root["a"] = 3
+        txn.commit()
+        conn.close()
+        db.close()
+
+        # In HP mode we have multiple transaction_log entries;
+        # in HF object_state only points to the latest tid per object.
+        raw = psycopg.connect(DSN)
+        with raw.cursor() as cur:
+            cur.execute("SELECT count(*) FROM transaction_log")
+            txn_count_before = cur.fetchone()[0]
+        raw.close()
+        assert txn_count_before >= 3
+
+        storage = PGJsonbStorage(DSN, history_preserving=True)
+        counts = storage.convert_to_history_free()
+        storage.close()
+
+        # Some orphaned transactions should have been removed
+        assert counts["orphan_transactions"] >= 1

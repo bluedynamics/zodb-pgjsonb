@@ -106,3 +106,72 @@ def install_schema(conn, *, history_preserving=False):
     if history_preserving and not _table_exists(conn, "object_history"):
         conn.execute(HISTORY_PRESERVING_ADDITIONS)
     conn.commit()
+
+
+def drop_history_tables(conn):
+    """Drop history-preserving tables and clean up stale data.
+
+    Removes ``object_history``, ``pack_state``, and the deprecated
+    ``blob_history`` table.  Also removes old blob versions from
+    ``blob_state`` (keeps only the latest tid per zoid) and orphaned
+    ``transaction_log`` entries no longer referenced by ``object_state``.
+
+    Args:
+        conn: psycopg connection (must not be in autocommit mode)
+
+    Returns:
+        Dict with counts: ``history_rows``, ``pack_rows``,
+        ``blob_history_rows``, ``old_blob_versions``, ``orphan_transactions``.
+    """
+    counts = {
+        "history_rows": 0,
+        "pack_rows": 0,
+        "blob_history_rows": 0,
+        "old_blob_versions": 0,
+        "orphan_transactions": 0,
+    }
+    with conn.cursor() as cur:
+        # Drop object_history
+        if _table_exists(conn, "object_history"):
+            cur.execute("SELECT count(*) FROM object_history")
+            row = cur.fetchone()
+            counts["history_rows"] = row["count"] if isinstance(row, dict) else row[0]
+            cur.execute("DROP TABLE object_history CASCADE")
+
+        # Drop pack_state
+        if _table_exists(conn, "pack_state"):
+            cur.execute("SELECT count(*) FROM pack_state")
+            row = cur.fetchone()
+            counts["pack_rows"] = row["count"] if isinstance(row, dict) else row[0]
+            cur.execute("DROP TABLE pack_state CASCADE")
+
+        # Drop deprecated blob_history
+        if _table_exists(conn, "blob_history"):
+            cur.execute("SELECT count(*) FROM blob_history")
+            row = cur.fetchone()
+            counts["blob_history_rows"] = (
+                row["count"] if isinstance(row, dict) else row[0]
+            )
+            cur.execute("DROP TABLE blob_history CASCADE")
+
+        # Clean old blob versions (keep only latest tid per zoid)
+        cur.execute(
+            "DELETE FROM blob_state b "
+            "WHERE EXISTS ("
+            "  SELECT 1 FROM blob_state b2 "
+            "  WHERE b2.zoid = b.zoid AND b2.tid > b.tid"
+            ")"
+        )
+        counts["old_blob_versions"] = cur.rowcount
+
+        # Clean orphaned transaction_log entries
+        cur.execute(
+            "DELETE FROM transaction_log t "
+            "WHERE NOT EXISTS ("
+            "  SELECT 1 FROM object_state os WHERE os.tid = t.tid"
+            ")"
+        )
+        counts["orphan_transactions"] = cur.rowcount
+
+    conn.commit()
+    return counts

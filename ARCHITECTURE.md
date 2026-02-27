@@ -134,6 +134,34 @@ WHERE zoid NOT IN (SELECT zoid FROM reachable);
 
 Result: 15-28x faster than RelStorage for pack operations.
 
+### Switching History Modes
+
+The storage supports runtime conversion between history modes via two methods on `PGJsonbStorage`:
+
+**HF → HP** (`convert_to_history_preserving()`):
+- Runs `HISTORY_PRESERVING_ADDITIONS` DDL (additive, non-destructive)
+- Creates `object_history` and `pack_state` tables
+- Existing objects gain history tracking on their next modification
+
+**HP → HF** (`convert_to_history_free()`):
+- Drops `object_history`, `pack_state`, and legacy `blob_history` (if present)
+- Removes old `blob_state` versions (keeps only latest tid per zoid)
+- Cleans orphaned `transaction_log` entries (no `object_state` references)
+- **Irreversible** — all undo history is permanently deleted
+
+Tables affected by mode:
+
+| Table | HF | HP | Conversion cleanup |
+|-------|----|----|-------------------|
+| `object_state` | current state | current state | kept as-is |
+| `blob_state` | all blob versions | all blob versions | old versions removed |
+| `transaction_log` | transaction metadata | transaction metadata | orphans removed |
+| `object_history` | — | previous revisions | **dropped** |
+| `pack_state` | — | pack tracking | **dropped** |
+| `blob_history` | — | deprecated legacy | **dropped** |
+
+On startup, if history tables exist but the storage is configured as history-free, a warning is logged suggesting `convert_to_history_free()`.
+
 ---
 
 ## Tiered Blob Storage

@@ -122,6 +122,37 @@ ZODB.DB
 | `blob-cache-dir`     | *none*     | Local cache directory for S3 blobs              |
 | `blob-cache-size`    | 1GB        | Maximum size of local blob cache                |
 
+### Switching History Modes
+
+Both directions are supported:
+
+**History-free to history-preserving** (enabling history): Change
+`history-preserving` to `true` in your ZConfig and restart. The history
+tables (`object_history`, `pack_state`) are created automatically on
+startup. Existing objects gain history tracking on their next
+modification.
+
+**History-preserving to history-free** (disabling history):
+
+1. Stop all application instances.
+2. Run the conversion utility:
+   ```python
+   from zodb_pgjsonb.storage import PGJsonbStorage
+   storage = PGJsonbStorage(dsn="...", history_preserving=True)
+   storage.convert_to_history_free()
+   storage.close()
+   ```
+3. Change `history-preserving` to `false` in your ZConfig.
+4. Restart.
+
+The conversion drops `object_history` and `pack_state`, removes old blob
+versions (keeps only the latest per object), and cleans orphaned
+transaction log entries. **This is irreversible** — all undo history is
+permanently deleted.
+
+If you start in history-free mode with leftover history tables, the
+storage logs a warning pointing to `convert_to_history_free()`.
+
 ## Performance
 
 See [BENCHMARKS.md](https://github.com/bluedynamics/zodb-pgjsonb/blob/main/BENCHMARKS.md) for detailed comparison with RelStorage.

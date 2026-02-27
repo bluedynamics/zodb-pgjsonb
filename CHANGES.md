@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.3.2
+
+- Add history mode switching support: `convert_to_history_free()` and
+  `convert_to_history_preserving()` methods on `PGJsonbStorage` for
+  converting between history-free and history-preserving modes.
+  HP→HF conversion drops history tables, cleans old blob versions,
+  and removes orphaned transaction log entries.
+  Startup warning logged when HP tables exist in HF mode.
+
 ## 1.3.1
 
 - Add progress logging to `copyTransactionsFrom()` for `zodbconvert` usage:
