@@ -81,14 +81,28 @@ CREATE TABLE IF NOT EXISTS pack_state (
 """
 
 
+def _table_exists(conn, name):
+    """Check if a table exists (lightweight, no ACCESS EXCLUSIVE lock)."""
+    with conn.cursor() as cur:
+        cur.execute("SELECT to_regclass(%s) IS NOT NULL AS exists", (name,))
+        row = cur.fetchone()
+        return row["exists"] if isinstance(row, dict) else row[0]
+
+
 def install_schema(conn, *, history_preserving=False):
     """Install the database schema.
+
+    Skips DDL when core tables already exist to avoid ACCESS EXCLUSIVE
+    locks that would block concurrent instances holding REPEATABLE READ
+    snapshots (see #15).
 
     Args:
         conn: psycopg connection (must not be in autocommit mode)
         history_preserving: if True, also create history tables
     """
-    conn.execute(HISTORY_FREE_SCHEMA)
-    if history_preserving:
+    core_exists = _table_exists(conn, "transaction_log")
+    if not core_exists:
+        conn.execute(HISTORY_FREE_SCHEMA)
+    if history_preserving and not _table_exists(conn, "object_history"):
         conn.execute(HISTORY_PRESERVING_ADDITIONS)
     conn.commit()

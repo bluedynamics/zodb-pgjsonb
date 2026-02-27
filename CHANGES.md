@@ -6,6 +6,10 @@
   per-transaction TID, record count, throughput (MB/s), and completion summary.
   [mamico] [#16]
 
+- Fix schema init blocking concurrent instances: skip DDL when core tables
+  already exist, avoiding `ACCESS EXCLUSIVE` locks that conflict with
+  `REPEATABLE READ` snapshots held by other processes. [#15]
+
 ## 1.3.0
 
 - **Direct JSON string decode path**: Use `decode_zodb_record_for_pg_json()`
