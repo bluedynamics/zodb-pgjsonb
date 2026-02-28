@@ -22,7 +22,7 @@ classifiers = [
 ]
 dependencies = [
     "ZODB>=5.8",
-    "zodb-json-codec>=1.4.0",
+    "zodb-json-codec>=1.6.1",
     "psycopg[binary,pool]>=3.1",
     "zope.interface",
     "transaction",
