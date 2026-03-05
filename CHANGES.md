@@ -2,6 +2,9 @@
 
 ## 1.3.2
 
+- Reduce default `blob-threshold` from 1MB to 100KB to reduce WAL pollution
+  when S3 tiering is enabled.
+
 - Add history mode switching support: `convert_to_history_free()` and
   `convert_to_history_preserving()` methods on `PGJsonbStorage` for
   converting between history-free and history-preserving modes.

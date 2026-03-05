@@ -111,7 +111,7 @@ ZODB.DB
 | `cache-local-mb`     | 64         | Per-instance object cache size in MB            |
 | `pool-size`          | 1          | Minimum connections in pool                     |
 | `pool-max-size`      | 10         | Maximum connections in pool                     |
-| `blob-threshold`     | 1MB        | Blobs larger than this go to S3 (if configured) |
+| `blob-threshold`     | 100KB      | Blobs larger than this go to S3 (if configured) |
 | `s3-bucket-name`     | *none*     | S3 bucket name (enables S3 tiering)             |
 | `s3-endpoint-url`    | *none*     | S3 endpoint (for MinIO, Ceph, etc.)             |
 | `s3-region`          | *none*     | AWS region name                                 |

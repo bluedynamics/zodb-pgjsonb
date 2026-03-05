@@ -155,12 +155,12 @@ GROUP BY 1;
 
 ## S3 Blob Tiering
 
-Blobs smaller than `blob-threshold` (default 1MB) are stored directly
+Blobs smaller than `blob-threshold` (default 100KB) are stored directly
 in PostgreSQL as bytea. Larger blobs are uploaded to MinIO/S3.
 
 To see it in action:
 
-1. Upload an image larger than 1MB in Plone
+1. Upload an image larger than 100KB in Plone
 2. Open the MinIO console at http://localhost:9001
 3. Browse the `zodb-blobs` bucket to see the uploaded file
 
@@ -186,7 +186,7 @@ The `<pgjsonb>` section in `zope.conf` supports these keys:
 | `cache-local-mb`     | 64      | Per-instance object cache size in MB                 |
 | `pool-size`          | 1       | Minimum connections in pool                          |
 | `pool-max-size`      | 10      | Maximum connections in pool                          |
-| `blob-threshold`     | 1MB     | Blobs larger than this go to S3 (if configured)      |
+| `blob-threshold`     | 100KB   | Blobs larger than this go to S3 (if configured)      |
 | `s3-bucket-name`     | *none*  | S3 bucket name (enables S3 tiering)                  |
 | `s3-endpoint-url`    | *none*  | S3 endpoint (for MinIO, Ceph, etc.)                  |
 | `s3-region`          | *none*  | AWS region name                                      |

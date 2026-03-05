@@ -68,5 +68,5 @@ class PGJsonbStorageFactory(BaseConfig):
             pool_timeout=config.pool_timeout,
             s3_client=s3_client,
             blob_cache=blob_cache,
-            blob_threshold=getattr(config, "blob_threshold", 1024 * 1024),
+            blob_threshold=getattr(config, "blob_threshold", 100 * 1024),
         )

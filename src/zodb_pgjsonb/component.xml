@@ -59,11 +59,11 @@
 
     <!-- S3 tiered blob storage (optional, requires zodb-pgjsonb[s3]) -->
 
-    <key name="blob-threshold" datatype="byte-size" default="1MB">
+    <key name="blob-threshold" datatype="byte-size" default="100KB">
       <description>
         Blobs larger than this are stored in S3 (if configured).
         Blobs smaller than this stay in PostgreSQL bytea.
-        Set to 0 to send all blobs to S3. Default: 1MB.
+        Set to 0 to send all blobs to S3. Default: 100KB.
         Requires s3-bucket-name to be set.
       </description>
     </key>

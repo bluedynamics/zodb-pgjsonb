@@ -207,7 +207,7 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
         pool_timeout=30.0,
         s3_client=None,
         blob_cache=None,
-        blob_threshold=1_048_576,
+        blob_threshold=102_400,
     ):
         BaseStorage.__init__(self, name)
         self._dsn = dsn
@@ -2335,7 +2335,7 @@ def _batch_write_blobs(
     tid_int,
     history_preserving=False,
     s3_client=None,
-    blob_threshold=1_048_576,
+    blob_threshold=102_400,
 ):
     """Write multiple blobs in batch with optional S3 tiering.
 
