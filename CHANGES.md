@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.3.1
+## 1.4.0
 
 - Reduce default `blob-threshold` from 1MB to 100KB to reduce WAL pollution
   when S3 tiering is enabled.
