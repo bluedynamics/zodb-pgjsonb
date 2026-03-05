@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.3.2
+## 1.3.1
 
 - Reduce default `blob-threshold` from 1MB to 100KB to reduce WAL pollution
   when S3 tiering is enabled.
@@ -11,8 +11,6 @@
   HP→HF conversion drops history tables, cleans old blob versions,
   and removes orphaned transaction log entries.
   Startup warning logged when HP tables exist in HF mode.
-
-## 1.3.1
 
 - Add progress logging to `copyTransactionsFrom()` for `zodbconvert` usage:
   per-transaction TID, record count, throughput (MB/s), and completion summary.
