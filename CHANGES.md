@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.5.0
+
+- Add parallel `copyTransactionsFrom(source, workers=N)` for faster migrations.
+  Multiple worker threads write to PostgreSQL concurrently, bypassing the
+  advisory lock serialization. The main thread reads from the source storage,
+  decodes pickles, and orchestrates OID-level dependency tracking to guarantee
+  correct write ordering. Default `workers=1` preserves existing sequential
+  behavior.
+
+## 1.4.1
+
+- Fix `FileNotFoundError` when `blob-temp-dir` is configured but the directory
+  does not exist yet. The storage now auto-creates the directory on startup.
+
 ## 1.4.0
 
 - Reduce default `blob-threshold` from 1MB to 100KB to reduce WAL pollution

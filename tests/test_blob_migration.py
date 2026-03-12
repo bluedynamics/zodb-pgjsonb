@@ -240,3 +240,203 @@ class TestBlobMigration:
         conn.close()
         dest_db.close()
         source.close()
+
+
+class TestParallelCopyTransactionsFrom:
+    """Test parallel copyTransactionsFrom with workers > 1."""
+
+    def test_parallel_copy_basic(self, temp_dir):
+        """Multiple transactions copied in parallel, all data intact."""
+        _clean_db()
+
+        fs_path = os.path.join(temp_dir, "Data.fs")
+        blob_dir = os.path.join(temp_dir, "blobs")
+        os.makedirs(blob_dir)
+
+        source = FileStorage(fs_path, blob_dir=blob_dir)
+        source_db = ZODB.DB(source)
+        conn = source_db.open()
+        root = conn.root()
+
+        # Create several transactions with different objects
+        root["a"] = PersistentMapping({"val": 1})
+        txn.commit()
+        root["b"] = PersistentMapping({"val": 2})
+        txn.commit()
+        root["c"] = PersistentMapping({"val": 3})
+        txn.commit()
+        root["d"] = PersistentMapping({"val": 4})
+        txn.commit()
+        root["e"] = PersistentMapping({"val": 5})
+        txn.commit()
+
+        conn.close()
+        source_db.close()
+
+        source = FileStorage(fs_path, blob_dir=blob_dir, read_only=True)
+        dest = PGJsonbStorage(DSN, pool_max_size=4)
+        dest.copyTransactionsFrom(source, workers=2)
+
+        dest_db = ZODB.DB(dest)
+        conn = dest_db.open()
+        root = conn.root()
+        assert root["a"]["val"] == 1
+        assert root["b"]["val"] == 2
+        assert root["c"]["val"] == 3
+        assert root["d"]["val"] == 4
+        assert root["e"]["val"] == 5
+        conn.close()
+        dest_db.close()
+        source.close()
+
+    def test_parallel_copy_oid_ordering(self, temp_dir):
+        """Multiple revisions of the same OID are written in order."""
+        _clean_db()
+
+        fs_path = os.path.join(temp_dir, "Data.fs")
+        blob_dir = os.path.join(temp_dir, "blobs")
+        os.makedirs(blob_dir)
+
+        source = FileStorage(fs_path, blob_dir=blob_dir)
+        source_db = ZODB.DB(source)
+        conn = source_db.open()
+        root = conn.root()
+
+        # Same object updated across several transactions
+        root["counter"] = PersistentMapping({"n": 0})
+        txn.commit()
+        root["counter"]["n"] = 1
+        txn.commit()
+        root["counter"]["n"] = 2
+        txn.commit()
+        root["counter"]["n"] = 3
+        txn.commit()
+
+        conn.close()
+        source_db.close()
+
+        source = FileStorage(fs_path, blob_dir=blob_dir, read_only=True)
+        dest = PGJsonbStorage(DSN, pool_max_size=4)
+        dest.copyTransactionsFrom(source, workers=2)
+
+        # The final value must be 3 — OID ordering preserved.
+        dest_db = ZODB.DB(dest)
+        conn = dest_db.open()
+        root = conn.root()
+        assert root["counter"]["n"] == 3
+        conn.close()
+        dest_db.close()
+        source.close()
+
+    def test_parallel_copy_with_blobs(self, temp_dir):
+        """Blobs are correctly migrated using parallel workers."""
+        _clean_db()
+
+        fs_path = os.path.join(temp_dir, "Data.fs")
+        blob_dir = os.path.join(temp_dir, "blobs")
+        os.makedirs(blob_dir)
+
+        source = FileStorage(fs_path, blob_dir=blob_dir)
+        source_db = ZODB.DB(source)
+        conn = source_db.open()
+        root = conn.root()
+
+        root["blob1"] = Blob(b"parallel blob one")
+        txn.commit()
+        root["blob2"] = Blob(b"parallel blob two")
+        txn.commit()
+        root["blob3"] = Blob(b"parallel blob three")
+        txn.commit()
+
+        conn.close()
+        source_db.close()
+
+        source = FileStorage(fs_path, blob_dir=blob_dir, read_only=True)
+        dest = PGJsonbStorage(DSN, pool_max_size=4)
+        dest.copyTransactionsFrom(source, workers=2)
+
+        dest_db = ZODB.DB(dest)
+        conn = dest_db.open()
+        root = conn.root()
+        with root["blob1"].open("r") as f:
+            assert f.read() == b"parallel blob one"
+        with root["blob2"].open("r") as f:
+            assert f.read() == b"parallel blob two"
+        with root["blob3"].open("r") as f:
+            assert f.read() == b"parallel blob three"
+        conn.close()
+        dest_db.close()
+        source.close()
+
+    def test_parallel_copy_history_preserving(self, temp_dir):
+        """Parallel copy works in history-preserving mode."""
+        _clean_db()
+
+        fs_path = os.path.join(temp_dir, "Data.fs")
+        blob_dir = os.path.join(temp_dir, "blobs")
+        os.makedirs(blob_dir)
+
+        source = FileStorage(fs_path, blob_dir=blob_dir)
+        source_db = ZODB.DB(source)
+        conn = source_db.open()
+        root = conn.root()
+
+        root["item"] = PersistentMapping({"v": "first"})
+        txn.commit()
+        root["item"]["v"] = "second"
+        txn.commit()
+        root["item"]["v"] = "third"
+        txn.commit()
+
+        conn.close()
+        source_db.close()
+
+        source = FileStorage(fs_path, blob_dir=blob_dir, read_only=True)
+        dest = PGJsonbStorage(DSN, history_preserving=True, pool_max_size=4)
+        dest.copyTransactionsFrom(source, workers=2)
+
+        dest_db = ZODB.DB(dest)
+        conn = dest_db.open()
+        root = conn.root()
+        assert root["item"]["v"] == "third"
+
+        # Verify history exists
+        db_conn = psycopg.connect(DSN)
+        with db_conn.cursor() as cur:
+            cur.execute("SELECT count(*) FROM object_history")
+            history_count = cur.fetchone()[0]
+        db_conn.close()
+        assert history_count > 0, "History table should have entries"
+
+        conn.close()
+        dest_db.close()
+        source.close()
+
+    def test_parallel_copy_fallback_single_worker(self, temp_dir):
+        """workers=1 uses the sequential path (backward compat)."""
+        _clean_db()
+
+        fs_path = os.path.join(temp_dir, "Data.fs")
+        blob_dir = os.path.join(temp_dir, "blobs")
+        os.makedirs(blob_dir)
+
+        source = FileStorage(fs_path, blob_dir=blob_dir)
+        source_db = ZODB.DB(source)
+        conn = source_db.open()
+        root = conn.root()
+        root["x"] = "hello"
+        txn.commit()
+        conn.close()
+        source_db.close()
+
+        source = FileStorage(fs_path, blob_dir=blob_dir, read_only=True)
+        dest = PGJsonbStorage(DSN)
+        dest.copyTransactionsFrom(source, workers=1)
+
+        dest_db = ZODB.DB(dest)
+        conn = dest_db.open()
+        root = conn.root()
+        assert root["x"] == "hello"
+        conn.close()
+        dest_db.close()
+        source.close()

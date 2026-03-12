@@ -50,6 +50,7 @@ import re
 import shutil
 import sys
 import tempfile
+import threading
 import time
 import zodb_json_codec
 import zope.interface
@@ -233,6 +234,7 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
         self._blob_temp_dir = blob_temp_dir or tempfile.mkdtemp(
             prefix="zodb-pgjsonb-blobs-"
         )
+        os.makedirs(self._blob_temp_dir, exist_ok=True)
 
         # Load cache: zoid → (pickle_bytes, tid_bytes), bounded LRU
         self._load_cache = LoadCache(max_mb=cache_local_mb)
@@ -941,7 +943,7 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
             shutil.move(blobfilename, staged)
             self._blob_tmp[zoid] = staged
 
-    def copyTransactionsFrom(self, other):
+    def copyTransactionsFrom(self, other, workers=1):
         """Copy all transactions from another storage, including blobs.
 
         Overrides BaseStorage.copyTransactionsFrom to correctly handle
@@ -950,7 +952,88 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
 
         Blob files are copied (not moved) from the source storage so
         the source remains intact after migration.
+
+        When *workers* > 1, uses parallel PG connections to write
+        transactions concurrently.  The main thread handles source
+        iteration and pickle decoding; worker threads handle PG writes.
+        OID ordering is preserved by the main-thread orchestrator.
         """
+        if workers > 1:
+            return self._copyTransactionsFrom_parallel(other, workers)
+        return self._copyTransactionsFrom_sequential(other)
+
+    def _prepare_transaction(self, txn_info, source_storage):
+        """Decode all records in a transaction for batch writing.
+
+        Iterates records, decodes pickle → JSON via the Rust codec,
+        runs state processors, and copies blob files to temp paths.
+
+        Returns a dict ready for ``_write_prepared_transaction()``.
+        """
+        tid = txn_info.tid
+        tid_int = u64(tid)
+        source_has_blobs = IBlobStorage.providedBy(source_storage)
+
+        objects = []
+        blobs = []  # list of (zoid, temp_blob_path)
+        byte_size = 0
+
+        for record in txn_info:
+            if record.data is None:
+                continue
+
+            zoid = u64(record.oid)
+            class_mod, class_name, state, refs = (
+                zodb_json_codec.decode_zodb_record_for_pg_json(record.data)
+            )
+            entry = {
+                "zoid": zoid,
+                "class_mod": class_mod,
+                "class_name": class_name,
+                "state": state,
+                "state_size": len(record.data),
+                "refs": refs,
+            }
+            extra = self._process_state(zoid, class_mod, class_name, state)
+            if extra:
+                entry["_extra"] = extra
+            objects.append(entry)
+
+            # Blob handling
+            if source_has_blobs and is_blob_record(record.data):
+                try:
+                    blob_filename = source_storage.loadBlob(record.oid, record.tid)
+                except (POSKeyError, KeyError, OSError):
+                    blob_filename = None
+                if blob_filename is not None:
+                    fd, tmp = tempfile.mkstemp(suffix=".blob", dir=self._blob_temp_dir)
+                    os.close(fd)
+                    shutil.copy2(blob_filename, tmp)
+                    blobs.append((zoid, tmp))
+
+            if record.data:
+                byte_size += len(record.data)
+
+        user = txn_info.user
+        desc = txn_info.description
+        if isinstance(user, bytes):
+            user = user.decode("utf-8")
+        if isinstance(desc, bytes):
+            desc = desc.decode("utf-8")
+
+        return {
+            "tid": tid,
+            "tid_int": tid_int,
+            "user": user,
+            "description": desc,
+            "extension": txn_info.extension,
+            "objects": objects,
+            "blobs": blobs,
+            "byte_size": byte_size,
+        }
+
+    def _copyTransactionsFrom_sequential(self, other):
+        """Sequential copy — one transaction at a time via TPC protocol."""
         begin_time = time.time()
         txnum = 0
         total_size = 0
@@ -971,8 +1054,6 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
                     with contextlib.suppress(POSKeyError):
                         blobfilename = other.loadBlob(record.oid, record.tid)
                 if blobfilename is not None:
-                    # Copy blob to temp file — restoreBlob moves the file,
-                    # which would corrupt the source storage otherwise.
                     fd, tmp = tempfile.mkstemp(suffix=".blob", dir=self._blob_temp_dir)
                     os.close(fd)
                     shutil.copy2(blobfilename, tmp)
@@ -1016,6 +1097,139 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
             "All %d transactions copied successfully in %4.1f minutes.",
             txnum,
             elapsed / 60.0,
+        )
+
+    def _copyTransactionsFrom_parallel(self, other, num_workers):
+        """Parallel copy — N worker threads write to PG concurrently.
+
+        The main thread reads from the source storage, decodes pickles,
+        and dispatches pre-decoded transaction dicts to worker threads.
+        OID ordering is guaranteed: if a transaction touches an OID that
+        is still being written by a worker, the main thread waits for
+        that worker to finish before dispatching.
+        """
+        from concurrent.futures import ThreadPoolExecutor
+        from concurrent.futures import wait as futures_wait
+
+        begin_time = time.time()
+        num_txns = 0
+        logger.info("Counting the transactions to copy.")
+        for _ in other.iterator():
+            num_txns += 1
+
+        pool_max = self._instance_pool.max_size
+        if num_workers > pool_max:
+            logger.warning(
+                "Requested %d workers but pool_max_size is %d. Using %d workers.",
+                num_workers,
+                pool_max,
+                pool_max,
+            )
+            num_workers = pool_max
+
+        logger.info(
+            "Copying %d transactions with %d parallel workers.",
+            num_txns,
+            num_workers,
+        )
+
+        extra_columns = self._get_extra_columns()
+        hp = self._history_preserving
+        processors = list(self._state_processors)
+
+        # Thread-local PG connections — one per worker thread.
+        _local = threading.local()
+        worker_conns = []
+        _conn_lock = threading.Lock()
+
+        def _get_worker_conn():
+            if not hasattr(_local, "conn"):
+                conn = self._instance_pool.getconn()
+                _local.conn = conn
+                with _conn_lock:
+                    worker_conns.append(conn)
+            return _local.conn
+
+        def _write_worker(txn_data):
+            conn = _get_worker_conn()
+            _write_prepared_transaction(
+                conn,
+                txn_data,
+                hp,
+                extra_columns,
+                processors,
+                s3_client=self._s3_client,
+                blob_threshold=self._blob_threshold,
+            )
+
+        # OID dependency tracking: zoid → Future currently writing it.
+        in_flight = {}
+        txn_count = 0
+        total_size = 0
+        last_tid = None
+
+        executor = ThreadPoolExecutor(max_workers=num_workers)
+        try:
+            for txn_info in other.iterator():
+                txn_data = self._prepare_transaction(txn_info, other)
+                txn_oids = {obj["zoid"] for obj in txn_data["objects"]}
+                # Include blob OIDs (they reference the same zoid)
+                txn_oids.update(zoid for zoid, _ in txn_data["blobs"])
+
+                # Wait for any in-flight transactions touching same OIDs.
+                blocking = set()
+                for oid in txn_oids:
+                    fut = in_flight.get(oid)
+                    if fut is not None and not fut.done():
+                        blocking.add(fut)
+                if blocking:
+                    done, _ = futures_wait(blocking)
+                    # Re-raise worker exceptions early.
+                    for f in done:
+                        f.result()
+
+                future = executor.submit(_write_worker, txn_data)
+                for oid in txn_oids:
+                    in_flight[oid] = future
+
+                txn_count += 1
+                total_size += txn_data["byte_size"]
+                last_tid = txn_data["tid"]
+
+                if txn_count % 100 == 0:
+                    elapsed = time.time() - begin_time
+                    rate = total_size / 1_000_000 / elapsed if elapsed else 0
+                    pct = txn_count * 100.0 / num_txns
+                    logger.info(
+                        "Dispatched %6d/%6d txns (%5.2f%%) | %6.3f MB/s",
+                        txn_count,
+                        num_txns,
+                        pct,
+                        rate,
+                    )
+
+            # Wait for all remaining workers to finish.
+            executor.shutdown(wait=True)
+
+            # Update last TID on main storage.
+            if last_tid is not None:
+                self._ltid = last_tid
+
+        except BaseException:
+            executor.shutdown(wait=False, cancel_futures=True)
+            raise
+
+        finally:
+            for conn in worker_conns:
+                with contextlib.suppress(Exception):
+                    self._instance_pool.putconn(conn)
+
+        elapsed = time.time() - begin_time
+        logger.info(
+            "All %d transactions copied in %4.1f minutes with %d workers.",
+            txn_count,
+            elapsed / 60.0,
+            num_workers,
         )
 
     # ── IBlobStorage ─────────────────────────────────────────────────
@@ -2385,6 +2599,59 @@ def _batch_write_blobs(
             "s3_key = EXCLUDED.s3_key, data = NULL",
             s3_params,
         )
+
+
+def _write_prepared_transaction(
+    conn,
+    txn_data,
+    history_preserving,
+    extra_columns,
+    processors,
+    s3_client=None,
+    blob_threshold=102_400,
+):
+    """Write a pre-decoded transaction directly to PG.
+
+    Bypasses the TPC protocol and advisory lock — intended only for
+    parallel migration where the caller guarantees OID ordering.
+
+    *conn* must have ``autocommit=True`` (the default for pool conns).
+    """
+    tid_int = txn_data["tid_int"]
+
+    conn.execute("BEGIN")
+    try:
+        with conn.cursor() as cur:
+            _write_txn_log(
+                cur,
+                tid_int,
+                txn_data["user"],
+                txn_data["description"],
+                txn_data["extension"],
+            )
+            _batch_write_objects(
+                cur,
+                txn_data["objects"],
+                tid_int,
+                history_preserving,
+                extra_columns=extra_columns,
+            )
+            _batch_write_blobs(
+                cur,
+                txn_data["blobs"],
+                tid_int,
+                history_preserving,
+                s3_client=s3_client,
+                blob_threshold=blob_threshold,
+            )
+            for proc in processors:
+                if hasattr(proc, "finalize"):
+                    proc.finalize(cur)
+        conn.execute("COMMIT")
+    except BaseException:
+        with contextlib.suppress(Exception):
+            conn.execute("ROLLBACK")
+        raise
 
 
 def _load_blob_from_s3(s3_client, blob_cache, s3_key, oid, serial, path):
