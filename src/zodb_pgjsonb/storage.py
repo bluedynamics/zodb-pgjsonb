@@ -1037,13 +1037,7 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
         begin_time = time.time()
         txnum = 0
         total_size = 0
-        num_txns = 0
-        logger.info("Counting the transactions to copy ...")
-        for _ in other.iterator():
-            num_txns += 1
-            if num_txns % 10000 == 0:
-                logger.info("  ... counted %d transactions so far", num_txns)
-        logger.info("Copying %d transactions.", num_txns)
+        logger.info("Copying transactions (sequential) ...")
         for txn_info in other.iterator():
             txnum += 1
             self.tpc_begin(txn_info, txn_info.tid, txn_info.status)
@@ -1081,18 +1075,14 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
                     total_size += len(record.data)
             self.tpc_vote(txn_info)
             self.tpc_finish(txn_info)
-            pct_complete = "%1.2f%%" % (txnum * 100.0 / num_txns)
             elapsed = time.time() - begin_time
-            rate = total_size / 1000000.0 / elapsed if elapsed else 0.0
-            rate_str = f"{rate:.3f}"
+            rate = total_size / 1_000_000 / elapsed if elapsed else 0
             logger.info(
-                "Copied tid %d,%5d records | %6s MB/s (%6d/%6d,%7s)",
+                "Copied tid %d,%5d records | %6.3f MB/s (%6d txns)",
                 u64(txn_info.tid),
                 num_txn_records,
-                rate_str,
+                rate,
                 txnum,
-                num_txns,
-                pct_complete,
             )
         elapsed = time.time() - begin_time
         logger.info(
@@ -1114,12 +1104,6 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
         from concurrent.futures import wait as futures_wait
 
         begin_time = time.time()
-        num_txns = 0
-        logger.info("Counting the transactions to copy ...")
-        for _ in other.iterator():
-            num_txns += 1
-            if num_txns % 10000 == 0:
-                logger.info("  ... counted %d transactions so far", num_txns)
 
         pool_max = self._instance_pool.max_size
         if num_workers > pool_max:
@@ -1131,11 +1115,7 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
             )
             num_workers = pool_max
 
-        logger.info(
-            "Copying %d transactions with %d parallel workers.",
-            num_txns,
-            num_workers,
-        )
+        logger.info("Copying transactions with %d parallel workers ...", num_workers)
 
         extra_columns = self._get_extra_columns()
         hp = self._history_preserving
@@ -1203,12 +1183,9 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
                 if txn_count % 10 == 0:
                     elapsed = time.time() - begin_time
                     rate = total_size / 1_000_000 / elapsed if elapsed else 0
-                    pct = txn_count * 100.0 / num_txns
                     logger.info(
-                        "Dispatched %6d/%6d txns (%5.1f%%) | %6.3f MB/s",
+                        "Dispatched %6d txns | %6.3f MB/s",
                         txn_count,
-                        num_txns,
-                        pct,
                         rate,
                     )
 
