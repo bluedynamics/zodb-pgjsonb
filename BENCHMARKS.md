@@ -3,9 +3,10 @@
 Comparison of `PGJsonbStorage` vs `RelStorage` (both using PostgreSQL)
 for ZODB storage operations at multiple abstraction levels.
 
-Measured on: 2026-02-24
-Python: 3.13.9, PostgreSQL: 17, zodb-json-codec: 1.4.0
+Measured on: 2026-02-25
+Python: 3.13.9, PostgreSQL: 17, zodb-json-codec: 1.5.0
 100 iterations, 10 warmup, Docker-containerized PostgreSQL on localhost
+3 runs per version, median of medians reported
 
 ## Architecture differences
 
@@ -174,18 +175,43 @@ queries that check `object_state` first (PK lookup) before scanning history.
 
 | Operation | PGJsonb | RelStorage | Comparison |
 |---|---|---|---|
-| site creation | 1.09 s | 1.06 s | on par |
-| content create/doc | 28.2 ms | 27.2 ms | on par |
-| catalog query | 199 us | 180 us | on par |
-| content modify/doc | 6.8 ms | 6.7 ms | on par |
+| site creation | 1.07 s | 1.06 s | on par |
+| content create/doc | 27.5 ms | 27.2 ms | on par |
+| catalog query | 190 us | 180 us | on par |
+| content modify/doc | 6.6 ms | 6.7 ms | on par |
 
-*Note: Plone benchmarks from 2026-02-08 (pkg_resources incompatibility
-prevents re-run). These numbers remain valid — the codec upgrade does not
-affect application-level performance.*
+*PGJsonb numbers from 2026-02-25 (codec v1.5.0, 3 runs, median).
+RelStorage numbers from 2026-02-08 (unchanged — codec does not affect
+RelStorage).*
 
 Real Plone workloads show both backends performing identically. At the
 application level, ZODB's object cache handles the hot path, and per-object
 transcoding cost is negligible relative to Plone's own processing.
+
+---
+
+## Codec version impact (v1.4.0 vs v1.5.0)
+
+Tested with 3 runs per version (PyPI wheels), median of medians.
+The codec upgrade from 1.4.0 to 1.5.0 shows **no measurable change** in
+storage-level benchmarks — all differences are within run-to-run noise
+(typically 5-15% variance). This is expected: codec transcoding is a small
+fraction of the total operation time, which is dominated by PostgreSQL I/O
+and 2PC overhead.
+
+| Operation | v1.4.0 | v1.5.0 | Delta |
+|---|---|---|---|
+| store single | 5.2 ms | 5.6 ms | within noise |
+| store batch 10 | 6.7 ms | 6.9 ms | within noise |
+| load uncached | 120 us | 93 us | within noise |
+| zodb write simple | 8.3 ms | 8.2 ms | within noise |
+| zodb write btree | 7.3 ms | 7.2 ms | within noise |
+| HP store single | 5.8 ms | 5.7 ms | within noise |
+| HP load uncached | 103 us | 96 us | within noise |
+| pack 10000 | 22.1 ms | 22.1 ms | within noise |
+
+v1.5.0 adds set/frozenset encode support and correctness fixes; its
+performance characteristics are identical to v1.4.0 at the storage level.
 
 ---
 

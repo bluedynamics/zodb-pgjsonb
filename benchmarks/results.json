@@ -1,12 +1,12 @@
 {
-  "timestamp": "2026-02-08T23:31:07.781598+00:00",
+  "timestamp": "2026-02-25T00:54:56.138623+00:00",
   "python_version": "3.13.9 (main, Oct 14 2025, 21:29:44) [Clang 20.1.4 ]",
   "iterations": 100,
   "warmup": 10,
   "config": {
     "pgjsonb": {
       "cache_type": "OrderedDict LRU (pure Python)",
-      "cache_default_mb": 64,
+      "cache_default_mb": 16,
       "cache_scope": "per-instance (not shared)",
       "transcode": "zodb-json-codec (Rust/PyO3)",
       "storage_format": "JSONB"
@@ -20,138 +20,77 @@
     }
   },
   "pgjsonb_version": "dev",
-  "relstorage_version": "unknown",
   "storage": {
     "store single": {
       "PGJsonbStorage": {
         "count": 100,
-        "mean_ms": 3.6,
-        "median_ms": 3.561,
-        "p95_ms": 3.997,
-        "p99_ms": 4.335,
-        "min_ms": 3.204,
-        "max_ms": 4.473,
-        "stddev_ms": 0.242
-      },
-      "RelStorage": {
-        "count": 100,
-        "mean_ms": 4.828,
-        "median_ms": 4.766,
-        "p95_ms": 5.295,
-        "p99_ms": 5.809,
-        "min_ms": 4.302,
-        "max_ms": 8.075,
-        "stddev_ms": 0.432
+        "mean_ms": 4.642,
+        "median_ms": 4.523,
+        "p95_ms": 5.251,
+        "p99_ms": 7.499,
+        "min_ms": 4.024,
+        "max_ms": 7.577,
+        "stddev_ms": 0.531
       }
     },
     "store batch 10": {
       "PGJsonbStorage": {
         "count": 100,
-        "mean_ms": 4.82,
-        "median_ms": 4.501,
-        "p95_ms": 6.537,
-        "p99_ms": 10.004,
-        "min_ms": 3.743,
-        "max_ms": 11.124,
-        "stddev_ms": 1.119
-      },
-      "RelStorage": {
-        "count": 100,
-        "mean_ms": 10.384,
-        "median_ms": 9.806,
-        "p95_ms": 17.827,
-        "p99_ms": 24.342,
-        "min_ms": 4.748,
-        "max_ms": 37.759,
-        "stddev_ms": 5.237
+        "mean_ms": 5.358,
+        "median_ms": 5.23,
+        "p95_ms": 6.053,
+        "p99_ms": 8.742,
+        "min_ms": 3.514,
+        "max_ms": 9.398,
+        "stddev_ms": 0.848
       }
     },
     "store batch 100": {
       "PGJsonbStorage": {
         "count": 20,
-        "mean_ms": 7.809,
-        "median_ms": 7.822,
-        "p95_ms": 8.327,
-        "p99_ms": 8.987,
-        "min_ms": 7.079,
-        "max_ms": 9.151,
-        "stddev_ms": 0.504
-      },
-      "RelStorage": {
-        "count": 20,
-        "mean_ms": 6.528,
-        "median_ms": 6.462,
-        "p95_ms": 7.032,
-        "p99_ms": 7.036,
-        "min_ms": 6.168,
-        "max_ms": 7.037,
-        "stddev_ms": 0.285
+        "mean_ms": 6.841,
+        "median_ms": 6.613,
+        "p95_ms": 8.784,
+        "p99_ms": 9.096,
+        "min_ms": 5.552,
+        "max_ms": 9.175,
+        "stddev_ms": 0.934
       }
     },
     "load cached": {
       "PGJsonbStorage": {
         "count": 100,
-        "mean_ms": 0.0,
-        "median_ms": 0.0,
-        "p95_ms": 0.0,
-        "p99_ms": 0.001,
-        "min_ms": 0.0,
-        "max_ms": 0.001,
-        "stddev_ms": 0.0
-      },
-      "RelStorage": {
-        "count": 100,
         "mean_ms": 0.001,
         "median_ms": 0.001,
         "p95_ms": 0.001,
-        "p99_ms": 0.002,
-        "min_ms": 0.001,
-        "max_ms": 0.002,
+        "p99_ms": 0.001,
+        "min_ms": 0.0,
+        "max_ms": 0.001,
         "stddev_ms": 0.0
       }
     },
     "load batch cached": {
       "PGJsonbStorage": {
         "count": 20,
-        "mean_ms": 0.024,
-        "median_ms": 0.024,
-        "p95_ms": 0.025,
+        "mean_ms": 0.022,
+        "median_ms": 0.022,
+        "p95_ms": 0.022,
         "p99_ms": 0.025,
-        "min_ms": 0.023,
-        "max_ms": 0.025,
-        "stddev_ms": 0.0
-      },
-      "RelStorage": {
-        "count": 20,
-        "mean_ms": 0.105,
-        "median_ms": 0.103,
-        "p95_ms": 0.11,
-        "p99_ms": 0.111,
-        "min_ms": 0.1,
-        "max_ms": 0.111,
-        "stddev_ms": 0.004
+        "min_ms": 0.022,
+        "max_ms": 0.026,
+        "stddev_ms": 0.001
       }
     },
     "load uncached": {
       "PGJsonbStorage": {
         "count": 100,
-        "mean_ms": 0.097,
-        "median_ms": 0.091,
-        "p95_ms": 0.117,
-        "p99_ms": 0.254,
-        "min_ms": 0.077,
-        "max_ms": 0.269,
+        "mean_ms": 0.102,
+        "median_ms": 0.093,
+        "p95_ms": 0.152,
+        "p99_ms": 0.221,
+        "min_ms": 0.065,
+        "max_ms": 0.222,
         "stddev_ms": 0.028
-      },
-      "RelStorage": {
-        "count": 100,
-        "mean_ms": 0.045,
-        "median_ms": 0.044,
-        "p95_ms": 0.052,
-        "p99_ms": 0.054,
-        "min_ms": 0.041,
-        "max_ms": 0.059,
-        "stddev_ms": 0.003
       }
     }
   },
@@ -159,45 +98,25 @@
     "zodb write simple": {
       "PGJsonbStorage": {
         "count": 100,
-        "mean_ms": 5.384,
-        "median_ms": 5.252,
-        "p95_ms": 6.358,
-        "p99_ms": 8.673,
-        "min_ms": 4.416,
-        "max_ms": 10.189,
-        "stddev_ms": 0.817
-      },
-      "RelStorage": {
-        "count": 100,
-        "mean_ms": 5.721,
-        "median_ms": 5.644,
-        "p95_ms": 6.437,
-        "p99_ms": 6.571,
-        "min_ms": 5.154,
-        "max_ms": 7.163,
-        "stddev_ms": 0.369
+        "mean_ms": 7.44,
+        "median_ms": 7.408,
+        "p95_ms": 8.756,
+        "p99_ms": 9.688,
+        "min_ms": 5.814,
+        "max_ms": 12.04,
+        "stddev_ms": 0.979
       }
     },
     "zodb write btree": {
       "PGJsonbStorage": {
         "count": 100,
-        "mean_ms": 4.451,
-        "median_ms": 4.424,
-        "p95_ms": 5.058,
-        "p99_ms": 5.333,
-        "min_ms": 3.76,
-        "max_ms": 5.375,
-        "stddev_ms": 0.31
-      },
-      "RelStorage": {
-        "count": 100,
-        "mean_ms": 5.517,
-        "median_ms": 5.511,
-        "p95_ms": 6.06,
-        "p99_ms": 6.198,
-        "min_ms": 4.946,
-        "max_ms": 6.222,
-        "stddev_ms": 0.278
+        "mean_ms": 6.68,
+        "median_ms": 6.597,
+        "p95_ms": 7.702,
+        "p99_ms": 10.397,
+        "min_ms": 5.073,
+        "max_ms": 10.542,
+        "stddev_ms": 0.817
       }
     },
     "zodb cached read": {
@@ -210,60 +129,30 @@
         "min_ms": 0.001,
         "max_ms": 0.005,
         "stddev_ms": 0.0
-      },
-      "RelStorage": {
-        "count": 100,
-        "mean_ms": 0.002,
-        "median_ms": 0.002,
-        "p95_ms": 0.003,
-        "p99_ms": 0.004,
-        "min_ms": 0.001,
-        "max_ms": 0.005,
-        "stddev_ms": 0.001
       }
     },
     "zodb connection cycle": {
       "PGJsonbStorage": {
         "count": 100,
-        "mean_ms": 0.171,
-        "median_ms": 0.156,
-        "p95_ms": 0.234,
-        "p99_ms": 0.376,
-        "min_ms": 0.134,
-        "max_ms": 0.445,
-        "stddev_ms": 0.05
-      },
-      "RelStorage": {
-        "count": 100,
-        "mean_ms": 0.148,
-        "median_ms": 0.144,
-        "p95_ms": 0.179,
-        "p99_ms": 0.296,
-        "min_ms": 0.118,
-        "max_ms": 0.369,
-        "stddev_ms": 0.03
+        "mean_ms": 0.242,
+        "median_ms": 0.197,
+        "p95_ms": 0.404,
+        "p99_ms": 0.466,
+        "min_ms": 0.152,
+        "max_ms": 0.469,
+        "stddev_ms": 0.085
       }
     },
     "zodb write batch 10": {
       "PGJsonbStorage": {
         "count": 20,
-        "mean_ms": 7.69,
-        "median_ms": 7.724,
-        "p95_ms": 8.671,
-        "p99_ms": 8.746,
-        "min_ms": 6.297,
-        "max_ms": 8.765,
-        "stddev_ms": 0.785
-      },
-      "RelStorage": {
-        "count": 20,
-        "mean_ms": 6.716,
-        "median_ms": 6.682,
-        "p95_ms": 7.374,
-        "p99_ms": 7.475,
-        "min_ms": 6.157,
-        "max_ms": 7.5,
-        "stddev_ms": 0.405
+        "mean_ms": 11.434,
+        "median_ms": 11.785,
+        "p95_ms": 14.738,
+        "p99_ms": 15.646,
+        "min_ms": 5.759,
+        "max_ms": 15.873,
+        "stddev_ms": 2.836
       }
     }
   },
@@ -271,125 +160,163 @@
     "100": {
       "PGJsonbStorage": {
         "count": 3,
-        "mean_ms": 5.681,
-        "median_ms": 5.683,
-        "p95_ms": 5.713,
-        "p99_ms": 5.716,
-        "min_ms": 5.644,
-        "max_ms": 5.717,
-        "stddev_ms": 0.036
-      },
-      "RelStorage": {
-        "count": 3,
-        "mean_ms": 125.385,
-        "median_ms": 124.897,
-        "p95_ms": 129.167,
-        "p99_ms": 129.547,
-        "min_ms": 121.617,
-        "max_ms": 129.642,
-        "stddev_ms": 4.034
+        "mean_ms": 8.444,
+        "median_ms": 8.416,
+        "p95_ms": 8.935,
+        "p99_ms": 8.981,
+        "min_ms": 7.924,
+        "max_ms": 8.993,
+        "stddev_ms": 0.535
       }
     },
     "1000": {
       "PGJsonbStorage": {
         "count": 3,
-        "mean_ms": 6.944,
-        "median_ms": 6.965,
-        "p95_ms": 7.122,
-        "p99_ms": 7.136,
-        "min_ms": 6.728,
-        "max_ms": 7.139,
-        "stddev_ms": 0.206
-      },
-      "RelStorage": {
-        "count": 3,
-        "mean_ms": 163.141,
-        "median_ms": 164.223,
-        "p95_ms": 164.696,
-        "p99_ms": 164.738,
-        "min_ms": 160.454,
-        "max_ms": 164.748,
-        "stddev_ms": 2.342
+        "mean_ms": 6.04,
+        "median_ms": 6.042,
+        "p95_ms": 6.067,
+        "p99_ms": 6.07,
+        "min_ms": 6.007,
+        "max_ms": 6.07,
+        "stddev_ms": 0.032
       }
     },
     "10000": {
       "PGJsonbStorage": {
         "count": 3,
-        "mean_ms": 26.645,
-        "median_ms": 22.433,
-        "p95_ms": 33.806,
-        "p99_ms": 34.817,
-        "min_ms": 22.43,
-        "max_ms": 35.07,
-        "stddev_ms": 7.297
-      },
-      "RelStorage": {
-        "count": 3,
-        "mean_ms": 484.768,
-        "median_ms": 486.947,
-        "p95_ms": 498.441,
-        "p99_ms": 499.463,
-        "min_ms": 467.639,
-        "max_ms": 499.719,
-        "stddev_ms": 16.15
+        "mean_ms": 22.492,
+        "median_ms": 22.626,
+        "p95_ms": 23.174,
+        "p99_ms": 23.223,
+        "min_ms": 21.616,
+        "max_ms": 23.235,
+        "stddev_ms": 0.818
       }
     }
   },
-  "plone": {
-    "PGJsonbStorage": {
-      "backend": "PGJsonbStorage",
-      "site_creation_ms": 1085.072,
-      "content_creation": {
-        "count": 50,
-        "mean_ms": 28.236,
-        "median_ms": 27.567,
-        "min_ms": 23.509,
-        "max_ms": 44.212,
-        "total_ms": 1411.795
-      },
-      "catalog_query": {
-        "count": 50,
-        "mean_ms": 0.199,
-        "median_ms": 0.191,
-        "min_ms": 0.164,
-        "max_ms": 0.359,
-        "total_ms": 9.959
-      },
-      "content_modification": {
-        "count": 50,
-        "mean_ms": 6.811,
-        "median_ms": 6.554,
-        "min_ms": 5.859,
-        "max_ms": 10.881,
-        "total_ms": 340.571
+  "hp_storage": {
+    "HP store single": {
+      "PGJsonbStorage": {
+        "count": 100,
+        "mean_ms": 5.563,
+        "median_ms": 5.598,
+        "p95_ms": 6.654,
+        "p99_ms": 7.059,
+        "min_ms": 3.621,
+        "max_ms": 7.109,
+        "stddev_ms": 0.679
       }
     },
-    "RelStorage": {
-      "backend": "RelStorage",
-      "site_creation_ms": 1058.731,
-      "content_creation": {
-        "count": 50,
-        "mean_ms": 27.236,
-        "median_ms": 26.895,
-        "min_ms": 23.379,
-        "max_ms": 46.031,
-        "total_ms": 1361.792
-      },
-      "catalog_query": {
-        "count": 50,
-        "mean_ms": 0.18,
-        "median_ms": 0.17,
-        "min_ms": 0.161,
-        "max_ms": 0.364,
-        "total_ms": 9.006
-      },
-      "content_modification": {
-        "count": 50,
-        "mean_ms": 6.688,
-        "median_ms": 6.374,
-        "min_ms": 5.916,
-        "max_ms": 9.024,
-        "total_ms": 334.384
+    "HP store batch 10": {
+      "PGJsonbStorage": {
+        "count": 100,
+        "mean_ms": 7.055,
+        "median_ms": 6.991,
+        "p95_ms": 7.925,
+        "p99_ms": 8.571,
+        "min_ms": 6.017,
+        "max_ms": 9.949,
+        "stddev_ms": 0.592
+      }
+    },
+    "HP store batch 100": {
+      "PGJsonbStorage": {
+        "count": 20,
+        "mean_ms": 11.844,
+        "median_ms": 10.207,
+        "p95_ms": 17.349,
+        "p99_ms": 19.785,
+        "min_ms": 8.273,
+        "max_ms": 20.394,
+        "stddev_ms": 3.476
+      }
+    },
+    "HP loadBefore": {
+      "PGJsonbStorage": {
+        "count": 100,
+        "mean_ms": 0.342,
+        "median_ms": 0.328,
+        "p95_ms": 0.442,
+        "p99_ms": 0.521,
+        "min_ms": 0.253,
+        "max_ms": 0.596,
+        "stddev_ms": 0.066
+      }
+    },
+    "HP history()": {
+      "PGJsonbStorage": {
+        "count": 100,
+        "mean_ms": 0.274,
+        "median_ms": 0.258,
+        "p95_ms": 0.389,
+        "p99_ms": 0.464,
+        "min_ms": 0.207,
+        "max_ms": 0.52,
+        "stddev_ms": 0.052
+      }
+    },
+    "HP load uncached": {
+      "PGJsonbStorage": {
+        "count": 100,
+        "mean_ms": 0.087,
+        "median_ms": 0.083,
+        "p95_ms": 0.109,
+        "p99_ms": 0.118,
+        "min_ms": 0.063,
+        "max_ms": 0.302,
+        "stddev_ms": 0.024
+      }
+    }
+  },
+  "hp_zodb": {
+    "HP zodb write": {
+      "PGJsonbStorage": {
+        "count": 100,
+        "mean_ms": 9.087,
+        "median_ms": 9.172,
+        "p95_ms": 10.49,
+        "p99_ms": 11.454,
+        "min_ms": 5.956,
+        "max_ms": 12.321,
+        "stddev_ms": 1.072
+      }
+    },
+    "HP zodb undo": {
+      "PGJsonbStorage": {
+        "count": 100,
+        "mean_ms": 10.228,
+        "median_ms": 10.45,
+        "p95_ms": 12.635,
+        "p99_ms": 13.537,
+        "min_ms": 5.14,
+        "max_ms": 14.165,
+        "stddev_ms": 1.792
+      }
+    }
+  },
+  "hp_pack": {
+    "100": {
+      "PGJsonbStorage": {
+        "count": 3,
+        "mean_ms": 10.255,
+        "median_ms": 8.858,
+        "p95_ms": 12.818,
+        "p99_ms": 13.17,
+        "min_ms": 8.649,
+        "max_ms": 13.258,
+        "stddev_ms": 2.603
+      }
+    },
+    "1000": {
+      "PGJsonbStorage": {
+        "count": 3,
+        "mean_ms": 17.767,
+        "median_ms": 18.257,
+        "p95_ms": 19.098,
+        "p99_ms": 19.173,
+        "min_ms": 15.851,
+        "max_ms": 19.192,
+        "stddev_ms": 1.723
       }
     }
   }
