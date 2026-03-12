@@ -1169,6 +1169,11 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
         seen_oids = set()
         last_log_time = begin_time
         log_interval = 10.0  # seconds
+        # EMA rate smoothing (OIDs/second)
+        ema_rate = 0.0
+        ema_last_oids = 0
+        ema_last_time = begin_time
+        ema_alpha = 0.1
 
         executor = ThreadPoolExecutor(max_workers=num_workers)
         try:
@@ -1203,6 +1208,20 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
                 seen_oids.update(txn_oids)
 
                 now = time.time()
+
+                # Update EMA rate (sample at most once per second).
+                ema_dt = now - ema_last_time
+                if ema_dt >= 1.0:
+                    new_oids = len(seen_oids) - ema_last_oids
+                    instant_rate = new_oids / ema_dt
+                    ema_rate = (
+                        instant_rate
+                        if ema_rate == 0
+                        else ema_alpha * instant_rate + (1 - ema_alpha) * ema_rate
+                    )
+                    ema_last_oids = len(seen_oids)
+                    ema_last_time = now
+
                 if now - last_log_time >= log_interval:
                     elapsed = now - begin_time
                     rate = total_size / 1_000_000 / elapsed if elapsed else 0
@@ -1210,10 +1229,9 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
                     if total_oids:
                         pct = len(seen_oids) * 100.0 / total_oids
                         parts[0] += f" (~{pct:.1f}%)"
-                        oid_rate = len(seen_oids) / elapsed if elapsed else 0
-                        if oid_rate > 0:
-                            remaining = total_oids - len(seen_oids)
-                            eta_s = remaining / oid_rate
+                        remaining = total_oids - len(seen_oids)
+                        if ema_rate > 0 and remaining > 0:
+                            eta_s = remaining / ema_rate
                             if eta_s < 60:
                                 eta = f"{eta_s:.0f}s"
                             elif eta_s < 3600:
