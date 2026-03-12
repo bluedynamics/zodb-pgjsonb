@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.5.1
+
+- Remove transaction counting loop from `copyTransactionsFrom` — source is now
+  iterated exactly once instead of twice, halving copy time for large databases.
+- Progress logging every 10 dispatched transactions (parallel) or per-transaction
+  (sequential) with throughput stats.
+
 ## 1.5.0
 
 - Add parallel `copyTransactionsFrom(source, workers=N)` for faster migrations.
