@@ -1038,10 +1038,12 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
         txnum = 0
         total_size = 0
         num_txns = 0
-        logger.info("Counting the transactions to copy.")
+        logger.info("Counting the transactions to copy ...")
         for _ in other.iterator():
             num_txns += 1
-        logger.info("Copying the transactions.")
+            if num_txns % 10000 == 0:
+                logger.info("  ... counted %d transactions so far", num_txns)
+        logger.info("Copying %d transactions.", num_txns)
         for txn_info in other.iterator():
             txnum += 1
             self.tpc_begin(txn_info, txn_info.tid, txn_info.status)
@@ -1113,9 +1115,11 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
 
         begin_time = time.time()
         num_txns = 0
-        logger.info("Counting the transactions to copy.")
+        logger.info("Counting the transactions to copy ...")
         for _ in other.iterator():
             num_txns += 1
+            if num_txns % 10000 == 0:
+                logger.info("  ... counted %d transactions so far", num_txns)
 
         pool_max = self._instance_pool.max_size
         if num_workers > pool_max:
@@ -1196,12 +1200,12 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
                 total_size += txn_data["byte_size"]
                 last_tid = txn_data["tid"]
 
-                if txn_count % 100 == 0:
+                if txn_count % 10 == 0:
                     elapsed = time.time() - begin_time
                     rate = total_size / 1_000_000 / elapsed if elapsed else 0
                     pct = txn_count * 100.0 / num_txns
                     logger.info(
-                        "Dispatched %6d/%6d txns (%5.2f%%) | %6.3f MB/s",
+                        "Dispatched %6d/%6d txns (%5.1f%%) | %6.3f MB/s",
                         txn_count,
                         num_txns,
                         pct,
