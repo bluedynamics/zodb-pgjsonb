@@ -6,6 +6,12 @@
   iterated exactly once instead of twice, halving copy time for large databases.
 - Progress logging every 10 dispatched transactions (parallel) or per-transaction
   (sequential) with throughput stats.
+- Backpressure in parallel copy: limit in-flight prepared transactions to
+  `workers * 2` via semaphore, preventing unbounded blob temp file accumulation
+  (critical for databases with many large blobs).
+- Use hard links instead of file copies for blob temp staging when source and
+  destination are on the same filesystem (instant, zero extra disk). Falls back
+  to `shutil.copy2` for cross-device.
 
 ## 1.5.0
 

@@ -1008,7 +1008,7 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
                 if blob_filename is not None:
                     fd, tmp = tempfile.mkstemp(suffix=".blob", dir=self._blob_temp_dir)
                     os.close(fd)
-                    shutil.copy2(blob_filename, tmp)
+                    _link_or_copy(blob_filename, tmp)
                     blobs.append((zoid, tmp))
 
             if record.data:
@@ -1052,7 +1052,7 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
                 if blobfilename is not None:
                     fd, tmp = tempfile.mkstemp(suffix=".blob", dir=self._blob_temp_dir)
                     os.close(fd)
-                    shutil.copy2(blobfilename, tmp)
+                    _link_or_copy(blobfilename, tmp)
                     self.restoreBlob(
                         record.oid,
                         record.tid,
@@ -1134,17 +1134,24 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
                     worker_conns.append(conn)
             return _local.conn
 
+        # Backpressure: limit in-flight prepared transactions so blob
+        # temp files don't accumulate unbounded (important for large blobs).
+        _dispatch_sem = threading.BoundedSemaphore(num_workers * 2)
+
         def _write_worker(txn_data):
-            conn = _get_worker_conn()
-            _write_prepared_transaction(
-                conn,
-                txn_data,
-                hp,
-                extra_columns,
-                processors,
-                s3_client=self._s3_client,
-                blob_threshold=self._blob_threshold,
-            )
+            try:
+                conn = _get_worker_conn()
+                _write_prepared_transaction(
+                    conn,
+                    txn_data,
+                    hp,
+                    extra_columns,
+                    processors,
+                    s3_client=self._s3_client,
+                    blob_threshold=self._blob_threshold,
+                )
+            finally:
+                _dispatch_sem.release()
 
         # OID dependency tracking: zoid → Future currently writing it.
         in_flight = {}
@@ -1172,6 +1179,9 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
                     for f in done:
                         f.result()
 
+                # Backpressure: block if too many txns queued (limits
+                # temp blob disk usage to num_workers * 2 transactions).
+                _dispatch_sem.acquire()
                 future = executor.submit(_write_worker, txn_data)
                 for oid in txn_oids:
                     in_flight[oid] = future
@@ -1968,6 +1978,15 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
 
 
 _DSN_PASSWORD_RE = re.compile(r"(password\s*=\s*)(\S+|'[^']*')", re.IGNORECASE)
+
+
+def _link_or_copy(src, dst):
+    """Hard-link *src* to *dst*, falling back to copy on cross-device."""
+    try:
+        os.unlink(dst)  # mkstemp already created an empty file
+        os.link(src, dst)
+    except OSError:
+        shutil.copy2(src, dst)
 
 
 def _table_exists(cur, table_name):
