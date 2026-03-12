@@ -12,6 +12,8 @@
 - Use hard links instead of file copies for blob temp staging when source and
   destination are on the same filesystem (instant, zero extra disk). Falls back
   to `shutil.copy2` for cross-device.
+- Time-based progress logging (every 10s) in parallel copy with OID-based
+  progress percentage and ETA (uses `len(source)` for total OIDs).
 
 ## 1.5.0
 

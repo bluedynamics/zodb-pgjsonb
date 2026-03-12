@@ -1115,7 +1115,15 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
             )
             num_workers = pool_max
 
-        logger.info("Copying transactions with %d parallel workers ...", num_workers)
+        # Total OIDs for progress % (O(1) for FileStorage).
+        total_oids = 0
+        with contextlib.suppress(TypeError):
+            total_oids = len(other)
+        logger.info(
+            "Copying transactions with %d parallel workers (total OIDs: %s) ...",
+            num_workers,
+            f"{total_oids:,}" if total_oids else "unknown",
+        )
 
         extra_columns = self._get_extra_columns()
         hp = self._history_preserving
@@ -1158,6 +1166,9 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
         txn_count = 0
         total_size = 0
         last_tid = None
+        seen_oids = set()
+        last_log_time = begin_time
+        log_interval = 10.0  # seconds
 
         executor = ThreadPoolExecutor(max_workers=num_workers)
         try:
@@ -1189,15 +1200,30 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
                 txn_count += 1
                 total_size += txn_data["byte_size"]
                 last_tid = txn_data["tid"]
+                seen_oids.update(txn_oids)
 
-                if txn_count % 10 == 0:
-                    elapsed = time.time() - begin_time
+                now = time.time()
+                if now - last_log_time >= log_interval:
+                    elapsed = now - begin_time
                     rate = total_size / 1_000_000 / elapsed if elapsed else 0
-                    logger.info(
-                        "Dispatched %6d txns | %6.3f MB/s",
-                        txn_count,
-                        rate,
-                    )
+                    parts = [f"Dispatched {txn_count:,} txns"]
+                    if total_oids:
+                        pct = len(seen_oids) * 100.0 / total_oids
+                        parts[0] += f" (~{pct:.1f}%)"
+                        oid_rate = len(seen_oids) / elapsed if elapsed else 0
+                        if oid_rate > 0:
+                            remaining = total_oids - len(seen_oids)
+                            eta_s = remaining / oid_rate
+                            if eta_s < 60:
+                                eta = f"{eta_s:.0f}s"
+                            elif eta_s < 3600:
+                                eta = f"{eta_s / 60:.0f}m"
+                            else:
+                                eta = f"{eta_s / 3600:.1f}h"
+                            parts.append(f"ETA: {eta}")
+                    parts.append(f"{rate:.3f} MB/s")
+                    logger.info(" | ".join(parts))
+                    last_log_time = now
 
             # Wait for all remaining workers to finish.
             executor.shutdown(wait=True)
