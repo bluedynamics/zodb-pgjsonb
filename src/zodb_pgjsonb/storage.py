@@ -1006,10 +1006,8 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
                 except (POSKeyError, KeyError, OSError):
                     blob_filename = None
                 if blob_filename is not None:
-                    fd, tmp = tempfile.mkstemp(suffix=".blob", dir=self._blob_temp_dir)
-                    os.close(fd)
-                    _link_or_copy(blob_filename, tmp)
-                    blobs.append((zoid, tmp))
+                    path, is_temp = _stage_blob(blob_filename, self._blob_temp_dir)
+                    blobs.append((zoid, path, is_temp))
 
             if record.data:
                 byte_size += len(record.data)
@@ -1050,14 +1048,22 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
                     with contextlib.suppress(POSKeyError):
                         blobfilename = other.loadBlob(record.oid, record.tid)
                 if blobfilename is not None:
-                    fd, tmp = tempfile.mkstemp(suffix=".blob", dir=self._blob_temp_dir)
-                    os.close(fd)
-                    _link_or_copy(blobfilename, tmp)
+                    # restoreBlob moves the file, so we must stage it
+                    # (hard link or copy) to preserve the source blob.
+                    path, is_temp = _stage_blob(blobfilename, self._blob_temp_dir)
+                    if not is_temp:
+                        # Cross-device: must copy since restoreBlob moves
+                        fd, tmp = tempfile.mkstemp(
+                            suffix=".blob", dir=self._blob_temp_dir
+                        )
+                        os.close(fd)
+                        shutil.copy2(blobfilename, tmp)
+                        path = tmp
                     self.restoreBlob(
                         record.oid,
                         record.tid,
                         record.data,
-                        tmp,
+                        path,
                         record.data_txn,
                         txn_info,
                     )
@@ -1181,7 +1187,7 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
                 txn_data = self._prepare_transaction(txn_info, other)
                 txn_oids = {obj["zoid"] for obj in txn_data["objects"]}
                 # Include blob OIDs (they reference the same zoid)
-                txn_oids.update(zoid for zoid, _ in txn_data["blobs"])
+                txn_oids.update(entry[0] for entry in txn_data["blobs"])
 
                 # Wait for any in-flight transactions touching same OIDs.
                 blocking = set()
@@ -2024,13 +2030,20 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
 _DSN_PASSWORD_RE = re.compile(r"(password\s*=\s*)(\S+|'[^']*')", re.IGNORECASE)
 
 
-def _link_or_copy(src, dst):
-    """Hard-link *src* to *dst*, falling back to copy on cross-device."""
+def _stage_blob(src, temp_dir):
+    """Stage a blob for import: hard-link to temp (same FS) or use source directly.
+
+    Returns (path, is_temp) — caller must only unlink if is_temp is True.
+    """
+    fd, tmp = tempfile.mkstemp(suffix=".blob", dir=temp_dir)
+    os.close(fd)
     try:
-        os.unlink(dst)  # mkstemp already created an empty file
-        os.link(src, dst)
+        os.unlink(tmp)  # remove empty placeholder
+        os.link(src, tmp)
+        return tmp, True
     except OSError:
-        shutil.copy2(src, dst)
+        os.unlink(tmp)  # clean up placeholder
+        return src, False
 
 
 def _table_exists(cur, table_name):
@@ -2607,19 +2620,25 @@ def _batch_write_blobs(
     pg_params = []  # (zoid, tid, size, data) — PG bytea blobs
     s3_params = []  # (zoid, tid, size, s3_key) — S3 metadata-only rows
 
-    for zoid, blob_path in blobs:
+    for blob_entry in blobs:
+        # Support both (zoid, path) and (zoid, path, is_temp) tuples.
+        if len(blob_entry) == 3:
+            zoid, blob_path, is_temp = blob_entry
+        else:
+            zoid, blob_path = blob_entry
+            is_temp = True
         size = os.path.getsize(blob_path)
         if s3_client is not None and size >= blob_threshold:
             # Large blob → S3
             s3_key = f"blobs/{zoid:016x}/{tid_int:016x}.blob"
             s3_client.upload_file(blob_path, s3_key)
             s3_params.append((zoid, tid_int, size, s3_key))
-            os.unlink(blob_path)
         else:
             # Small blob or no S3 → PG bytea
             with open(blob_path, "rb") as f:
                 blob_data = f.read()
             pg_params.append((zoid, tid_int, size, blob_data))
+        if is_temp:
             os.unlink(blob_path)
 
     # Batch insert PG bytea blobs (blob_state keeps all versions via PK (zoid, tid))
