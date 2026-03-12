@@ -2,18 +2,16 @@
 
 ## 1.5.1
 
-- Remove transaction counting loop from `copyTransactionsFrom` — source is now
-  iterated exactly once instead of twice, halving copy time for large databases.
-- Progress logging every 10 dispatched transactions (parallel) or per-transaction
-  (sequential) with throughput stats.
-- Backpressure in parallel copy: limit in-flight prepared transactions to
-  `workers * 2` via semaphore, preventing unbounded blob temp file accumulation
-  (critical for databases with many large blobs).
-- Use hard links instead of file copies for blob temp staging when source and
-  destination are on the same filesystem (instant, zero extra disk). Falls back
-  to `shutil.copy2` for cross-device.
-- Time-based progress logging (every 10s) in parallel copy with OID-based
-  progress percentage and ETA (uses `len(source)` for total OIDs).
+- Parallel copy performance and observability improvements:
+  - Remove transaction counting loop — source iterated exactly once, not twice.
+  - Backpressure via `BoundedSemaphore(workers * 2)` prevents unbounded blob
+    temp file accumulation (critical for large blob databases).
+  - Hard-link blob staging on same filesystem (instant, zero extra disk);
+    cross-device: read source directly without copying.
+  - Time-based progress logging (every 10s) with OID-based percentage, ETA,
+    transaction/OID/blob counts, total bytes transferred, and throughput.
+  - Log WARNING per missing source blob (with oid/tid) and ERROR summary at end.
+  - Include blob file sizes in throughput calculation for accurate MB/s.
 
 ## 1.5.0
 
