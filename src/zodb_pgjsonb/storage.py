@@ -975,8 +975,9 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
         source_has_blobs = IBlobStorage.providedBy(source_storage)
 
         objects = []
-        blobs = []  # list of (zoid, temp_blob_path)
+        blobs = []  # list of (zoid, temp_blob_path, is_temp)
         byte_size = 0
+        missing_blobs = 0
 
         for record in txn_info:
             if record.data is None:
@@ -1003,8 +1004,15 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
             if source_has_blobs and is_blob_record(record.data):
                 try:
                     blob_filename = source_storage.loadBlob(record.oid, record.tid)
-                except (POSKeyError, KeyError, OSError):
+                except (POSKeyError, KeyError, OSError) as exc:
                     blob_filename = None
+                    missing_blobs += 1
+                    logger.warning(
+                        "Missing blob for oid=0x%016x tid=0x%016x: %s",
+                        zoid,
+                        tid_int,
+                        exc,
+                    )
                 if blob_filename is not None:
                     path, is_temp = _stage_blob(blob_filename, self._blob_temp_dir)
                     blobs.append((zoid, path, is_temp))
@@ -1028,6 +1036,7 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
             "objects": objects,
             "blobs": blobs,
             "byte_size": byte_size,
+            "missing_blobs": missing_blobs,
         }
 
     def _copyTransactionsFrom_sequential(self, other):
@@ -1035,6 +1044,7 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
         begin_time = time.time()
         txnum = 0
         total_size = 0
+        total_missing_blobs = 0
         logger.info("Copying transactions (sequential) ...")
         for txn_info in other.iterator():
             txnum += 1
@@ -1045,8 +1055,16 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
                     continue
                 blobfilename = None
                 if is_blob_record(record.data):
-                    with contextlib.suppress(POSKeyError):
+                    try:
                         blobfilename = other.loadBlob(record.oid, record.tid)
+                    except (POSKeyError, KeyError, OSError) as exc:
+                        total_missing_blobs += 1
+                        logger.warning(
+                            "Missing blob for oid=0x%016x tid=0x%016x: %s",
+                            u64(record.oid),
+                            u64(record.tid),
+                            exc,
+                        )
                 if blobfilename is not None:
                     # restoreBlob moves the file, so we must stage it
                     # (hard link or copy) to preserve the source blob.
@@ -1096,6 +1114,11 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
             txnum,
             elapsed / 60.0,
         )
+        if total_missing_blobs:
+            logger.error(
+                "%d blob(s) missing in source storage and skipped during import!",
+                total_missing_blobs,
+            )
 
     def _copyTransactionsFrom_parallel(self, other, num_workers):
         """Parallel copy — N worker threads write to PG concurrently.
@@ -1171,6 +1194,7 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
         in_flight = {}
         txn_count = 0
         total_size = 0
+        total_missing_blobs = 0
         last_tid = None
         seen_oids = set()
         last_log_time = begin_time
@@ -1210,6 +1234,7 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
 
                 txn_count += 1
                 total_size += txn_data["byte_size"]
+                total_missing_blobs += txn_data["missing_blobs"]
                 last_tid = txn_data["tid"]
                 seen_oids.update(txn_oids)
 
@@ -1272,6 +1297,11 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
             elapsed / 60.0,
             num_workers,
         )
+        if total_missing_blobs:
+            logger.error(
+                "%d blob(s) missing in source storage and skipped during import!",
+                total_missing_blobs,
+            )
 
     # ── IBlobStorage ─────────────────────────────────────────────────
 
