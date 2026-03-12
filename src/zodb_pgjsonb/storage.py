@@ -1015,7 +1015,9 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
                     )
                 if blob_filename is not None:
                     path, is_temp = _stage_blob(blob_filename, self._blob_temp_dir)
+                    blob_size = os.path.getsize(path)
                     blobs.append((zoid, path, is_temp))
+                    byte_size += blob_size
 
             if record.data:
                 byte_size += len(record.data)
@@ -1194,6 +1196,7 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
         in_flight = {}
         txn_count = 0
         total_size = 0
+        total_blobs = 0
         total_missing_blobs = 0
         last_tid = None
         seen_oids = set()
@@ -1229,6 +1232,7 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
 
                 txn_count += 1
                 total_size += txn_data["byte_size"]
+                total_blobs += len(txn_data["blobs"])
                 total_missing_blobs += txn_data["missing_blobs"]
                 last_tid = txn_data["tid"]
                 seen_oids.update(txn_oids)
@@ -1237,9 +1241,12 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
                 if now - last_log_time >= log_interval:
                     elapsed = now - begin_time
                     rate = total_size / 1_000_000 / elapsed if elapsed else 0
-                    parts = [f"Dispatched {txn_count:,} txns"]
+                    n_oids = len(seen_oids)
+                    parts = [
+                        f"Dispatched {txn_count:,} txns, {n_oids:,} OIDs, {total_blobs:,} blobs"
+                    ]
                     if total_oids:
-                        pct = len(seen_oids) * 100.0 / total_oids
+                        pct = n_oids * 100.0 / total_oids
                         parts[0] += f" (~{pct:.1f}%)"
                         if pct > 0:
                             eta_s = elapsed * (100 - pct) / pct
@@ -1250,7 +1257,12 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
                             else:
                                 eta = f"{eta_s / 3600:.1f}h"
                             parts.append(f"ETA: {eta}")
-                    parts.append(f"{rate:.3f} MB/s")
+                    total_gb = total_size / (1024 * 1024 * 1024)
+                    if total_gb >= 1:
+                        parts.append(f"{total_gb:.1f} GB, {rate:.1f} MB/s")
+                    else:
+                        total_mb = total_size / (1024 * 1024)
+                        parts.append(f"{total_mb:.0f} MB, {rate:.1f} MB/s")
                     logger.info(" | ".join(parts))
                     last_log_time = now
 
