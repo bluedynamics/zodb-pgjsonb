@@ -10,6 +10,7 @@ from persistent.mapping import PersistentMapping
 from tests.conftest import DSN
 from ZODB.blob import Blob
 from ZODB.FileStorage import FileStorage
+from zodb_pgjsonb.storage import _fmt_blob_size
 from zodb_pgjsonb.storage import _fmt_elapsed
 from zodb_pgjsonb.storage import PGJsonbStorage
 
@@ -241,6 +242,22 @@ class TestBlobMigration:
         conn.close()
         dest_db.close()
         source.close()
+
+
+class TestFmtBlobSize:
+    """Unit tests for _fmt_blob_size helper."""
+
+    def test_bytes(self):
+        assert _fmt_blob_size(500) == "500 B"
+
+    def test_kilobytes(self):
+        assert _fmt_blob_size(4096) == "4 KB"
+
+    def test_megabytes(self):
+        assert _fmt_blob_size(52_400_000) == "52.4 MB"
+
+    def test_gigabytes(self):
+        assert _fmt_blob_size(1_500_000_000) == "1.5 GB"
 
 
 class TestFmtElapsed:
