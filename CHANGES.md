@@ -3,15 +3,15 @@
 ## 1.5.1
 
 - Parallel copy performance and observability improvements:
-  - Remove transaction counting loop — source iterated exactly once, not twice.
   - Backpressure via `BoundedSemaphore(workers * 2)` prevents unbounded blob
     temp file accumulation (critical for large blob databases).
   - Hard-link blob staging on same filesystem (instant, zero extra disk);
     cross-device: read source directly without copying.
-  - Time-based progress logging (every 10s) with OID-based percentage, ETA,
-    transaction/OID/blob counts, total bytes transferred, and throughput.
+  - Progress logging (every 10s) with elapsed time, read/written transaction
+    counts, OID and blob counts, percentage, and ETA.
+  - Abort immediately on worker errors with clear message (e.g. non-empty
+    target database) instead of silently accumulating failures.
   - Log WARNING per missing source blob (with oid/tid) and ERROR summary at end.
-  - Include blob file sizes in throughput calculation for accurate MB/s.
 
 ## 1.5.0
 

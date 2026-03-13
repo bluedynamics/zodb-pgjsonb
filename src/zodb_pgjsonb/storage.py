@@ -52,6 +52,7 @@ import sys
 import tempfile
 import threading
 import time
+import traceback
 import zodb_json_codec
 import zope.interface
 
@@ -1015,9 +1016,7 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
                     )
                 if blob_filename is not None:
                     path, is_temp = _stage_blob(blob_filename, self._blob_temp_dir)
-                    blob_size = os.path.getsize(path)
                     blobs.append((zoid, path, is_temp))
-                    byte_size += blob_size
 
             if record.data:
                 byte_size += len(record.data)
@@ -1177,7 +1176,18 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
         # temp files don't accumulate unbounded (important for large blobs).
         _dispatch_sem = threading.BoundedSemaphore(num_workers * 2)
 
+        # Track completed work for accurate ETA (written to PG/S3, not just
+        # dispatched).  Workers increment after commit; main thread reads for
+        # progress.  Using a simple int + Lock — the lock is held for
+        # microseconds per transaction, contention negligible with 6 workers.
+        _written_txns = 0
+        _written_objs = 0
+        _written_blobs = 0
+        _written_errors = 0
+        _written_lock = threading.Lock()
+
         def _write_worker(txn_data):
+            nonlocal _written_txns, _written_objs, _written_blobs, _written_errors
             try:
                 conn = _get_worker_conn()
                 _write_prepared_transaction(
@@ -1189,19 +1199,33 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
                     s3_client=self._s3_client,
                     blob_threshold=self._blob_threshold,
                 )
+                n_objs = len(txn_data["objects"])
+                n_blobs = len(txn_data["blobs"])
+                with _written_lock:
+                    _written_txns += 1
+                    _written_objs += n_objs
+                    _written_blobs += n_blobs
+            except Exception:
+                logger.error(
+                    "Worker error on tid=0x%016x: %s",
+                    txn_data["tid_int"],
+                    traceback.format_exc(),
+                )
+                with _written_lock:
+                    _written_errors += 1
+                raise
             finally:
                 _dispatch_sem.release()
 
         # OID dependency tracking: zoid → Future currently writing it.
         in_flight = {}
         txn_count = 0
-        total_size = 0
-        total_blobs = 0
         total_missing_blobs = 0
         last_tid = None
-        seen_oids = set()
         last_log_time = begin_time
         log_interval = 10.0  # seconds
+        # Column width for right-aligned counters (based on total_oids).
+        _cw = len(f"{total_oids:,}") if total_oids else 0
 
         executor = ThreadPoolExecutor(max_workers=num_workers)
         try:
@@ -1231,38 +1255,57 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
                     in_flight[oid] = future
 
                 txn_count += 1
-                total_size += txn_data["byte_size"]
-                total_blobs += len(txn_data["blobs"])
                 total_missing_blobs += txn_data["missing_blobs"]
                 last_tid = txn_data["tid"]
-                seen_oids.update(txn_oids)
+
+                # Abort early on worker errors (e.g. duplicate keys
+                # from a previous non-cleaned import).
+                with _written_lock:
+                    errors = _written_errors
+                if errors:
+                    raise RuntimeError(
+                        f"Aborting: {errors} worker error(s). "
+                        "Check log for details. "
+                        "Is the target database empty?"
+                    )
 
                 now = time.time()
                 if now - last_log_time >= log_interval:
                     elapsed = now - begin_time
-                    rate = total_size / 1_000_000 / elapsed if elapsed else 0
-                    n_oids = len(seen_oids)
-                    parts = [
-                        f"Dispatched {txn_count:,} txns, {n_oids:,} OIDs, {total_blobs:,} blobs"
-                    ]
-                    if total_oids:
-                        pct = n_oids * 100.0 / total_oids
-                        parts[0] += f" (~{pct:.1f}%)"
-                        if pct > 0:
-                            eta_s = elapsed * (100 - pct) / pct
-                            if eta_s < 60:
-                                eta = f"{eta_s:.0f}s"
-                            elif eta_s < 3600:
-                                eta = f"{eta_s / 60:.0f}m"
-                            else:
-                                eta = f"{eta_s / 3600:.1f}h"
-                            parts.append(f"ETA: {eta}")
-                    total_gb = total_size / (1024 * 1024 * 1024)
-                    if total_gb >= 1:
-                        parts.append(f"{total_gb:.1f} GB, {rate:.1f} MB/s")
+                    hms = _fmt_elapsed(elapsed)
+                    with _written_lock:
+                        done_txns = _written_txns
+                        done_objs = _written_objs
+                        done_blobs = _written_blobs
+                        errors = _written_errors
+                    if _cw:
+                        label = (
+                            f"[{hms}] Read {txn_count:>{_cw},} txns |"
+                            f" Written {done_txns:>{_cw},} txns,"
+                            f" {done_objs:>{_cw},} OIDs,"
+                            f" {done_blobs:>{_cw},} blobs"
+                        )
                     else:
-                        total_mb = total_size / (1024 * 1024)
-                        parts.append(f"{total_mb:.0f} MB, {rate:.1f} MB/s")
+                        label = (
+                            f"[{hms}] Read {txn_count:,} txns |"
+                            f" Written {done_txns:,} txns,"
+                            f" {done_objs:,} OIDs,"
+                            f" {done_blobs:,} blobs"
+                        )
+                    if errors:
+                        label += f" ({errors} errors!)"
+                    parts = [label]
+                    if total_oids and done_objs > 0:
+                        pct = min(done_objs * 100.0 / total_oids, 99.9)
+                        parts[0] += f" ({pct:5.1f}%)"
+                        eta_s = elapsed * (100 - pct) / pct
+                        if eta_s < 60:
+                            eta = f"{eta_s:.0f}s"
+                        elif eta_s < 3600:
+                            eta = f"{eta_s / 60:.0f}m"
+                        else:
+                            eta = f"{eta_s / 3600:.1f}h"
+                        parts.append(f"ETA: {eta}")
                     logger.info(" | ".join(parts))
                     last_log_time = now
 
@@ -1284,9 +1327,9 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
 
         elapsed = time.time() - begin_time
         logger.info(
-            "All %d transactions copied in %4.1f minutes with %d workers.",
+            "[%s] All %d transactions copied with %d workers.",
+            _fmt_elapsed(elapsed),
             txn_count,
-            elapsed / 60.0,
             num_workers,
         )
         if total_missing_blobs:
@@ -2050,6 +2093,15 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
 
 
 _DSN_PASSWORD_RE = re.compile(r"(password\s*=\s*)(\S+|'[^']*')", re.IGNORECASE)
+
+
+def _fmt_elapsed(seconds):
+    """Format elapsed seconds as H:MM:SS or MM:SS."""
+    m, s = divmod(int(seconds), 60)
+    h, m = divmod(m, 60)
+    if h:
+        return f"{h}:{m:02d}:{s:02d}"
+    return f"{m:2d}:{s:02d}"
 
 
 def _stage_blob(src, temp_dir):
