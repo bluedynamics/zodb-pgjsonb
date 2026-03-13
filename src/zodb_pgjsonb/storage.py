@@ -2157,6 +2157,17 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
 _DSN_PASSWORD_RE = re.compile(r"(password\s*=\s*)(\S+|'[^']*')", re.IGNORECASE)
 
 
+def _fmt_blob_size(size):
+    """Format byte size as human-readable string."""
+    if size >= 1_000_000_000:
+        return f"{size / 1_000_000_000:.1f} GB"
+    if size >= 1_000_000:
+        return f"{size / 1_000_000:.1f} MB"
+    if size >= 1_000:
+        return f"{size / 1_000:.0f} KB"
+    return f"{size} B"
+
+
 def _fmt_elapsed(seconds):
     """Format elapsed seconds as H:MM:SS or MM:SS."""
     m, s = divmod(int(seconds), 60)
@@ -2767,7 +2778,22 @@ def _batch_write_blobs(
         if s3_client is not None and size >= blob_threshold:
             # Large blob → S3
             s3_key = f"blobs/{zoid:016x}/{tid_int:016x}.blob"
+            if size >= 10_000_000:  # 10 MB
+                logger.info(
+                    "Uploading blob oid=0x%016x (%s) to S3 ...",
+                    zoid,
+                    _fmt_blob_size(size),
+                )
+            t0 = time.time()
             s3_client.upload_file(blob_path, s3_key)
+            upload_secs = time.time() - t0
+            if upload_secs >= 5.0:
+                logger.info(
+                    "S3 upload oid=0x%016x (%s) took %s",
+                    zoid,
+                    _fmt_blob_size(size),
+                    _fmt_elapsed(upload_secs),
+                )
             s3_params.append((zoid, tid_int, size, s3_key))
         else:
             # Small blob or no S3 → PG bytea
