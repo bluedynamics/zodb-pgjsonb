@@ -12,6 +12,10 @@
   - Abort immediately on worker errors with clear message (e.g. non-empty
     target database) instead of silently accumulating failures.
   - Log WARNING per missing source blob (with oid/tid) and ERROR summary at end.
+  - ETA based on recent-window throughput instead of overall average
+    (much more accurate, especially when early transactions are empty after pack).
+  - Non-blocking drain loop with periodic "Still waiting" log instead of
+    silent hang during `executor.shutdown`.
 
 ## 1.5.0
 

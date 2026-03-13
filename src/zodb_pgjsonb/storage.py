@@ -1226,6 +1226,9 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
         log_interval = 10.0  # seconds
         # Column width for right-aligned counters (based on total_oids).
         _cw = len(f"{total_oids:,}") if total_oids else 0
+        # ETA: track previous snapshot for recent-window rate.
+        _prev_done_objs = 0
+        _prev_done_time = begin_time
 
         executor = ThreadPoolExecutor(max_workers=num_workers)
         try:
@@ -1304,14 +1307,24 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
                     if total_oids and done_objs > 0:
                         pct = min(done_objs * 100.0 / total_oids, 99.9)
                         parts[0] += f" ({pct:5.1f}%)"
-                        eta_s = elapsed * (100 - pct) / pct
-                        if eta_s < 60:
-                            eta = f"{eta_s:.0f}s"
-                        elif eta_s < 3600:
-                            eta = f"{eta_s / 60:.0f}m"
-                        else:
-                            eta = f"{eta_s / 3600:.1f}h"
-                        parts.append(f"ETA: {eta}")
+                        # ETA from recent throughput (last log window),
+                        # not overall average — much more accurate when
+                        # early transactions are empty (packed DB).
+                        dt = now - _prev_done_time
+                        d_objs = done_objs - _prev_done_objs
+                        if dt > 0 and d_objs > 0:
+                            rate = d_objs / dt  # OIDs/sec in last window
+                            remaining = total_oids - done_objs
+                            eta_s = remaining / rate
+                            if eta_s < 60:
+                                eta = f"{eta_s:.0f}s"
+                            elif eta_s < 3600:
+                                eta = f"{eta_s / 60:.0f}m"
+                            else:
+                                eta = f"{eta_s / 3600:.1f}h"
+                            parts.append(f"ETA: {eta}")
+                    _prev_done_objs = done_objs
+                    _prev_done_time = now
                     logger.info(" | ".join(parts))
                     last_log_time = now
 
