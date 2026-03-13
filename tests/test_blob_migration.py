@@ -10,6 +10,7 @@ from persistent.mapping import PersistentMapping
 from tests.conftest import DSN
 from ZODB.blob import Blob
 from ZODB.FileStorage import FileStorage
+from zodb_pgjsonb.storage import _fmt_elapsed
 from zodb_pgjsonb.storage import PGJsonbStorage
 
 import os
@@ -242,6 +243,25 @@ class TestBlobMigration:
         source.close()
 
 
+class TestFmtElapsed:
+    """Unit tests for _fmt_elapsed helper."""
+
+    def test_seconds(self):
+        assert _fmt_elapsed(5) == " 0:05"
+
+    def test_minutes(self):
+        assert _fmt_elapsed(65) == " 1:05"
+
+    def test_minutes_padded(self):
+        assert _fmt_elapsed(605) == "10:05"
+
+    def test_hours(self):
+        assert _fmt_elapsed(3661) == "1:01:01"
+
+    def test_zero(self):
+        assert _fmt_elapsed(0) == " 0:00"
+
+
 class TestParallelCopyTransactionsFrom:
     """Test parallel copyTransactionsFrom with workers > 1."""
 
@@ -408,6 +428,68 @@ class TestParallelCopyTransactionsFrom:
         db_conn.close()
         assert history_count > 0, "History table should have entries"
 
+        conn.close()
+        dest_db.close()
+        source.close()
+
+    def test_parallel_copy_error_abort(self, temp_dir):
+        """Worker errors (e.g. duplicate keys) abort the import immediately."""
+        _clean_db()
+
+        fs_path = os.path.join(temp_dir, "Data.fs")
+        blob_dir = os.path.join(temp_dir, "blobs")
+        os.makedirs(blob_dir)
+
+        source = FileStorage(fs_path, blob_dir=blob_dir)
+        source_db = ZODB.DB(source)
+        conn = source_db.open()
+        root = conn.root()
+        root["x"] = "hello"
+        txn.commit()
+        conn.close()
+        source_db.close()
+
+        # First import — should succeed.
+        source = FileStorage(fs_path, blob_dir=blob_dir, read_only=True)
+        dest = PGJsonbStorage(DSN, pool_max_size=4)
+        dest.copyTransactionsFrom(source, workers=2)
+        dest.close()
+        source.close()
+
+        # Second import into same DB — should abort on duplicate keys.
+        source = FileStorage(fs_path, blob_dir=blob_dir, read_only=True)
+        dest = PGJsonbStorage(DSN, pool_max_size=4)
+        with pytest.raises(RuntimeError, match="worker error"):
+            dest.copyTransactionsFrom(source, workers=2)
+        dest.close()
+        source.close()
+
+    def test_parallel_copy_caps_workers_to_pool_size(self, temp_dir):
+        """Workers capped to pool_max_size when requested workers exceed it."""
+        _clean_db()
+
+        fs_path = os.path.join(temp_dir, "Data.fs")
+        blob_dir = os.path.join(temp_dir, "blobs")
+        os.makedirs(blob_dir)
+
+        source = FileStorage(fs_path, blob_dir=blob_dir)
+        source_db = ZODB.DB(source)
+        conn = source_db.open()
+        root = conn.root()
+        root["x"] = "pool cap test"
+        txn.commit()
+        conn.close()
+        source_db.close()
+
+        # pool_max_size=2 but request workers=8 — should cap to 2.
+        source = FileStorage(fs_path, blob_dir=blob_dir, read_only=True)
+        dest = PGJsonbStorage(DSN, pool_max_size=2)
+        dest.copyTransactionsFrom(source, workers=8)
+
+        dest_db = ZODB.DB(dest)
+        conn = dest_db.open()
+        root = conn.root()
+        assert root["x"] == "pool cap test"
         conn.close()
         dest_db.close()
         source.close()

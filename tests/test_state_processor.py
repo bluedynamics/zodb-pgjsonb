@@ -118,6 +118,10 @@ class TestExtraColumn:
         ec = ExtraColumn("bar", "%(bar)s", "COALESCE(EXCLUDED.bar, object_state.bar)")
         assert ec.update_expr == "COALESCE(EXCLUDED.bar, object_state.bar)"
 
+    def test_invalid_name_rejected(self):
+        with pytest.raises(ValueError, match="valid SQL identifier"):
+            ExtraColumn("drop table;--", "%(x)s")
+
 
 class TestStateProcessorRegistration:
     """Registration and discovery."""

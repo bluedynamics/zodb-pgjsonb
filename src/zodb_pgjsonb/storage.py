@@ -1242,10 +1242,16 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
                     if fut is not None and not fut.done():
                         blocking.add(fut)
                 if blocking:
-                    done, _ = futures_wait(blocking)
+                    futures_wait(blocking)
                     # Re-raise worker exceptions early.
-                    for f in done:
-                        f.result()
+                    with _written_lock:
+                        errors = _written_errors
+                    if errors:
+                        raise RuntimeError(
+                            f"Aborting: {errors} worker error(s). "
+                            "Check log for details. "
+                            "Is the target database empty?"
+                        )
 
                 # Backpressure: block if too many txns queued (limits
                 # temp blob disk usage to num_workers * 2 transactions).
@@ -1311,6 +1317,16 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
 
             # Wait for all remaining workers to finish.
             executor.shutdown(wait=True)
+
+            # Check for errors that occurred after the last loop check.
+            with _written_lock:
+                errors = _written_errors
+            if errors:
+                raise RuntimeError(
+                    f"Aborting: {errors} worker error(s). "
+                    "Check log for details. "
+                    "Is the target database empty?"
+                )
 
             # Update last TID on main storage.
             if last_tid is not None:

@@ -703,6 +703,11 @@ class TestExtensionSerialization:
 
         assert json.loads(result) == ext_dict
 
+    def test_serialize_pickle_empty_dict(self):
+        """Pickled empty dict returns empty bytes (not JSON)."""
+        pkl = pickle.dumps({}, protocol=3)
+        assert _serialize_extension(pkl) == b""
+
     def test_serialize_none_type(self):
         """Non-bytes, non-dict returns empty bytes."""
         assert _serialize_extension(None) == b""
