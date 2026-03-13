@@ -1316,6 +1316,15 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
                     last_log_time = now
 
             # Wait for all remaining workers to finish.
+            with _written_lock:
+                pending = txn_count - _written_txns
+            if pending:
+                logger.info(
+                    "[%s] Reader done (%d txns). Waiting for %d in-flight ...",
+                    _fmt_elapsed(time.time() - begin_time),
+                    txn_count,
+                    pending,
+                )
             executor.shutdown(wait=True)
 
             # Check for errors that occurred after the last loop check.
