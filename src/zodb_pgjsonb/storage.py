@@ -1325,7 +1325,31 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
                     txn_count,
                     pending,
                 )
-            executor.shutdown(wait=True)
+
+            # Drain with periodic progress instead of blocking forever.
+            executor.shutdown(wait=False)
+            shutdown_start = time.time()
+            while True:
+                # Check if all work is done.
+                with _written_lock:
+                    done = _written_txns + _written_errors
+                if done >= txn_count:
+                    break
+                # Log progress every 30s so the user knows we're alive.
+                waited = time.time() - shutdown_start
+                if waited > 0 and int(waited) % 30 == 0:
+                    with _written_lock:
+                        w_txns = _written_txns
+                        w_errs = _written_errors
+                    still = txn_count - w_txns - w_errs
+                    logger.info(
+                        "[%s] Still waiting for %d worker(s) ... (%d done, %d errors)",
+                        _fmt_elapsed(time.time() - begin_time),
+                        still,
+                        w_txns,
+                        w_errs,
+                    )
+                time.sleep(1)
 
             # Check for errors that occurred after the last loop check.
             with _written_lock:
