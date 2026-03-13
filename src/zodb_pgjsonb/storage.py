@@ -1348,9 +1348,9 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
                     done = _written_txns + _written_errors
                 if done >= txn_count:
                     break
-                # Log progress every 30s so the user knows we're alive.
+                # Log progress every 10s so the user knows we're alive.
                 waited = time.time() - shutdown_start
-                if waited > 0 and int(waited) % 30 == 0:
+                if waited > 0 and int(waited) % 10 == 0:
                     with _written_lock:
                         w_txns = _written_txns
                         w_errs = _written_errors
