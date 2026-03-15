@@ -57,6 +57,14 @@ class PGJsonbStorageFactory(BaseConfig):
                 max_size=cache_size,
             )
 
+        # Apply ZMI integration when running under Zope
+        try:
+            from .zmi import patch_database_manager
+
+            patch_database_manager()
+        except ImportError:
+            pass  # Zope (App package) not available
+
         return PGJsonbStorage(
             dsn=config.dsn,
             name=config.name,

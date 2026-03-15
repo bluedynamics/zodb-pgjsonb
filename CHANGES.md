@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.5.2
+
+- Add blob storage statistics API: `get_blob_stats()` and
+  `get_blob_histogram()` methods on `PGJsonbStorage` for querying
+  blob count, size, per-tier (PG/S3) breakdown, and logarithmic
+  size distribution.
+
+- Add Zope Control Panel integration: "Blob Storage" tab appears
+  in Control Panel -> Database -> [dbname] when the storage is a
+  PGJsonbStorage. Shows blob statistics, tier breakdown, and
+  size distribution histogram. Previously in plone-pgcatalog.
+
 ## 1.5.1
 
 - Parallel copy performance and observability improvements:
