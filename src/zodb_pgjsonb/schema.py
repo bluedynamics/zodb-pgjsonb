@@ -1,6 +1,6 @@
 """PostgreSQL schema definitions for zodb-pgjsonb."""
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 # History-free mode: only current object state
 HISTORY_FREE_SCHEMA = """\
@@ -38,6 +38,8 @@ CREATE INDEX IF NOT EXISTS idx_object_class
     ON object_state (class_mod, class_name);
 CREATE INDEX IF NOT EXISTS idx_object_refs
     ON object_state USING gin (refs);
+CREATE INDEX IF NOT EXISTS idx_object_state_tid_zoid
+    ON object_state (tid, zoid);
 
 -- Invalidation trigger
 CREATE OR REPLACE FUNCTION notify_commit() RETURNS trigger AS $$
@@ -103,6 +105,13 @@ def install_schema(conn, *, history_preserving=False):
     core_exists = _table_exists(conn, "transaction_log")
     if not core_exists:
         conn.execute(HISTORY_FREE_SCHEMA)
+    else:
+        # Ensure indexes added in later schema versions exist.
+        # CREATE INDEX IF NOT EXISTS is lightweight (no ACCESS EXCLUSIVE lock).
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_object_state_tid_zoid "
+            "ON object_state (tid, zoid)"
+        )
     if history_preserving and not _table_exists(conn, "object_history"):
         conn.execute(HISTORY_PRESERVING_ADDITIONS)
     conn.commit()

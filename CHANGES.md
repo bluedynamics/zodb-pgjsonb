@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.5.3
+
+- Add composite index `(tid, zoid)` on `object_state` to speed up
+  `poll_invalidations()` queries. Previously required a full sequential
+  scan on large tables. Existing databases get the index automatically
+  on next startup. Fixes #19.
+
 ## 1.5.2
 
 - Add blob storage statistics API: `get_blob_stats()` and

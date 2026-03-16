@@ -57,6 +57,54 @@ def db(storage):
     database.close()
 
 
+class TestSchemaIndexes:
+    """Test that required indexes are created."""
+
+    def test_tid_zoid_index_exists(self, storage):
+        """The (tid, zoid) index on object_state must exist (#19)."""
+        conn = psycopg.connect(DSN)
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT indexname FROM pg_indexes "
+                "WHERE tablename = 'object_state' "
+                "AND indexname = 'idx_object_state_tid_zoid'"
+            )
+            row = cur.fetchone()
+        conn.close()
+        assert row is not None, "idx_object_state_tid_zoid index missing"
+
+    def test_tid_zoid_index_added_to_existing_db(self):
+        """Index is added when install_schema runs on an existing database."""
+        conn = psycopg.connect(DSN)
+        # Start clean
+        with conn.cursor() as cur:
+            cur.execute(
+                "DROP TABLE IF EXISTS blob_state, object_state, transaction_log CASCADE"
+            )
+        conn.commit()
+
+        from zodb_pgjsonb.schema import install_schema
+
+        # First install — creates tables + indexes
+        install_schema(conn)
+        # Drop the new index to simulate an old database
+        conn.execute("DROP INDEX IF EXISTS idx_object_state_tid_zoid")
+        conn.commit()
+
+        # Second install — should add the missing index
+        install_schema(conn)
+
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT indexname FROM pg_indexes "
+                "WHERE tablename = 'object_state' "
+                "AND indexname = 'idx_object_state_tid_zoid'"
+            )
+            row = cur.fetchone()
+        conn.close()
+        assert row is not None, "idx_object_state_tid_zoid not added to existing DB"
+
+
 class TestZODBIntegration:
     """Test full ZODB.DB lifecycle with PGJsonbStorage."""
 
