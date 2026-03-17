@@ -120,43 +120,17 @@ CREATE TRIGGER trg_notify_commit
 
 ## JSONB state structure
 
-Object state is stored as a JSONB document in the `state` column of
-`object_state` (and `object_history`).
-The JSONB is produced by `zodb-json-codec`'s
-`decode_zodb_record_for_pg_json()` function, which converts ZODB pickle
-data to JSON.
+Object state is stored as a JSONB document in the `state` column of `object_state` (and `object_history`).
+The JSONB is produced by [zodb-json-codec](https://bluedynamics.github.io/zodb-json-codec/)'s `decode_zodb_record_for_pg_json()` function, which converts ZODB pickle data to JSON.
 
-The class information (`class_mod`, `class_name`) is stored in separate
-columns, not inside the JSONB.
+The class information (`class_mod`, `class_name`) is stored in separate columns, not inside the JSONB.
 The JSONB contains only the object's instance state.
 
-### Marker keys
+For the full list of JSON marker keys (`@ref`, `@t`, `@b`, `@pkl`, `@dt`, and others), see the [zodb-json-codec JSON format reference](https://bluedynamics.github.io/zodb-json-codec/reference/json-format.html).
 
-The following marker keys are used by `zodb-json-codec` inside the JSONB
-state to represent Python types that have no direct JSON equivalent:
-
-| Marker | Meaning |
-|---|---|
-| `@cls` | Class reference `[module, name]` (used in the load path to reconstruct the ZODB record, not stored in the `state` column). |
-| `@s` | Object instance state (used in the load path, not stored in the `state` column). |
-| `@ref` | Persistent reference (hex-encoded OID string). |
-| `@ns` | Null-byte sanitization marker. PostgreSQL JSONB cannot store `\u0000` characters. Strings containing null bytes are base64-encoded and wrapped in an `@ns` marker. The storage automatically sanitizes on write and unsanitizes on read. |
-| `@t` | Tuple (JSON arrays are lists by default; this marker distinguishes tuples). |
-| `@b` | Bytes value (base64-encoded). |
-| `@pkl` | Escape hatch for unknown pickle types (base64-encoded pickle data). |
-| `@dt` | `datetime.datetime` value. |
-| `@date` | `datetime.date` value. |
-| `@time` | `datetime.time` value. |
-| `@td` | `datetime.timedelta` value. |
-| `@dec` | `decimal.Decimal` value. |
-| `@uuid` | `uuid.UUID` value. |
-| `@set` | `set` value. |
-| `@fset` | `frozenset` value. |
-| `@kv` | BTree bucket key-value pairs (flattened). |
-| `@ks` | BTree bucket keys (set buckets). |
-| `@children` | BTree internal node children. |
-| `@first` | BTree bucket chain first pointer. |
-| `@next` | BTree bucket chain next pointer. |
+The only marker specific to zodb-pgjsonb is `@ns` (null-byte sanitization).
+PostgreSQL JSONB cannot store `\u0000` characters, so strings containing null bytes are base64-encoded and wrapped in an `@ns` marker.
+The storage sanitizes on write and unsanitizes on read automatically.
 
 ## Schema installation
 
