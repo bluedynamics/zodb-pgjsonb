@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.5.4
+
+- Add `PGTestDB` class in `zodb_pgjsonb.testing` for test database
+  management with stackable snapshot/restore (COPY BINARY protocol).
+  Mirrors DemoStorage's push/pop semantics for per-test isolation.
+
+- Consolidate test fixtures into shared `conftest.py` (clean_db, storage,
+  db, hp_storage, hp_db), removing ~210 lines of duplicated boilerplate.
+
 ## 1.5.3
 
 - Add composite index `(tid, zoid)` on `object_state` to speed up
