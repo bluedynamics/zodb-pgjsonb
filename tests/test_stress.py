@@ -8,42 +8,10 @@ Requires PostgreSQL on localhost:5433.
 
 from BTrees.OOBTree import OOBTree
 from persistent.mapping import PersistentMapping
-from tests.conftest import DSN
 from ZODB.POSException import ConflictError
-from zodb_pgjsonb.storage import PGJsonbStorage
 
-import pytest
 import threading
 import transaction as txn
-import ZODB
-
-
-@pytest.fixture
-def storage():
-    """Fresh PGJsonbStorage with clean database."""
-    import psycopg
-
-    conn = psycopg.connect(DSN)
-    with conn.cursor() as cur:
-        cur.execute(
-            "DROP TABLE IF EXISTS "
-            "pack_state, blob_history, object_history, "
-            "blob_state, object_state, transaction_log CASCADE"
-        )
-    conn.commit()
-    conn.close()
-
-    s = PGJsonbStorage(DSN)
-    yield s
-    s.close()
-
-
-@pytest.fixture
-def db(storage):
-    """ZODB.DB using our storage."""
-    database = ZODB.DB(storage)
-    yield database
-    database.close()
 
 
 class TestConcurrentWrites:

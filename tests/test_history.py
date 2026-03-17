@@ -23,34 +23,6 @@ import transaction as txn
 import ZODB
 
 
-@pytest.fixture
-def hp_storage():
-    """Fresh PGJsonbStorage in history-preserving mode."""
-    import psycopg
-
-    conn = psycopg.connect(DSN)
-    with conn.cursor() as cur:
-        cur.execute(
-            "DROP TABLE IF EXISTS "
-            "pack_state, blob_history, object_history, "
-            "blob_state, object_state, transaction_log CASCADE"
-        )
-    conn.commit()
-    conn.close()
-
-    s = PGJsonbStorage(DSN, history_preserving=True)
-    yield s
-    s.close()
-
-
-@pytest.fixture
-def hp_db(hp_storage):
-    """ZODB.DB using history-preserving storage."""
-    database = ZODB.DB(hp_storage)
-    yield database
-    database.close()
-
-
 class TestHistoryPreservingSchema:
     """Test that history tables are created in HP mode."""
 

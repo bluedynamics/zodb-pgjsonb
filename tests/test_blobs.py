@@ -9,6 +9,7 @@ Requires PostgreSQL on localhost:5433.
 
 from moto import mock_aws
 from persistent.mapping import PersistentMapping
+from tests.conftest import clean_db
 from tests.conftest import DSN
 from ZODB.blob import Blob
 from ZODB.interfaces import IBlobStorage
@@ -28,42 +29,10 @@ S3_BUCKET = "test-zodb-blobs"
 S3_REGION = "us-east-1"
 
 
-def _clean_db():
-    """Drop all tables for a clean test database."""
-    import psycopg
-
-    conn = psycopg.connect(DSN)
-    with conn.cursor() as cur:
-        cur.execute(
-            "DROP TABLE IF EXISTS "
-            "blob_state, blob_history, object_state, "
-            "object_history, pack_state, transaction_log CASCADE"
-        )
-    conn.commit()
-    conn.close()
-
-
-@pytest.fixture
-def storage():
-    """Fresh PGJsonbStorage with clean database."""
-    _clean_db()
-    s = PGJsonbStorage(DSN)
-    yield s
-    s.close()
-
-
-@pytest.fixture
-def db(storage):
-    """ZODB.DB using our storage."""
-    database = ZODB.DB(storage)
-    yield database
-    database.close()
-
-
 @pytest.fixture
 def s3_storage(tmp_path):
     """PGJsonbStorage with mocked S3 client for tiered blob storage."""
-    _clean_db()
+    clean_db()
     with mock_aws():
         # Create mock S3 bucket
         client = boto3.client("s3", region_name=S3_REGION)
@@ -553,7 +522,7 @@ class TestS3BlobTiering:
 
     def test_blob_threshold_zero_all_s3(self, tmp_path):
         """With threshold=0, all blobs go to S3."""
-        _clean_db()
+        clean_db()
         with mock_aws():
             client = boto3.client("s3", region_name=S3_REGION)
             client.create_bucket(Bucket=S3_BUCKET)
@@ -690,7 +659,7 @@ class TestBlobsHistoryPreserving:
     @pytest.fixture
     def hp_storage(self):
         """Fresh HP storage."""
-        _clean_db()
+        clean_db()
         s = PGJsonbStorage(DSN, history_preserving=True)
         yield s
         s.close()

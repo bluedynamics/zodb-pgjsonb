@@ -1,27 +1,10 @@
 """Tests for ZConfig integration (config.py + component.xml)."""
 
+from tests.conftest import clean_db
 from tests.conftest import DSN
 from zodb_pgjsonb.storage import PGJsonbStorage
 
-import psycopg
 import pytest
-
-
-def _clean_db():
-    conn = psycopg.connect(DSN)
-    with conn.cursor() as cur:
-        cur.execute(
-            "SELECT pg_terminate_backend(pid) "
-            "FROM pg_stat_activity "
-            "WHERE datname = current_database() AND pid != pg_backend_pid()"
-        )
-        cur.execute(
-            "DROP TABLE IF EXISTS "
-            "pack_state, blob_history, object_history, "
-            "blob_state, object_state, transaction_log CASCADE"
-        )
-    conn.commit()
-    conn.close()
 
 
 class TestDsnValidation:
@@ -81,7 +64,7 @@ class TestZConfig:
         """Minimal ZConfig creates a PGJsonbStorage."""
         import ZODB.config
 
-        _clean_db()
+        clean_db()
         config_text = f"""\
         %import zodb_pgjsonb
         <pgjsonb>
@@ -99,7 +82,7 @@ class TestZConfig:
         """ZConfig with custom name."""
         import ZODB.config
 
-        _clean_db()
+        clean_db()
         config_text = f"""\
         %import zodb_pgjsonb
         <pgjsonb>
@@ -117,7 +100,7 @@ class TestZConfig:
         """ZConfig with history-preserving mode."""
         import ZODB.config
 
-        _clean_db()
+        clean_db()
         config_text = f"""\
         %import zodb_pgjsonb
         <pgjsonb>
@@ -136,7 +119,7 @@ class TestZConfig:
         """ZConfig with pool size settings."""
         import ZODB.config
 
-        _clean_db()
+        clean_db()
         config_text = f"""\
         %import zodb_pgjsonb
         <pgjsonb>
@@ -157,7 +140,7 @@ class TestZConfig:
         import unittest.mock
         import ZODB.config
 
-        _clean_db()
+        clean_db()
         config_text = f"""\
         %import zodb_pgjsonb
         <pgjsonb>
@@ -185,7 +168,7 @@ class TestZConfig:
         import unittest.mock
         import ZODB.config
 
-        _clean_db()
+        clean_db()
         config_text = f"""\
         %import zodb_pgjsonb
         <pgjsonb>

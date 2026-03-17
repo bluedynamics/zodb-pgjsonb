@@ -7,6 +7,7 @@ Requires PostgreSQL on localhost:5433.
 """
 
 from persistent.mapping import PersistentMapping
+from tests.conftest import clean_db
 from tests.conftest import DSN
 from ZODB.blob import Blob
 from ZODB.FileStorage import FileStorage
@@ -23,25 +24,6 @@ import transaction as txn
 import ZODB
 
 
-def _clean_db():
-    """Drop all tables for a clean test database."""
-    conn = psycopg.connect(DSN)
-    # Terminate other connections first — REPEATABLE READ blocks DDL.
-    with conn.cursor() as cur:
-        cur.execute(
-            "SELECT pg_terminate_backend(pid) "
-            "FROM pg_stat_activity "
-            "WHERE datname = current_database() AND pid != pg_backend_pid()"
-        )
-        cur.execute(
-            "DROP TABLE IF EXISTS "
-            "blob_state, blob_history, object_state, "
-            "object_history, pack_state, transaction_log CASCADE"
-        )
-    conn.commit()
-    conn.close()
-
-
 @pytest.fixture
 def temp_dir():
     d = tempfile.mkdtemp()
@@ -54,7 +36,7 @@ class TestBlobMigration:
 
     def test_blob_migration(self, temp_dir):
         """Blobs are migrated from FileStorage to PGJsonbStorage."""
-        _clean_db()
+        clean_db()
 
         # 1. Create source FileStorage with blobs
         fs_path = os.path.join(temp_dir, "Data.fs")
@@ -98,7 +80,7 @@ class TestBlobMigration:
 
     def test_blob_migration_preserves_source(self, temp_dir):
         """Source blob files are not moved/deleted during migration."""
-        _clean_db()
+        clean_db()
 
         fs_path = os.path.join(temp_dir, "Data.fs")
         blob_dir = os.path.join(temp_dir, "blobs")
@@ -132,7 +114,7 @@ class TestBlobMigration:
 
     def test_blob_migration_multiple_blobs(self, temp_dir):
         """Multiple blobs in same and different transactions migrate."""
-        _clean_db()
+        clean_db()
 
         fs_path = os.path.join(temp_dir, "Data.fs")
         blob_dir = os.path.join(temp_dir, "blobs")
@@ -170,7 +152,7 @@ class TestBlobMigration:
 
     def test_blob_migration_history_preserving(self, temp_dir):
         """Blobs migrate correctly to history-preserving storage."""
-        _clean_db()
+        clean_db()
 
         fs_path = os.path.join(temp_dir, "DataHP.fs")
         blob_dir = os.path.join(temp_dir, "blobsHP")
@@ -206,7 +188,7 @@ class TestBlobMigration:
 
     def test_mixed_blob_and_non_blob_objects(self, temp_dir):
         """Migration handles mix of blob and non-blob objects correctly."""
-        _clean_db()
+        clean_db()
 
         fs_path = os.path.join(temp_dir, "Data.fs")
         blob_dir = os.path.join(temp_dir, "blobs")
@@ -284,7 +266,7 @@ class TestParallelCopyTransactionsFrom:
 
     def test_parallel_copy_basic(self, temp_dir):
         """Multiple transactions copied in parallel, all data intact."""
-        _clean_db()
+        clean_db()
 
         fs_path = os.path.join(temp_dir, "Data.fs")
         blob_dir = os.path.join(temp_dir, "blobs")
@@ -328,7 +310,7 @@ class TestParallelCopyTransactionsFrom:
 
     def test_parallel_copy_oid_ordering(self, temp_dir):
         """Multiple revisions of the same OID are written in order."""
-        _clean_db()
+        clean_db()
 
         fs_path = os.path.join(temp_dir, "Data.fs")
         blob_dir = os.path.join(temp_dir, "blobs")
@@ -367,7 +349,7 @@ class TestParallelCopyTransactionsFrom:
 
     def test_parallel_copy_with_blobs(self, temp_dir):
         """Blobs are correctly migrated using parallel workers."""
-        _clean_db()
+        clean_db()
 
         fs_path = os.path.join(temp_dir, "Data.fs")
         blob_dir = os.path.join(temp_dir, "blobs")
@@ -407,7 +389,7 @@ class TestParallelCopyTransactionsFrom:
 
     def test_parallel_copy_history_preserving(self, temp_dir):
         """Parallel copy works in history-preserving mode."""
-        _clean_db()
+        clean_db()
 
         fs_path = os.path.join(temp_dir, "Data.fs")
         blob_dir = os.path.join(temp_dir, "blobs")
@@ -451,7 +433,7 @@ class TestParallelCopyTransactionsFrom:
 
     def test_parallel_copy_error_abort(self, temp_dir):
         """Worker errors (e.g. duplicate keys) abort the import immediately."""
-        _clean_db()
+        clean_db()
 
         fs_path = os.path.join(temp_dir, "Data.fs")
         blob_dir = os.path.join(temp_dir, "blobs")
@@ -483,7 +465,7 @@ class TestParallelCopyTransactionsFrom:
 
     def test_parallel_copy_caps_workers_to_pool_size(self, temp_dir):
         """Workers capped to pool_max_size when requested workers exceed it."""
-        _clean_db()
+        clean_db()
 
         fs_path = os.path.join(temp_dir, "Data.fs")
         blob_dir = os.path.join(temp_dir, "blobs")
@@ -513,7 +495,7 @@ class TestParallelCopyTransactionsFrom:
 
     def test_parallel_copy_fallback_single_worker(self, temp_dir):
         """workers=1 uses the sequential path (backward compat)."""
-        _clean_db()
+        clean_db()
 
         fs_path = os.path.join(temp_dir, "Data.fs")
         blob_dir = os.path.join(temp_dir, "blobs")
