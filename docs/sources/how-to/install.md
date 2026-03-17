@@ -18,7 +18,7 @@ Install the optional S3 blob tiering extra if you plan to store large blobs in S
 pip install zodb-pgjsonb[s3]
 ```
 
-Requirements: Python 3.12+, PostgreSQL 14+ (tested with 17).
+Requirements: Python 3.12+, PostgreSQL 15+ (tested with 17).
 
 ## Set up PostgreSQL
 
@@ -37,8 +37,14 @@ docker run -d --name zodb-pg \
 
 ### Production
 
-Use any PostgreSQL 14+ instance.
+Use any PostgreSQL 15+ instance.
 The storage creates all required tables and indexes automatically on first startup.
+
+:::{note}
+The SQL features used (JSONB, `ON CONFLICT DO UPDATE`, recursive CTEs, advisory locks)
+only require PostgreSQL 9.5+. However, we only test with PostgreSQL 17 and recommend
+15+ to stay within PostgreSQL's supported version window.
+:::
 
 ## Configure for Zope or Plone (ZConfig)
 

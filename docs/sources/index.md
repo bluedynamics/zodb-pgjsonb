@@ -24,7 +24,7 @@ ZODB sees pickle bytes at its boundaries; PostgreSQL sees queryable JSON interna
 - Pure SQL pack/GC via pre-extracted refs column (15-28x faster than RelStorage)
 - Instant cache invalidation via PostgreSQL LISTEN/NOTIFY
 
-**Requirements:** Python 3.12+, PostgreSQL 14+ (tested with 17), [zodb-json-codec](https://pypi.org/project/zodb-json-codec/)
+**Requirements:** Python 3.12+, PostgreSQL 15+ (tested with 17), [zodb-json-codec](https://pypi.org/project/zodb-json-codec/)
 
 ## Documentation
 

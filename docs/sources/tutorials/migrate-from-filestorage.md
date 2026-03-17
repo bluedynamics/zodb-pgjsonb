@@ -11,7 +11,7 @@ By the end we will have a running Plone site backed entirely by PostgreSQL, with
 ## Prerequisites
 
 - A working Plone 6 site using FileStorage (the default storage)
-- PostgreSQL 14+ running and accessible
+- PostgreSQL 15+ running and accessible
 - Python 3.12+ with the same virtual environment as the Plone site
 - [uv](https://docs.astral.sh/uv/) (recommended) or pip
 

@@ -11,7 +11,7 @@ ZODB sees pickle bytes at its boundaries; PostgreSQL sees queryable JSON interna
 - **Full ZODB Compatibility** -- IStorage, IMVCCStorage, IBlobStorage, IStorageUndoable, IStorageIteration, IStorageRestoreable
 - **Security** -- JSON has no code execution attack surface (unlike pickle deserialization)
 
-Requires Python 3.12+, PostgreSQL 14+.
+Requires Python 3.12+, PostgreSQL 15+ (tested with 17).
 
 ## Quick Start
 

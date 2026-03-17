@@ -12,7 +12,7 @@ queryable JSON internally.
 - Package: zodb-pgjsonb
 - License: ZPL-2.1
 - Python: 3.12+
-- PostgreSQL: 14+ (tested with 17)
+- PostgreSQL: 15+ (tested with 17; SQL features only require 9.5+)
 - Codec: zodb-json-codec (Rust/PyO3, installed automatically)
 - Repository: https://github.com/bluedynamics/zodb-pgjsonb
 
