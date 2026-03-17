@@ -74,7 +74,12 @@ class PGTestDB:
 
         Terminates other connections first to avoid REPEATABLE READ
         transactions blocking DDL operations.
+
+        Calling ``setup()`` twice closes the existing connection first
+        to prevent resource leaks.
         """
+        if self._conn is not None and not self._conn.closed:
+            self._conn.close()
         self._conn = psycopg.connect(self.dsn, autocommit=True)
         self._terminate_other_connections()
         with self._conn.cursor() as cur:
@@ -89,17 +94,25 @@ class PGTestDB:
         log.debug("PGTestDB: schema installed (%d tables)", len(self._tables))
 
     def teardown(self):
-        """Drop tables and close admin connection."""
-        if self._conn and not self._conn.closed:
-            self._terminate_other_connections()
-            with self._conn.cursor() as cur:
-                cur.execute(
-                    "DROP TABLE IF EXISTS "
-                    + ", ".join(reversed(self._tables))
-                    + " CASCADE"
-                )
-            self._conn.close()
-        self._stack.clear()
+        """Drop tables and close admin connection.
+
+        Guarantees connection close and stack cleanup even if
+        ``DROP TABLE`` or ``pg_terminate_backend`` raises.
+        """
+        try:
+            if self._conn and not self._conn.closed:
+                try:
+                    self._terminate_other_connections()
+                    with self._conn.cursor() as cur:
+                        cur.execute(
+                            "DROP TABLE IF EXISTS "
+                            + ", ".join(reversed(self._tables))
+                            + " CASCADE"
+                        )
+                finally:
+                    self._conn.close()
+        finally:
+            self._stack.clear()
         log.debug("PGTestDB: teardown complete")
 
     # -- Snapshot stack --------------------------------------------------------

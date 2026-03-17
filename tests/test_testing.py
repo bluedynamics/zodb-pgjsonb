@@ -1,6 +1,7 @@
 """Tests for zodb_pgjsonb.testing — PGTestDB snapshot/restore."""
 
 from tests.conftest import DSN
+from unittest.mock import patch
 from zodb_pgjsonb.testing import PGTestDB
 
 import contextlib
@@ -278,3 +279,73 @@ class TestPGTestDBTerminate:
         finally:
             with contextlib.suppress(Exception):
                 stuck.close()
+
+
+class TestSetupIdempotent:
+    """Calling setup() twice must not leak connections (GH-21)."""
+
+    def test_double_setup_closes_first_connection(self):
+        db = PGTestDB(DSN)
+        db.setup()
+        first_conn = db.connection
+        assert not first_conn.closed
+
+        db.setup()
+        assert first_conn.closed
+        assert not db.connection.closed
+        assert db.connection is not first_conn
+        db.teardown()
+
+    def test_setup_after_teardown(self):
+        db = PGTestDB(DSN)
+        db.setup()
+        db.teardown()
+        # setup() after teardown should work cleanly
+        db.setup()
+        assert db.connection is not None
+        assert not db.connection.closed
+        db.teardown()
+
+
+class TestTeardownRobust:
+    """teardown() must close connection and clear stack even on errors (GH-21)."""
+
+    def test_teardown_closes_connection_on_drop_error(self):
+        db = PGTestDB(DSN)
+        db.setup()
+        db.push()
+        conn = db.connection
+
+        with (
+            patch.object(conn, "cursor", side_effect=psycopg.OperationalError("fake")),
+            pytest.raises(psycopg.OperationalError),
+        ):
+            db.teardown()
+
+        # Connection and stack must still be cleaned up
+        assert conn.closed
+        assert db.depth == 0
+
+    def test_teardown_clears_stack_on_terminate_error(self):
+        db = PGTestDB(DSN)
+        db.setup()
+        db.push()
+
+        with (
+            patch.object(
+                db,
+                "_terminate_other_connections",
+                side_effect=psycopg.OperationalError("fake"),
+            ),
+            pytest.raises(psycopg.OperationalError),
+        ):
+            db.teardown()
+
+        assert db.connection.closed
+        assert db.depth == 0
+
+    def test_teardown_noop_when_not_setup(self):
+        """teardown() on a fresh instance is a no-op."""
+        db = PGTestDB(DSN)
+        db.teardown()  # Should not raise
+        assert db.depth == 0
