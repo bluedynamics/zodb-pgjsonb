@@ -1,0 +1,31 @@
+{
+    "name": "zodb-pgjsonb",
+    "short_name": "pgjsonb",
+    "description": "ZODB storage adapter for PostgreSQL using JSONB, powered by zodb-json-codec.",
+    "start_url": "/zodb-pgjsonb/",
+    "display": "browser",
+    "background_color": "#1a1a2e",
+    "theme_color": "#06b6d4",
+    "icons": [
+        {
+            "src": "logo-web.png",
+            "sizes": "200x200",
+            "type": "image/png"
+        },
+        {
+            "src": "apple-touch-icon.png",
+            "sizes": "180x180",
+            "type": "image/png"
+        },
+        {
+            "src": "logo-400.png",
+            "sizes": "400x400",
+            "type": "image/png"
+        },
+        {
+            "src": "logo.png",
+            "sizes": "1024x1024",
+            "type": "image/png"
+        }
+    ]
+}

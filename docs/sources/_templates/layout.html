@@ -1,0 +1,14 @@
+{# Extend the theme's layout to inject icons, manifest, and Open Graph meta #}
+{% extends "!layout.html" %}
+
+{% block metatags %}
+{{ super() }}
+<link rel="apple-touch-icon" sizes="180x180" href="{{ pathto('_static/apple-touch-icon.png', 1) }}">
+<link rel="manifest" href="{{ pathto('_static/site.webmanifest', 1) }}">
+<meta property="og:type" content="website">
+<meta property="og:title" content="{{ title }}">
+<meta property="og:description" content="ZODB storage adapter for PostgreSQL using JSONB, powered by zodb-json-codec.">
+<meta property="og:image" content="https://bluedynamics.github.io/zodb-pgjsonb/_static/og-image.png">
+<meta property="og:url" content="https://bluedynamics.github.io/zodb-pgjsonb/">
+<meta name="twitter:card" content="summary_large_image">
+{% endblock %}

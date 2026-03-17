@@ -1,0 +1,308 @@
+# zodb-pgjsonb
+
+> ZODB storage adapter for PostgreSQL using JSONB, powered by zodb-json-codec (Rust).
+
+zodb-pgjsonb stores ZODB object state as queryable PostgreSQL JSONB instead of opaque
+pickle bytea blobs. It uses the Rust-based zodb-json-codec library for transparent
+pickle-to-JSON transcoding. ZODB sees pickle bytes at its boundaries; PostgreSQL sees
+queryable JSON internally.
+
+## Key Facts
+
+- Package: zodb-pgjsonb
+- License: ZPL-2.1
+- Python: 3.12+
+- PostgreSQL: 14+ (tested with 17)
+- Codec: zodb-json-codec (Rust/PyO3, installed automatically)
+- Repository: https://github.com/bluedynamics/zodb-pgjsonb
+
+## ZODB Interfaces Implemented
+
+- IStorage — core load/store/pack
+- IMVCCStorage — per-connection MVCC instances
+- IBlobStorage — tiered blobs (PG bytea + optional S3)
+- IStorageUndoable — undo support in history-preserving mode
+- IStorageIteration — transaction/record iteration
+- IStorageRestoreable — zodbconvert migration support
+
+## Architecture
+
+```
+ZODB.DB
+  └→ PGJsonbStorage (main, factory, owns schema + pool)
+       ├→ new_instance() → PGJsonbStorageInstance (per-connection, MVCC)
+       ├→ zodb-json-codec    (pickle ↔ JSONB transcoding, Rust, GIL-free)
+       ├→ psycopg3           (sync, pipelined writes, connection pool)
+       ├→ LISTEN/NOTIFY      (instant invalidation via PG trigger)
+       ├→ Tiered blobs       (PG bytea + optional S3 via zodb-s3blobs)
+       └→ Pure SQL pack/GC   (recursive CTE on pre-extracted refs column)
+```
+
+### Write Path
+
+1. ZODB calls `store(oid, serial, pickle_bytes, version, transaction)`
+2. `zodb_json_codec.decode_zodb_record_for_pg_json()` transcodes pickle to JSON string (entirely in Rust, GIL released)
+3. Class module/name extracted from `@cls` marker, state from `@s`, refs from `@ref` markers
+4. State processors (plugins) run: pop keys from state, return extra column data
+5. `tpc_vote()` batch-writes all objects via `executemany()` (pipelined, single round-trip)
+6. `tpc_finish()` commits PG transaction, triggers NOTIFY for invalidation
+
+### Read Path
+
+1. ZODB calls `load(oid)` → check LRU cache first
+2. Cache miss: `SELECT class_mod, class_name, state FROM object_state WHERE zoid = %s`
+3. `zodb_json_codec.encode_zodb_record()` transcodes JSON back to pickle bytes (Rust)
+4. Returns `(pickle_bytes, tid_bytes)` to ZODB
+
+### MVCC
+
+- `PGJsonbStorage.new_instance()` returns a `PGJsonbStorageInstance` per ZODB Connection
+- Each instance uses `REPEATABLE READ` snapshot isolation for consistent reads
+- `poll_invalidations()` starts snapshot FIRST, then queries invalidated OIDs
+- TID generation uses PostgreSQL advisory locks for serialization
+- Invalidation via LISTEN/NOTIFY (~1ms latency vs 1-5s polling in RelStorage)
+
+### Pack Algorithm
+
+Pure SQL — no object loading needed:
+
+```sql
+WITH RECURSIVE reachable AS (
+    SELECT zoid FROM object_state WHERE zoid = 0
+    UNION
+    SELECT unnest(o.refs)
+    FROM object_state o JOIN reachable r ON o.zoid = r.zoid
+)
+DELETE FROM object_state WHERE zoid NOT IN (SELECT zoid FROM reachable)
+```
+
+Pre-extracted `refs BIGINT[]` column enables 15-28x faster pack than RelStorage.
+
+## Database Schema
+
+### History-Free Mode (default)
+
+```sql
+object_state (
+    zoid       BIGINT PRIMARY KEY,
+    tid        BIGINT NOT NULL,
+    class_mod  TEXT,
+    class_name TEXT,
+    state      JSONB,
+    state_size INTEGER,
+    refs       BIGINT[] DEFAULT '{}'
+)
+
+transaction_log (
+    tid         BIGINT PRIMARY KEY,
+    username    BYTEA,
+    description BYTEA,
+    extension   BYTEA
+)
+
+blob_state (
+    zoid      BIGINT NOT NULL,
+    tid       BIGINT NOT NULL,
+    blob_size BIGINT NOT NULL,
+    data      BYTEA,       -- NULL if in S3
+    s3_key    TEXT,         -- NULL if in PG
+    PRIMARY KEY (zoid, tid)
+)
+```
+
+Indexes: `(class_mod, class_name)`, `GIN(refs)`, `(tid, zoid)`.
+
+### History-Preserving Mode (additions)
+
+```sql
+object_history (
+    zoid       BIGINT NOT NULL,
+    tid        BIGINT NOT NULL,
+    class_mod  TEXT,
+    class_name TEXT,
+    state      JSONB,
+    state_size INTEGER,
+    refs       BIGINT[] DEFAULT '{}',
+    PRIMARY KEY (zoid, tid)
+)
+
+pack_state (zoid BIGINT PRIMARY KEY, tid BIGINT NOT NULL)
+```
+
+Uses copy-before-overwrite model: only previous versions archived before overwrite.
+
+## Blob Storage
+
+Three deployment modes:
+
+| Mode | Configuration | Behavior |
+|---|---|---|
+| PG-only | No S3 keys | All blobs in PostgreSQL bytea |
+| Tiered | S3 keys + blob-threshold | Small in PG, large in S3 |
+| S3-only | S3 keys + blob-threshold=0 | All blobs in S3 |
+
+Default threshold: 100KB. Local blob cache available for S3 mode.
+
+Blob files use deterministic names: `{oid:016x}-{tid:016x}.blob`.
+
+## History Modes
+
+Both modes supported, convertible at runtime:
+
+- **History-free** (default): Current state only, lower storage overhead
+- **History-preserving**: Full revision history, undo support, undoLog/undoInfo
+
+Conversion methods: `convert_to_history_free()`, `convert_to_history_preserving()`.
+HP→HF is irreversible (drops all history).
+
+## State Processor Plugins
+
+Downstream packages can register processors that extract extra columns written
+atomically alongside object state:
+
+```python
+@dataclasses.dataclass
+class ExtraColumn:
+    name: str              # SQL column name
+    value_expr: str        # SQL expression for INSERT
+    update_expr: str | None  # Optional ON CONFLICT expression
+
+class IStateProcessor:
+    def get_extra_columns(self) -> list[ExtraColumn]: ...
+    def process(self, zoid, class_mod, class_name, state) -> dict | None: ...
+    def get_schema_sql(self) -> str | None: ...   # Optional DDL
+    def finalize(self, cursor) -> None: ...        # Optional post-vote hook
+```
+
+Used by plone-pgcatalog to write catalog index columns in the same PG transaction.
+
+## Configuration (ZConfig)
+
+```xml
+%import zodb_pgjsonb
+
+<zodb_db main>
+  <pgjsonb>
+    dsn postgresql://user:pass@localhost:5432/zodb
+    history-preserving false
+    pool-size 1
+    pool-max-size 10
+    pool-timeout 30.0
+    cache-local-mb 16
+    blob-temp-dir /var/zodb/tmp
+    s3-bucket-name my-bucket
+    s3-endpoint-url https://s3.amazonaws.com
+    s3-region us-east-1
+    blob-threshold 100KB
+    blob-cache-dir /var/zodb/blobcache
+    blob-cache-size 1GB
+  </pgjsonb>
+  mount-point /
+  cache-size 30000
+</zodb_db>
+```
+
+| Key | Default | Description |
+|---|---|---|
+| dsn | *required* | PostgreSQL connection string (libpq or URI) |
+| name | pgjsonb | Storage name |
+| history-preserving | false | Enable history-preserving mode |
+| cache-local-mb | 16 | Per-instance LRU cache (MB) |
+| pool-size | 1 | Min pool connections |
+| pool-max-size | 10 | Max pool connections |
+| pool-timeout | 30.0 | Connection acquisition timeout (seconds) |
+| blob-temp-dir | auto | Temporary blob directory |
+| blob-threshold | 100KB | S3 tiering threshold |
+| s3-bucket-name | none | S3 bucket (enables tiering) |
+| s3-endpoint-url | none | S3 endpoint (MinIO, Ceph) |
+| s3-region | none | AWS region |
+| s3-access-key | none | AWS access key |
+| s3-secret-key | none | AWS secret key |
+| s3-use-ssl | true | Enable SSL for S3 |
+| s3-prefix | "" | S3 key prefix |
+| blob-cache-dir | none | Local cache for S3 blobs |
+| blob-cache-size | 1GB | Max local cache size |
+
+## Python API
+
+```python
+from zodb_pgjsonb import PGJsonbStorage
+import ZODB
+
+storage = PGJsonbStorage(dsn="dbname=zodb user=zodb host=localhost")
+db = ZODB.DB(storage)
+conn = db.open()
+root = conn.root()
+root["hello"] = "world"
+import transaction
+transaction.commit()
+```
+
+### SQL Queryability
+
+```sql
+-- List all object types
+SELECT class_mod || '.' || class_name AS class, count(*)
+FROM object_state GROUP BY 1 ORDER BY 2 DESC;
+
+-- Find Plone content
+SELECT zoid, state->>'title' AS title
+FROM object_state
+WHERE class_mod LIKE 'plone.app.contenttypes%';
+
+-- Query by JSONB key
+SELECT zoid, state->>'title'
+FROM object_state
+WHERE state @> '{"portal_type": "Document"}';
+```
+
+### Migration (zodbconvert)
+
+```python
+storage = PGJsonbStorage(dsn="...")
+storage.copyTransactionsFrom(source_storage, workers=4)  # parallel blob-aware copy
+```
+
+### Blob Statistics
+
+```python
+stats = storage.get_blob_stats()
+# {'total_blobs': 1234, 'total_size': 567890, 'pg_size': 123456, 's3_size': 444434, ...}
+
+histogram = storage.get_blob_histogram()
+# [{'label': '0-1KB', 'count': 100, 'pct': 8.1, 'tier': 'pg'}, ...]
+```
+
+## Performance vs RelStorage
+
+| Category | vs RelStorage |
+|---|---|
+| Single store | 1.4-1.6x faster |
+| Cached load | 3.7-4.4x faster |
+| Uncached load | 1.1-1.6x slower (transcode overhead) |
+| Pack/GC (10K objects) | 22x faster |
+| Batch store 100 | 1.2x slower (JSONB indexing) |
+| HP undo | 1.8x faster |
+
+## Security
+
+- JSON storage eliminates pickle deserialization attack surface
+- `_RestrictedUnpickler` for legacy pickle extension data (blocks arbitrary code execution)
+- `ExtraColumn.name` validated against SQL identifier pattern (injection prevention)
+- DSN credentials masked in debug logs
+- Blob files restricted to 0o600 (owner-only)
+- Connection pool timeout prevents unbounded waits (DoS mitigation)
+
+## Ecosystem
+
+- **zodb-json-codec**: Rust pickle↔JSON codec (dependency, installed automatically)
+- **plone-pgcatalog**: PostgreSQL-backed catalog using state processor plugin
+- **plone-pgthumbor**: Thumbor image scaling reading from blob_state table
+- **zodb-s3blobs**: S3 blob backend (optional dependency for tiered storage)
+
+## Documentation Sections
+
+- [Tutorials](tutorials/index.md): Step-by-step lessons (quickstart Docker, migration)
+- [How-To Guides](how-to/index.md): Task-focused solutions (install, S3, history modes, SQL queries, deployment)
+- [Reference](reference/index.md): Configuration, schema, storage API, state processor API, changelog
+- [Explanation](explanation/index.md): Architecture, why JSONB, performance, security
