@@ -154,9 +154,17 @@ class PGTestDB:
     # -- Internal --------------------------------------------------------------
 
     def _restore_from(self, snap):
-        """TRUNCATE all tables, then COPY FROM snapshot bytes."""
+        """DELETE all rows, then COPY FROM snapshot bytes.
+
+        Uses DELETE instead of TRUNCATE to avoid ACCESS EXCLUSIVE locks.
+        TRUNCATE conflicts with ACCESS SHARE held by REPEATABLE READ
+        snapshots (e.g. from ZODB Connection pools).  DELETE only needs
+        ROW EXCLUSIVE, which is compatible with ACCESS SHARE.
+        """
         with self._conn.cursor() as cur:
-            cur.execute("TRUNCATE " + ", ".join(self._tables) + " CASCADE")
+            # Delete in reverse FK order (child → parent)
+            for table in reversed(self._tables):
+                cur.execute(f"DELETE FROM {table}")
         for table in self._tables:
             data = snap[table]
             with (
