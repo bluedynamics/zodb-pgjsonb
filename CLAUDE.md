@@ -6,6 +6,11 @@ ZODB storage adapter that stores object state as PostgreSQL JSONB instead of
 pickle bytea. Uses [zodb-json-codec](https://github.com/bluedynamics/zodb-json-codec)
 (Rust/PyO3) for pickle-to-JSON transcoding.
 
+## Further Reading
+
+- Full documentation: https://bluedynamics.github.io/zodb-pgjsonb/
+- LLM-optimized context: `docs/sources/llms.txt` (architecture, schema, API, config — all in one file)
+
 ## Build & Test
 
 ```bash
