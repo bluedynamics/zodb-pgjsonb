@@ -8,6 +8,7 @@ Verifies that registered state processors can:
 """
 
 from psycopg.rows import dict_row
+from tests.conftest import clean_db
 from tests.conftest import DSN
 from zodb_pgjsonb.storage import ExtraColumn
 from zodb_pgjsonb.storage import PGJsonbStorage
@@ -72,20 +73,9 @@ class NullSentinelProcessor:
 
 
 @pytest.fixture
-def _clean_db():
-    """Drop tables for a clean slate, including the extra column."""
-    conn = psycopg.connect(DSN)
-    with conn.cursor() as cur:
-        cur.execute(
-            "DROP TABLE IF EXISTS blob_state, object_state, transaction_log CASCADE"
-        )
-    conn.commit()
-    conn.close()
-
-
-@pytest.fixture
-def storage(_clean_db):
+def storage():
     """PGJsonbStorage with DummyProcessor registered."""
+    clean_db()
     s = PGJsonbStorage(DSN)
     # Add the test_label column to object_state
     s._conn.execute("ALTER TABLE object_state ADD COLUMN IF NOT EXISTS test_label TEXT")
@@ -136,7 +126,8 @@ class TestStateProcessorRegistration:
         assert len(cols) == 1
         assert cols[0].name == "test_label"
 
-    def test_no_processors_returns_none(self, _clean_db):
+    def test_no_processors_returns_none(self):
+        clean_db()
         s = PGJsonbStorage(DSN)
         try:
             assert s._get_extra_columns() is None
@@ -248,7 +239,8 @@ class TestNullSentinelProcessor:
     """Processor that supports None sentinel for clearing columns."""
 
     @pytest.fixture
-    def storage_with_sentinel(self, _clean_db):
+    def storage_with_sentinel(self):
+        clean_db()
         s = PGJsonbStorage(DSN)
         s._conn.execute(
             "ALTER TABLE object_state ADD COLUMN IF NOT EXISTS cat_path TEXT"
@@ -324,7 +316,8 @@ class TestFinalizeHook:
         FinalizeProcessor.finalize_calls = []
 
     @pytest.fixture
-    def storage_finalize(self, _clean_db):
+    def storage_finalize(self):
+        clean_db()
         s = PGJsonbStorage(DSN)
         self.proc = FinalizeProcessor()
         s.register_state_processor(self.proc)
@@ -386,8 +379,9 @@ class TestFinalizeHook:
         txn.commit()  # Should not raise
         conn.close()
 
-    def test_processor_without_finalize_not_called(self, _clean_db):
+    def test_processor_without_finalize_not_called(self):
         """Processors without finalize() are silently skipped."""
+        clean_db()
         s = PGJsonbStorage(DSN)
         s.register_state_processor(DummyProcessor())  # no finalize method
         s._conn.execute(

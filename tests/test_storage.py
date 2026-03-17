@@ -20,7 +20,6 @@ from zodb_pgjsonb.storage import _deserialize_extension
 from zodb_pgjsonb.storage import _serialize_extension
 from zodb_pgjsonb.storage import _unsanitize_from_pg
 from zodb_pgjsonb.storage import LoadCache
-from zodb_pgjsonb.storage import PGJsonbStorage
 
 import os
 import pickle
@@ -28,33 +27,6 @@ import psycopg
 import pytest
 import tempfile
 import transaction as txn
-import ZODB
-
-
-@pytest.fixture
-def storage():
-    """Fresh PGJsonbStorage with clean database."""
-
-    # Clean slate
-    conn = psycopg.connect(DSN)
-    with conn.cursor() as cur:
-        cur.execute(
-            "DROP TABLE IF EXISTS blob_state, object_state, transaction_log CASCADE"
-        )
-    conn.commit()
-    conn.close()
-
-    s = PGJsonbStorage(DSN)
-    yield s
-    s.close()
-
-
-@pytest.fixture
-def db(storage):
-    """ZODB.DB using our storage."""
-    database = ZODB.DB(storage)
-    yield database
-    database.close()
 
 
 class TestSchemaIndexes:

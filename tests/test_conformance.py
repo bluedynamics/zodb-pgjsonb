@@ -17,6 +17,7 @@ These are unittest-based tests (as required by ZODB test infrastructure).
 Requires PostgreSQL on localhost:5433.
 """
 
+from tests.conftest import clean_db
 from tests.conftest import DSN
 from ZODB import utils
 from ZODB.Connection import TransactionMetaData
@@ -43,29 +44,6 @@ import unittest
 import ZODB
 
 
-def _clean_db():
-    """Drop all tables for a fresh start.
-
-    Terminates other connections to the test database first to avoid
-    blocking on open REPEATABLE READ transactions left by prior tests.
-    """
-    conn = psycopg.connect(DSN)
-    with conn.cursor() as cur:
-        # Terminate other connections to prevent DROP TABLE from blocking
-        cur.execute(
-            "SELECT pg_terminate_backend(pid) "
-            "FROM pg_stat_activity "
-            "WHERE datname = current_database() AND pid != pg_backend_pid()"
-        )
-        cur.execute(
-            "DROP TABLE IF EXISTS "
-            "pack_state, blob_history, object_history, "
-            "blob_state, object_state, transaction_log CASCADE"
-        )
-    conn.commit()
-    conn.close()
-
-
 # ── History-Free Conformance ─────────────────────────────────────────
 
 
@@ -78,7 +56,7 @@ class PGJsonbConformanceHF(StorageTestBase, BasicStorage, SynchronizedStorage):
 
     def setUp(self):
         super().setUp()
-        _clean_db()
+        clean_db()
         self._storage = PGJsonbStorage(DSN)
 
     def test_tid_ordering_w_commit(self):
@@ -186,7 +164,7 @@ class PGJsonbConformanceHP(StorageTestBase, HistoryStorage):
 
     def setUp(self):
         super().setUp()
-        _clean_db()
+        clean_db()
         self._storage = PGJsonbStorage(DSN, history_preserving=True)
 
 
@@ -201,7 +179,7 @@ class PGJsonbIteratorHF(StorageTestBase, IteratorStorage):
 
     def setUp(self):
         super().setUp()
-        _clean_db()
+        clean_db()
         self._storage = PGJsonbStorage(DSN)
 
     def testSimpleIteration(self):
@@ -219,7 +197,7 @@ class PGJsonbIteratorHP(StorageTestBase, IteratorStorage, ExtendedIteratorStorag
 
     def setUp(self):
         super().setUp()
-        _clean_db()
+        clean_db()
         self._storage = PGJsonbStorage(DSN, history_preserving=True)
 
 
@@ -236,7 +214,7 @@ class PGJsonbPackHF(StorageTestBase, PackableStorage):
 
     def setUp(self):
         super().setUp()
-        _clean_db()
+        clean_db()
         self._storage = PGJsonbStorage(DSN)
 
     # These tests use pdumps/dumps which are not standard ZODB records.
@@ -311,7 +289,7 @@ class PGJsonbPackHP(StorageTestBase, PackableUndoStorage):
 
     def setUp(self):
         super().setUp()
-        _clean_db()
+        clean_db()
         self._storage = PGJsonbStorage(DSN, history_preserving=True)
 
     def _initroot(self):
@@ -346,7 +324,7 @@ class PGJsonbUndoHP(StorageTestBase, TransactionalUndoStorage):
 
     def setUp(self):
         super().setUp()
-        _clean_db()
+        clean_db()
         self._storage = PGJsonbStorage(DSN, history_preserving=True)
 
     def testUndoMultipleConflictResolution(self, reverse=False):
@@ -387,7 +365,7 @@ class PGJsonbRecoveryHP(StorageTestBase, RecoveryStorage):
         admin_conn.execute(f"CREATE DATABASE {self._DST_DB}")
         admin_conn.close()
 
-        _clean_db()
+        clean_db()
         self._storage = PGJsonbStorage(DSN, history_preserving=True)
         dst_dsn = DSN.replace("dbname=zodb_test", f"dbname={self._DST_DB}")
         self._dst = PGJsonbStorage(dst_dsn, history_preserving=True)

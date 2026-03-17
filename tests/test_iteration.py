@@ -7,6 +7,7 @@ Requires PostgreSQL on localhost:5433.
 """
 
 from persistent.mapping import PersistentMapping
+from tests.conftest import clean_db
 from tests.conftest import DSN
 from ZODB.interfaces import IStorageIteration
 from ZODB.interfaces import IStorageRestoreable
@@ -17,55 +18,6 @@ import pytest
 import transaction as txn
 import ZODB
 import zodb_json_codec
-
-
-def _clean_db():
-    """Drop all tables for a fresh start."""
-    import psycopg
-
-    conn = psycopg.connect(DSN)
-    with conn.cursor() as cur:
-        cur.execute(
-            "DROP TABLE IF EXISTS "
-            "pack_state, blob_history, object_history, "
-            "blob_state, object_state, transaction_log CASCADE"
-        )
-    conn.commit()
-    conn.close()
-
-
-@pytest.fixture
-def storage():
-    """Fresh PGJsonbStorage with clean database."""
-    _clean_db()
-    s = PGJsonbStorage(DSN)
-    yield s
-    s.close()
-
-
-@pytest.fixture
-def hp_storage():
-    """Fresh PGJsonbStorage in history-preserving mode."""
-    _clean_db()
-    s = PGJsonbStorage(DSN, history_preserving=True)
-    yield s
-    s.close()
-
-
-@pytest.fixture
-def db(storage):
-    """ZODB.DB using our storage."""
-    database = ZODB.DB(storage)
-    yield database
-    database.close()
-
-
-@pytest.fixture
-def hp_db(hp_storage):
-    """ZODB.DB using history-preserving storage."""
-    database = ZODB.DB(hp_storage)
-    yield database
-    database.close()
 
 
 class TestInterfaces:
@@ -321,7 +273,7 @@ class TestCopyViaIteratorAndRestore:
     def test_roundtrip(self):
         """Store data, iterate, restore into fresh DB — verify data."""
         # Phase 1: create source data
-        _clean_db()
+        clean_db()
         src = PGJsonbStorage(DSN)
         src_db = ZODB.DB(src)
         c = src_db.open()
@@ -353,7 +305,7 @@ class TestCopyViaIteratorAndRestore:
         assert len(collected) >= 1
 
         # Phase 3: recreate DB and restore
-        _clean_db()
+        clean_db()
         dst = PGJsonbStorage(DSN)
         from ZODB.BaseStorage import TransactionRecord
 
