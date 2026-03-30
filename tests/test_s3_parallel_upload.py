@@ -4,7 +4,6 @@ from moto import mock_aws
 from tests.conftest import clean_db
 from tests.conftest import DSN
 from unittest.mock import MagicMock
-from unittest.mock import patch
 from zodb_pgjsonb.storage import _batch_write_blobs
 from zodb_pgjsonb.storage import _upload_s3_blobs
 from zodb_pgjsonb.storage import PGJsonbStorage
@@ -13,7 +12,6 @@ import boto3
 import os
 import psycopg
 import pytest
-import tempfile
 
 
 S3_BUCKET = "test-parallel-blobs"

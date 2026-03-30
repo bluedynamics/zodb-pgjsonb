@@ -2924,7 +2924,8 @@ def _upload_s3_blobs(s3_client, uploads):
 
     *uploads* is a list of (blob_path, s3_key, zoid, size) tuples.
     """
-    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from concurrent.futures import as_completed
+    from concurrent.futures import ThreadPoolExecutor
 
     def _upload_one(blob_path, s3_key, zoid, size):
         if size >= 10_000_000:  # pragma: no cover
