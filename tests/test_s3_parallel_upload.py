@@ -1,11 +1,11 @@
-"""Tests for parallel S3 blob uploads in _batch_write_blobs."""
+"""Tests for S3 blob uploads via BlobSink in _batch_write_blobs."""
 
 from moto import mock_aws
 from tests.conftest import clean_db
 from tests.conftest import DSN
 from unittest.mock import MagicMock
+from zodb_pgjsonb.blob_sink import InlineBlobSink
 from zodb_pgjsonb.storage import _batch_write_blobs
-from zodb_pgjsonb.storage import _upload_s3_blobs
 from zodb_pgjsonb.storage import PGJsonbStorage
 
 import boto3
@@ -49,15 +49,14 @@ def mock_s3_client():
         yield s3_client
 
 
-class TestUploadS3Blobs:
-    """Test _upload_s3_blobs parallel upload function."""
+class TestInlineBlobSink:
+    """Test InlineBlobSink upload behavior (replaces old _upload_s3_blobs tests)."""
 
-    def test_single_blob_no_threadpool(self, temp_blobs, mock_s3_client):
-        """Single blob should upload without thread pool overhead."""
+    def test_single_blob_upload(self, temp_blobs, mock_s3_client):
+        """Single blob should upload via InlineBlobSink."""
         paths = temp_blobs(1)
-        uploads = [(paths[0], "blobs/0001/0001.blob", 1, os.path.getsize(paths[0]))]
-
-        _upload_s3_blobs(mock_s3_client, uploads)
+        sink = InlineBlobSink(mock_s3_client)
+        sink.submit(paths[0], "blobs/0001/0001.blob", 1, os.path.getsize(paths[0]))
 
         # Verify blob exists in S3
         obj = mock_s3_client._client.get_object(
@@ -65,15 +64,17 @@ class TestUploadS3Blobs:
         )
         assert obj["ContentLength"] == os.path.getsize(paths[0])
 
-    def test_multiple_blobs_parallel(self, temp_blobs, mock_s3_client):
-        """Multiple blobs should upload in parallel."""
+    def test_multiple_blobs(self, temp_blobs, mock_s3_client):
+        """Multiple blobs should upload via InlineBlobSink."""
         paths = temp_blobs(5)
-        uploads = [
-            (paths[i], f"blobs/{i:016x}/{i:016x}.blob", i, os.path.getsize(paths[i]))
-            for i in range(5)
-        ]
-
-        _upload_s3_blobs(mock_s3_client, uploads)
+        sink = InlineBlobSink(mock_s3_client)
+        for i in range(5):
+            sink.submit(
+                paths[i],
+                f"blobs/{i:016x}/{i:016x}.blob",
+                i,
+                os.path.getsize(paths[i]),
+            )
 
         # Verify all blobs exist in S3
         for i in range(5):
@@ -83,23 +84,20 @@ class TestUploadS3Blobs:
 
     def test_upload_failure_propagates(self, temp_blobs):
         """S3 upload errors should propagate."""
-        paths = temp_blobs(2)
-        uploads = [
-            (paths[0], "blobs/0001/0001.blob", 1, os.path.getsize(paths[0])),
-            (paths[1], "blobs/0002/0002.blob", 2, os.path.getsize(paths[1])),
-        ]
+        paths = temp_blobs(1)
         failing_client = MagicMock()
         failing_client.upload_file.side_effect = RuntimeError("S3 down")
+        sink = InlineBlobSink(failing_client)
 
         with pytest.raises(RuntimeError, match="S3 down"):
-            _upload_s3_blobs(failing_client, uploads)
+            sink.submit(paths[0], "blobs/0001/0001.blob", 1, os.path.getsize(paths[0]))
 
 
 class TestBatchWriteBlobsParallel:
-    """Test _batch_write_blobs with S3 parallelism."""
+    """Test _batch_write_blobs with BlobSink integration."""
 
-    def test_s3_blobs_uploaded_in_parallel(self, temp_blobs, mock_s3_client):
-        """Blobs above threshold go to S3 via parallel upload."""
+    def test_s3_blobs_via_blob_sink(self, temp_blobs, mock_s3_client):
+        """Blobs above threshold go to S3 via blob_sink."""
         clean_db()
         storage = PGJsonbStorage(DSN)
         try:
@@ -110,11 +108,12 @@ class TestBatchWriteBlobsParallel:
             blobs = [(i + 1, paths[i]) for i in range(3)]
             tid_int = 100
 
+            sink = InlineBlobSink(mock_s3_client)
             _batch_write_blobs(
                 cur,
                 blobs,
                 tid_int,
-                s3_client=mock_s3_client,
+                blob_sink=sink,
                 blob_threshold=1024,  # All blobs above threshold
             )
             conn.commit()
@@ -152,11 +151,12 @@ class TestBatchWriteBlobsParallel:
             tid_int = 200
 
             mock_client = MagicMock()
+            sink = InlineBlobSink(mock_client)
             _batch_write_blobs(
                 cur,
                 blobs,
                 tid_int,
-                s3_client=mock_client,
+                blob_sink=sink,
                 blob_threshold=1024,  # Blobs below threshold
             )
             conn.commit()
@@ -180,7 +180,7 @@ class TestBatchWriteBlobsParallel:
             storage.close()
 
     def test_temp_files_cleaned_after_upload(self, tmp_path, mock_s3_client):
-        """Temp blob files are cleaned up after S3 upload."""
+        """Temp blob files are cleaned up after S3 upload (by the sink)."""
         clean_db()
         storage = PGJsonbStorage(DSN)
         try:
@@ -197,16 +197,17 @@ class TestBatchWriteBlobsParallel:
             blobs = [(i + 1, paths[i], True) for i in range(3)]
             tid_int = 300
 
+            sink = InlineBlobSink(mock_s3_client)
             _batch_write_blobs(
                 cur,
                 blobs,
                 tid_int,
-                s3_client=mock_s3_client,
+                blob_sink=sink,
                 blob_threshold=1024,
             )
             conn.commit()
 
-            # Temp files should be deleted
+            # Temp files should be deleted (by the sink's cleanup_path handling)
             for path in paths:
                 assert not os.path.exists(path)
 
