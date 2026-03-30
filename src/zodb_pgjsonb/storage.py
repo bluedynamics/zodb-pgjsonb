@@ -3046,11 +3046,15 @@ def _write_prepared_transaction(
     processors,
     s3_client=None,
     blob_threshold=102_400,
+    idempotent=False,
 ):
     """Write a pre-decoded transaction directly to PG.
 
     Bypasses the TPC protocol and advisory lock — intended only for
     parallel migration where the caller guarantees OID ordering.
+
+    When *idempotent* is True, duplicate TIDs and OIDs are silently
+    skipped (used for resuming interrupted parallel imports).
 
     *conn* must have ``autocommit=True`` (the default for pool conns).
     """
@@ -3065,6 +3069,7 @@ def _write_prepared_transaction(
                 txn_data["user"],
                 txn_data["description"],
                 txn_data["extension"],
+                idempotent=idempotent,
             )
             _batch_write_objects(
                 cur,
