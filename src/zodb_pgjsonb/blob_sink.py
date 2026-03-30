@@ -12,6 +12,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
+import threading
 import time
 from concurrent.futures import Future
 from concurrent.futures import ThreadPoolExecutor
@@ -163,3 +164,38 @@ class BackgroundBlobSink:
             self.drain()
             self._pool.shutdown(wait=True)
             self._closed = True
+
+
+class DeferredBlobSink:
+    """Write blob upload tasks to a manifest file for later processing.
+
+    No S3 uploads happen during the migration. The manifest is a TSV
+    file with columns: blob_path, s3_key, zoid, size.
+
+    Temp files are intentionally preserved (not deleted) because they
+    are needed by the upload tool that processes the manifest later.
+    """
+
+    def __init__(self, manifest_path):
+        self._path = manifest_path
+        self._file = open(manifest_path, "a")  # noqa: SIM115
+        self._lock = threading.Lock()
+        self._count = 0
+
+    def submit(self, blob_path, s3_key, zoid, size, cleanup_path=None):
+        # Intentionally ignore cleanup_path — temp files must survive.
+        with self._lock:
+            self._file.write(f"{blob_path}\t{s3_key}\t{zoid}\t{size}\n")
+            self._count += 1
+
+    def drain(self):
+        pass
+
+    def close(self):
+        self._file.close()
+        if self._count:
+            logger.info(
+                "%d deferred blob upload(s) written to %s",
+                self._count,
+                self._path,
+            )

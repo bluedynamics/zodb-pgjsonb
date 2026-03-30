@@ -6,6 +6,7 @@ from unittest.mock import MagicMock
 
 from zodb_pgjsonb.blob_sink import InlineBlobSink
 from zodb_pgjsonb.blob_sink import BackgroundBlobSink
+from zodb_pgjsonb.blob_sink import DeferredBlobSink
 
 
 class TestInlineBlobSink:
@@ -131,3 +132,80 @@ class TestBackgroundBlobSink:
         sink.close()
 
         s3.upload_file.assert_called_once()
+
+
+class TestDeferredBlobSink:
+    def test_submit_writes_manifest_line(self, tmp_path):
+        manifest = tmp_path / "manifest.tsv"
+        sink = DeferredBlobSink(str(manifest))
+        blob = tmp_path / "test.blob"
+        blob.write_bytes(b"data")
+
+        sink.submit(str(blob), "blobs/1/2.blob", 42, 4)
+        sink.close()
+
+        lines = manifest.read_text().strip().split("\n")
+        assert len(lines) == 1
+        parts = lines[0].split("\t")
+        assert parts[0] == str(blob)
+        assert parts[1] == "blobs/1/2.blob"
+        assert parts[2] == "42"
+        assert parts[3] == "4"
+
+    def test_submit_does_not_upload(self, tmp_path):
+        """No S3 operations should happen."""
+        manifest = tmp_path / "manifest.tsv"
+        sink = DeferredBlobSink(str(manifest))
+        blob = tmp_path / "test.blob"
+        blob.write_bytes(b"data")
+
+        sink.submit(str(blob), "blobs/key.blob", 1, 4)
+        sink.close()
+
+        assert blob.exists()
+
+    def test_submit_preserves_temp_files(self, tmp_path):
+        """DeferredBlobSink must NOT delete temp files (needed for later upload)."""
+        manifest = tmp_path / "manifest.tsv"
+        sink = DeferredBlobSink(str(manifest))
+        blob = tmp_path / "test.blob"
+        blob.write_bytes(b"data")
+
+        sink.submit(str(blob), "blobs/key.blob", 1, 4, cleanup_path=str(blob))
+        sink.close()
+
+        assert blob.exists()
+
+    def test_multiple_submits(self, tmp_path):
+        manifest = tmp_path / "manifest.tsv"
+        sink = DeferredBlobSink(str(manifest))
+
+        for i in range(5):
+            blob = tmp_path / f"blob{i}"
+            blob.write_bytes(b"data")
+            sink.submit(str(blob), f"blobs/{i}.blob", i, 4)
+
+        sink.close()
+
+        lines = manifest.read_text().strip().split("\n")
+        assert len(lines) == 5
+
+    def test_drain_is_noop(self, tmp_path):
+        manifest = tmp_path / "manifest.tsv"
+        sink = DeferredBlobSink(str(manifest))
+        sink.drain()
+        sink.close()
+
+    def test_close_reports_count(self, tmp_path, caplog):
+        manifest = tmp_path / "manifest.tsv"
+        sink = DeferredBlobSink(str(manifest))
+        blob = tmp_path / "test.blob"
+        blob.write_bytes(b"data")
+
+        sink.submit(str(blob), "blobs/key.blob", 1, 4)
+
+        import logging
+        with caplog.at_level(logging.INFO):
+            sink.close()
+
+        assert "1 deferred blob" in caplog.text
