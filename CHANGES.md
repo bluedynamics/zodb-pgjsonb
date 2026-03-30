@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.5.5
+
+- Parallel S3 blob uploads in `_batch_write_blobs()`. When a transaction
+  contains multiple blobs destined for S3, they are now uploaded concurrently
+  using a thread pool (up to 8 workers). Single-blob transactions skip the
+  thread pool to avoid overhead. This significantly speeds up bulk operations
+  like `zodb-convert` imports with many blobs per transaction.
+
 ## 1.5.4
 
 - Add `PGTestDB` class in `zodb_pgjsonb.testing` for test database
