@@ -130,6 +130,52 @@ The destination storage applies its blob tiering rules (PG bytea vs S3) based on
 
 If you have S3 tiering configured on the destination, large blobs are uploaded to S3 during the migration.
 
+## Faster blob migration with S3
+
+When migrating large databases with many blobs to S3-backed storage, S3 upload
+latency can be the bottleneck. Two modes decouple S3 uploads from PostgreSQL writes:
+
+### Background mode (recommended)
+
+Uploads blobs to S3 in a background thread pool while PostgreSQL writes continue
+independently:
+
+```bash
+zodb-convert -w 8 --background-blobs migrate.cfg
+```
+
+PostgreSQL throughput is no longer gated by S3 latency. All uploads complete before
+the migration finishes. If any upload fails (after retries), the migration aborts.
+
+### Deferred mode
+
+Skips S3 uploads entirely during migration, writing a manifest file instead.
+Upload blobs later in a separate step:
+
+```bash
+# Step 1: Fast PG-only migration
+zodb-convert -w 8 --deferred-blobs /tmp/blob-manifest.tsv migrate.cfg
+
+# Step 2: Upload blobs from manifest
+zodb-convert --upload-blobs /tmp/blob-manifest.tsv --dest-zope-conf zope.conf -w 16
+```
+
+This is useful when S3 is temporarily unavailable or when you want to run the
+PG import at maximum speed and handle S3 as a separate operational step.
+
+**Note:** Temp blob files are preserved during deferred mode (they are needed for
+the upload step). Ensure the staging directory has sufficient disk space.
+
+### Python API
+
+```python
+# Background mode
+dest.copyTransactionsFrom(source, workers=4, blob_mode="background")
+
+# Deferred mode
+dest.copyTransactionsFrom(source, workers=4, blob_mode="deferred:/tmp/manifest.tsv")
+```
+
 ## Verify the migration
 
 Connect to the destination database and check the object count:

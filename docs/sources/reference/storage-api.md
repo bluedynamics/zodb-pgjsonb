@@ -181,8 +181,18 @@ existing data.
 `restoreBlob(oid: bytes, serial: bytes, data: bytes, blobfilename: str, prev_txn, transaction) -> None`
 : Restore object data and a blob file without conflict checking.
 
-`copyTransactionsFrom(other, workers: int = 1, start_tid: bytes | None = None) -> None`
-: Copy all transactions from another storage, including blobs.
+`copyTransactionsFrom(other, workers=1, start_tid=None, blob_mode="inline")`
+: Copy all transactions from another storage.
+
+  **Parameters:**
+  - `other` — source storage (must implement `IStorageIteration`)
+  - `workers` — number of parallel writer threads (default: 1 = sequential)
+  - `start_tid` — resume from this TID (bytes, optional)
+  - `blob_mode` — S3 blob upload strategy:
+    - `"inline"` (default) — upload synchronously in worker threads
+    - `"background"` — upload via background thread pool (PG writes continue)
+    - `"deferred:/path/to/manifest.tsv"` — write manifest, upload later
+
   Blob files are copied (not moved) to preserve source storage integrity.
   When `workers` > 1, uses parallel PostgreSQL connections for concurrent writes.
   The main thread reads from the source, decodes pickles, and tracks OID-level
