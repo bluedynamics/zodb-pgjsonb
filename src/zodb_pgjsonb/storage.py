@@ -1112,7 +1112,7 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
             shutil.move(blobfilename, staged)
             self._blob_tmp[zoid] = staged
 
-    def copyTransactionsFrom(self, other, workers=1):
+    def copyTransactionsFrom(self, other, workers=1, start_tid=None):
         """Copy all transactions from another storage, including blobs.
 
         Overrides BaseStorage.copyTransactionsFrom to correctly handle
@@ -1126,10 +1126,16 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
         transactions concurrently.  The main thread handles source
         iteration and pickle decoding; worker threads handle PG writes.
         OID ordering is preserved by the main-thread orchestrator.
+
+        When *start_tid* is given (bytes), only transactions with
+        ``tid >= start_tid`` are copied.  This allows resuming an
+        interrupted import from the last successfully written TID.
         """
         if workers > 1:
-            return self._copyTransactionsFrom_parallel(other, workers)
-        return self._copyTransactionsFrom_sequential(other)
+            return self._copyTransactionsFrom_parallel(
+                other, workers, start_tid=start_tid
+            )
+        return self._copyTransactionsFrom_sequential(other, start_tid=start_tid)
 
     def _prepare_transaction(self, txn_info, source_storage):
         """Decode all records in a transaction for batch writing.
@@ -1208,14 +1214,14 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
             "missing_blobs": missing_blobs,
         }
 
-    def _copyTransactionsFrom_sequential(self, other):
+    def _copyTransactionsFrom_sequential(self, other, start_tid=None):
         """Sequential copy — one transaction at a time via TPC protocol."""
         begin_time = time.time()
         txnum = 0
         total_size = 0
         total_missing_blobs = 0
         logger.info("Copying transactions (sequential) ...")
-        for txn_info in other.iterator():
+        for txn_info in other.iterator(start=start_tid):
             txnum += 1
             self.tpc_begin(txn_info, txn_info.tid, txn_info.status)
             num_txn_records = 0
@@ -1289,7 +1295,7 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
                 total_missing_blobs,
             )
 
-    def _copyTransactionsFrom_parallel(self, other, num_workers):
+    def _copyTransactionsFrom_parallel(self, other, num_workers, start_tid=None):
         """Parallel copy — N worker threads write to PG concurrently.
 
         The main thread reads from the source storage, decodes pickles,
@@ -1400,7 +1406,7 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
 
         executor = ThreadPoolExecutor(max_workers=num_workers)
         try:
-            for txn_info in other.iterator():
+            for txn_info in other.iterator(start=start_tid):
                 txn_data = self._prepare_transaction(txn_info, other)
                 txn_oids = {obj["zoid"] for obj in txn_data["objects"]}
                 # Include blob OIDs (they reference the same zoid)
