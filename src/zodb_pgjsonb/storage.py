@@ -3051,6 +3051,8 @@ def _batch_delete_objects(cur, zoids, tid_int, history_preserving=False):
 
 
 _S3_MAX_WORKERS = 8
+_S3_UPLOAD_MAX_RETRIES = 3
+_S3_UPLOAD_RETRY_BASE_DELAY = 2.0
 
 
 def _upload_s3_blobs(s3_client, uploads):
@@ -3069,7 +3071,42 @@ def _upload_s3_blobs(s3_client, uploads):
                 _fmt_blob_size(size),
             )
         t0 = time.time()
-        s3_client.upload_file(blob_path, s3_key)
+        last_exc = None
+        for attempt in range(_S3_UPLOAD_MAX_RETRIES):
+            try:
+                s3_client.upload_file(blob_path, s3_key)
+                break
+            except Exception as exc:
+                last_exc = exc
+                # Extract full error details from the cause chain
+                cause = exc.__cause__ if exc.__cause__ else exc
+                error_detail = str(exc)
+                if hasattr(cause, 'response'):
+                    error_detail = (
+                        f"{cause.response.get('Error', {})} "
+                        f"headers={cause.response.get('ResponseMetadata', {}).get('HTTPHeaders', {})}"
+                    )
+                if attempt < _S3_UPLOAD_MAX_RETRIES - 1:
+                    delay = _S3_UPLOAD_RETRY_BASE_DELAY * (2 ** attempt)
+                    logger.warning(
+                        "S3 upload oid=0x%016x attempt %d/%d failed: %s — "
+                        "retrying in %.0fs ...",
+                        zoid,
+                        attempt + 1,
+                        _S3_UPLOAD_MAX_RETRIES,
+                        error_detail,
+                        delay,
+                    )
+                    time.sleep(delay)
+                else:
+                    logger.error(
+                        "S3 upload oid=0x%016x FAILED after %d attempts: %s",
+                        zoid,
+                        _S3_UPLOAD_MAX_RETRIES,
+                        error_detail,
+                    )
+        else:
+            raise last_exc  # type: ignore[misc]
         upload_secs = time.time() - t0
         if upload_secs >= 5.0:  # pragma: no cover
             logger.info(
