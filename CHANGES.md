@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.5.7
+
+- Support incremental parallel imports with watermark-based resume.
+  `copyTransactionsFrom(source, workers=N, start_tid=X)` now accepts a
+  `start_tid` parameter. A `migration_watermark` table tracks contiguous
+  commit progress so interrupted parallel imports can resume safely without
+  losing transactions to out-of-order worker commits.
+  Fixes #24.
+
 ## 1.5.6
 
 - Fix `_stage_blob` crash when source blobs and temp directory are on

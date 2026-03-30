@@ -181,12 +181,15 @@ existing data.
 `restoreBlob(oid: bytes, serial: bytes, data: bytes, blobfilename: str, prev_txn, transaction) -> None`
 : Restore object data and a blob file without conflict checking.
 
-`copyTransactionsFrom(other, workers: int = 1) -> None`
+`copyTransactionsFrom(other, workers: int = 1, start_tid: bytes | None = None) -> None`
 : Copy all transactions from another storage, including blobs.
   Blob files are copied (not moved) to preserve source storage integrity.
   When `workers` > 1, uses parallel PostgreSQL connections for concurrent writes.
   The main thread reads from the source, decodes pickles, and tracks OID-level
   dependencies to guarantee correct write ordering.
+  When `start_tid` is set, iteration begins at that TID (for incremental imports).
+  A `migration_watermark` table tracks contiguous commit progress during parallel
+  copies so interrupted imports can resume safely without losing transactions.
 
 ### IBlobStorage methods
 

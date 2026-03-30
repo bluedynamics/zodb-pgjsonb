@@ -2,6 +2,30 @@
 
 # Changelog
 
+## 1.5.7
+
+- Support incremental parallel imports with watermark-based resume.
+  `copyTransactionsFrom(source, workers=N, start_tid=X)` now accepts a
+  `start_tid` parameter. A `migration_watermark` table tracks contiguous
+  commit progress so interrupted parallel imports can resume safely without
+  losing transactions to out-of-order worker commits.
+  Fixes #24.
+
+## 1.5.6
+
+- Fix `_stage_blob` crash when source blobs and temp directory are on
+  different filesystems. The hard-link fallback tried to unlink an
+  already-removed placeholder, causing `FileNotFoundError` during
+  `copyTransactionsFrom` with `--workers`.
+
+## 1.5.5
+
+- Parallel S3 blob uploads in `_batch_write_blobs()`. When a transaction
+  contains multiple blobs destined for S3, they are now uploaded concurrently
+  using a thread pool (up to 8 workers). Single-blob transactions skip the
+  thread pool to avoid overhead. This significantly speeds up bulk operations
+  like `zodb-convert` imports with many blobs per transaction.
+
 ## 1.5.3
 
 - Add composite index `(tid, zoid)` on `object_state` to speed up
