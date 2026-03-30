@@ -640,12 +640,18 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
             extra_columns = self._get_extra_columns()
             _batch_write_objects(cur, writes, tid_int, hp, extra_columns=extra_columns)
             _batch_delete_objects(cur, deletes, tid_int, hp)
+            if self._s3_client is not None:
+                from zodb_pgjsonb.blob_sink import InlineBlobSink
+
+                _vote_blob_sink = InlineBlobSink(self._s3_client)
+            else:
+                _vote_blob_sink = None
             _batch_write_blobs(
                 cur,
                 self._blob_tmp.items(),
                 tid_int,
                 hp,
-                s3_client=self._s3_client,
+                blob_sink=_vote_blob_sink,
                 blob_threshold=self._blob_threshold,
             )
 
@@ -1112,7 +1118,9 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
             shutil.move(blobfilename, staged)
             self._blob_tmp[zoid] = staged
 
-    def copyTransactionsFrom(self, other, workers=1, start_tid=None):
+    def copyTransactionsFrom(
+        self, other, workers=1, start_tid=None, blob_mode="inline"
+    ):
         """Copy all transactions from another storage, including blobs.
 
         Overrides BaseStorage.copyTransactionsFrom to correctly handle
@@ -1130,10 +1138,18 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
         When *start_tid* is given (bytes), only transactions with
         ``tid >= start_tid`` are copied.  This allows resuming an
         interrupted import from the last successfully written TID.
+
+        *blob_mode* controls S3 blob uploads:
+        - ``"inline"`` (default): upload synchronously in worker threads
+        - ``"background"``: upload via a background thread pool
+        - ``"deferred:/path/to/manifest.tsv"``: write manifest for later upload
         """
         if workers > 1:
             return self._copyTransactionsFrom_parallel(
-                other, workers, start_tid=start_tid
+                other,
+                workers,
+                start_tid=start_tid,
+                blob_mode=blob_mode,
             )
         return self._copyTransactionsFrom_sequential(other, start_tid=start_tid)
 
@@ -1295,7 +1311,9 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
                 total_missing_blobs,
             )
 
-    def _copyTransactionsFrom_parallel(self, other, num_workers, start_tid=None):
+    def _copyTransactionsFrom_parallel(
+        self, other, num_workers, start_tid=None, blob_mode="inline"
+    ):
         """Parallel copy — N worker threads write to PG concurrently.
 
         The main thread reads from the source storage, decodes pickles,
@@ -1373,6 +1391,21 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
             self._instance_pool.putconn(wm_conn)
             raise
 
+        # ── BlobSink setup ─────────────────────────────────────────
+        from zodb_pgjsonb.blob_sink import BackgroundBlobSink
+        from zodb_pgjsonb.blob_sink import DeferredBlobSink
+        from zodb_pgjsonb.blob_sink import InlineBlobSink
+
+        if blob_mode == "background" and self._s3_client is not None:
+            blob_sink = BackgroundBlobSink(self._s3_client)
+        elif isinstance(blob_mode, str) and blob_mode.startswith("deferred:"):
+            manifest_path = blob_mode.split(":", 1)[1]
+            blob_sink = DeferredBlobSink(manifest_path)
+        elif self._s3_client is not None:
+            blob_sink = InlineBlobSink(self._s3_client)
+        else:
+            blob_sink = None
+
         # Thread-local PG connections — one per worker thread.
         _local = threading.local()
         worker_conns = []
@@ -1410,7 +1443,7 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
                     hp,
                     extra_columns,
                     processors,
-                    s3_client=self._s3_client,
+                    blob_sink=blob_sink,
                     blob_threshold=self._blob_threshold,
                     idempotent=idempotent,
                 )
@@ -1641,6 +1674,10 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
                     (_wm_tid_val,),
                 )
 
+            # Drain and close the blob sink (waits for background uploads).
+            if blob_sink is not None:
+                blob_sink.close()
+
             # Clean completion — drop watermark table.
             wm_conn.execute("DROP TABLE IF EXISTS migration_watermark")
 
@@ -1650,6 +1687,9 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
 
         except BaseException:
             executor.shutdown(wait=False, cancel_futures=True)
+            if blob_sink is not None:
+                with contextlib.suppress(Exception):
+                    blob_sink.close()
             # Flush watermark on error so interrupted imports can resume.
             try:
                 while watermark_idx < len(dispatched):
@@ -2210,12 +2250,18 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
             extra_columns = self._main._get_extra_columns()
             _batch_write_objects(cur, writes, tid_int, hp, extra_columns=extra_columns)
             _batch_delete_objects(cur, deletes, tid_int, hp)
+            if self._s3_client is not None:
+                from zodb_pgjsonb.blob_sink import InlineBlobSink
+
+                _vote_blob_sink = InlineBlobSink(self._s3_client)
+            else:
+                _vote_blob_sink = None
             _batch_write_blobs(
                 cur,
                 self._blob_tmp.items(),
                 tid_int,
                 hp,
-                s3_client=self._s3_client,
+                blob_sink=_vote_blob_sink,
                 blob_threshold=self._blob_threshold,
             )
 
@@ -3050,71 +3096,27 @@ def _batch_delete_objects(cur, zoids, tid_int, history_preserving=False):
     )
 
 
-_S3_MAX_WORKERS = 8
-
-
-def _upload_s3_blobs(s3_client, uploads):
-    """Upload blobs to S3 in parallel using a thread pool.
-
-    *uploads* is a list of (blob_path, s3_key, zoid, size) tuples.
-    """
-    from concurrent.futures import as_completed
-    from concurrent.futures import ThreadPoolExecutor
-
-    def _upload_one(blob_path, s3_key, zoid, size):
-        if size >= 10_000_000:  # pragma: no cover
-            logger.info(
-                "Uploading blob oid=0x%016x (%s) to S3 ...",
-                zoid,
-                _fmt_blob_size(size),
-            )
-        t0 = time.time()
-        s3_client.upload_file(blob_path, s3_key)
-        upload_secs = time.time() - t0
-        if upload_secs >= 5.0:  # pragma: no cover
-            logger.info(
-                "S3 upload oid=0x%016x (%s) took %s",
-                zoid,
-                _fmt_blob_size(size),
-                _fmt_elapsed(upload_secs),
-            )
-
-    if len(uploads) == 1:
-        # Single blob — no thread pool overhead
-        blob_path, s3_key, zoid, size = uploads[0]
-        _upload_one(blob_path, s3_key, zoid, size)
-        return
-
-    with ThreadPoolExecutor(max_workers=min(_S3_MAX_WORKERS, len(uploads))) as pool:
-        futures = {
-            pool.submit(_upload_one, blob_path, s3_key, zoid, size): s3_key
-            for blob_path, s3_key, zoid, size in uploads
-        }
-        for future in as_completed(futures):
-            future.result()  # Raises on failure
-
-
 def _batch_write_blobs(
     cur,
     blobs,
     tid_int,
     history_preserving=False,
-    s3_client=None,
+    blob_sink=None,
     blob_threshold=102_400,
 ):
     """Write multiple blobs in batch with optional S3 tiering.
 
-    When s3_client is set, blobs >= blob_threshold are uploaded to S3
-    and only metadata (s3_key, no data) is stored in PG. Smaller blobs
-    go directly to PG bytea.
+    When blob_sink is set, blobs >= blob_threshold are submitted to
+    the sink and only metadata (s3_key, no data) is stored in PG.
+    Smaller blobs go directly to PG bytea.
     """
     if not blobs:
         return
 
     pg_params = []  # (zoid, tid, size, data) — PG bytea blobs
     s3_params = []  # (zoid, tid, size, s3_key) — S3 metadata-only rows
-    s3_uploads = []  # (blob_path, s3_key, zoid, size) — pending S3 uploads
-    temp_paths = []  # paths to unlink after all uploads complete
+    s3_uploads = []  # (blob_path, s3_key, zoid, size, cleanup) — pending sink submissions
+    pg_temp_paths = []  # PG bytea temp paths to unlink immediately
 
     for blob_entry in blobs:
         # Support both (zoid, path) and (zoid, path, is_temp) tuples.
@@ -3124,25 +3126,26 @@ def _batch_write_blobs(
             zoid, blob_path = blob_entry
             is_temp = True
         size = os.path.getsize(blob_path)
-        if s3_client is not None and size >= blob_threshold:
-            # Large blob → S3 (upload deferred for parallel execution)
+        if blob_sink is not None and size >= blob_threshold:
+            # Large blob → S3 via sink (cleanup ownership transfers to sink)
             s3_key = f"blobs/{zoid:016x}/{tid_int:016x}.blob"
-            s3_uploads.append((blob_path, s3_key, zoid, size))
+            cleanup = blob_path if is_temp else None
+            s3_uploads.append((blob_path, s3_key, zoid, size, cleanup))
             s3_params.append((zoid, tid_int, size, s3_key))
         else:
-            # Small blob or no S3 → PG bytea
+            # Small blob or no sink → PG bytea
             with open(blob_path, "rb") as f:
                 blob_data = f.read()
             pg_params.append((zoid, tid_int, size, blob_data))
-        if is_temp:
-            temp_paths.append(blob_path)
+            if is_temp:
+                pg_temp_paths.append(blob_path)
 
-    # Upload S3 blobs in parallel
-    if s3_uploads:
-        _upload_s3_blobs(s3_client, s3_uploads)
+    # Submit S3 blobs to the sink
+    for blob_path, s3_key, zoid, size, cleanup in s3_uploads:
+        blob_sink.submit(blob_path, s3_key, zoid, size, cleanup_path=cleanup)
 
-    # Clean up temp files after all uploads complete
-    for path in temp_paths:
+    # Clean up PG bytea temp files (S3 temps are owned by the sink now)
+    for path in pg_temp_paths:
         os.unlink(path)
 
     # Batch insert PG bytea blobs (blob_state keeps all versions via PK (zoid, tid))
@@ -3174,7 +3177,7 @@ def _write_prepared_transaction(
     history_preserving,
     extra_columns,
     processors,
-    s3_client=None,
+    blob_sink=None,
     blob_threshold=102_400,
     idempotent=False,
 ):
@@ -3213,7 +3216,7 @@ def _write_prepared_transaction(
                 txn_data["blobs"],
                 tid_int,
                 history_preserving,
-                s3_client=s3_client,
+                blob_sink=blob_sink,
                 blob_threshold=blob_threshold,
             )
             for proc in processors:

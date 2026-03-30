@@ -1,5 +1,14 @@
 # Changelog
 
+## unreleased
+
+- Add `blob_mode` parameter to `copyTransactionsFrom()` for decoupled S3 blob
+  uploads during parallel migration. Three modes: `"inline"` (default, current
+  behavior), `"background"` (S3 uploads in a background thread pool, PG writes
+  continue independently), and `"deferred:<manifest_path>"` (write manifest file
+  for later upload). Background mode significantly improves throughput when S3
+  latency is the bottleneck.
+
 ## 1.6.1
 
 - Fix `_stage_blob` `PermissionError` when hard-linking blobs owned by
