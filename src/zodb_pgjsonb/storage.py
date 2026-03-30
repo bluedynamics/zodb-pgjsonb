@@ -1221,6 +1221,21 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
         total_size = 0
         total_missing_blobs = 0
         logger.info("Copying transactions (sequential) ...")
+        if start_tid is not None:
+            with self._conn.cursor() as cur:
+                cur.execute(
+                    "SELECT"
+                    " (SELECT count(*) FROM transaction_log) AS txns,"
+                    " (SELECT count(*) FROM object_state) AS oids,"
+                    " (SELECT count(*) FROM blob_state) AS blobs"
+                )
+                row = cur.fetchone()
+            logger.info(
+                "Existing data in target: %s txns, %s OIDs, %s blobs",
+                f"{row['txns']:,}",
+                f"{row['oids']:,}",
+                f"{row['blobs']:,}",
+            )
         for txn_info in other.iterator(start=start_tid):
             txnum += 1
             self.tpc_begin(txn_info, txn_info.tid, txn_info.status)
@@ -1372,6 +1387,24 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
         except BaseException:
             self._instance_pool.putconn(wm_conn)
             raise
+
+        # Log existing DB stats on incremental resume so the operator
+        # knows the starting point (counters start from 0 for new work).
+        if start_tid is not None:
+            with wm_conn.cursor() as cur:
+                cur.execute(
+                    "SELECT"
+                    " (SELECT count(*) FROM transaction_log) AS txns,"
+                    " (SELECT count(*) FROM object_state) AS oids,"
+                    " (SELECT count(*) FROM blob_state) AS blobs"
+                )
+                row = cur.fetchone()
+            logger.info(
+                "Existing data in target: %s txns, %s OIDs, %s blobs",
+                f"{row['txns']:,}",
+                f"{row['oids']:,}",
+                f"{row['blobs']:,}",
+            )
 
         # Thread-local PG connections — one per worker thread.
         _local = threading.local()
