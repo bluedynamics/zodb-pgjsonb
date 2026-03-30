@@ -2,7 +2,7 @@
 
 # How to migrate with zodbconvert
 
-This guide shows you how to migrate an existing ZODB database (FileStorage or RelStorage) to zodb-pgjsonb using `zodbconvert` or the Python API.
+This guide shows you how to migrate an existing ZODB database (FileStorage or RelStorage) to zodb-pgjsonb using [zodb-convert](https://github.com/bluedynamics/zodb-convert) or the Python API.
 
 ## Write a zodbconvert configuration file
 
@@ -43,18 +43,33 @@ Create a file named `migrate.cfg`:
 </destination>
 ```
 
-## Run zodbconvert
+## Run the migration
 
 ```bash
-zodbconvert migrate.cfg
+zodb-convert migrate.cfg
 ```
 
 This copies all transactions sequentially, including blobs.
 The destination storage creates its schema automatically.
 
+`zodb-convert` is a standalone tool that works with any ZODB-compatible storage.
+Install it with `pip install zodb-convert` (or `uv pip install zodb-convert`).
+
 ## Run a parallel migration
 
-For large databases, use the Python API with the `workers` parameter for faster migration:
+For large databases, use multiple worker threads for faster migration:
+
+```bash
+zodb-convert -w 4 migrate.cfg
+```
+
+This delegates to the destination storage's `copyTransactionsFrom(source, workers=4)`.
+The main thread iterates the source and decodes pickles; worker threads write to PostgreSQL concurrently.
+Set `pool-max-size` in your destination config to at least the number of workers plus one.
+
+### Python API
+
+If you need more control, use the Python API directly:
 
 ```python
 from zodb_pgjsonb.storage import PGJsonbStorage
@@ -71,14 +86,23 @@ dest.close()
 source.close()
 ```
 
-Workers are capped to the destination storage's `pool_max_size`.
-The main thread iterates the source and decodes pickles; worker threads write to PostgreSQL concurrently.
-Set `pool_max_size` to at least the number of workers you plan to use plus one (for the watermark tracker).
+## Resume an interrupted migration
 
-## Resume an interrupted parallel migration
+If a migration is interrupted (Ctrl-C, crash, network failure), resume with `--incremental`:
 
-If a parallel migration is interrupted (Ctrl-C, crash, network failure), it can be
-resumed without losing progress or re-copying already-committed transactions:
+```bash
+zodb-convert --incremental -w 4 migrate.cfg
+```
+
+During parallel copy, the storage tracks a *watermark* — the highest TID where all
+prior TIDs are also committed.
+On resume, iteration starts from the watermark (not `lastTransaction()`) to fill any
+gaps left by out-of-order worker commits.
+Already-committed transactions are skipped automatically.
+The watermark table is dropped on successful completion, adding zero overhead to
+non-incremental imports.
+
+### Python API
 
 ```python
 from zodb_pgjsonb.storage import PGJsonbStorage
@@ -97,20 +121,6 @@ start_tid = p64(u64(dest.lastTransaction()) + 1)
 dest.copyTransactionsFrom(source, workers=4, start_tid=start_tid)
 dest.close()
 source.close()
-```
-
-During parallel copy, the storage tracks a *watermark* — the highest TID where all
-prior TIDs are also committed.
-On resume, iteration starts from the watermark (not `lastTransaction()`) to fill any
-gaps left by out-of-order worker commits.
-Already-committed transactions are skipped automatically.
-The watermark table is dropped on successful completion, adding zero overhead to
-non-incremental imports.
-
-With [zodb-convert](https://github.com/bluedynamics/zodb-convert), this is simply:
-
-```bash
-zodb-convert --incremental -w 4 migrate.cfg
 ```
 
 ## Migrate blobs
