@@ -7,6 +7,7 @@ from persistent.mapping import PersistentMapping
 from tests.conftest import clean_db
 from tests.conftest import DSN
 from ZODB.FileStorage import FileStorage
+from ZODB.utils import p64
 from zodb_pgjsonb.storage import _write_prepared_transaction
 from zodb_pgjsonb.storage import _write_txn_log
 from zodb_pgjsonb.storage import PGJsonbStorage
@@ -223,3 +224,104 @@ class TestWatermarkLifecycle:
 
         dest.close()
         source_with_5_txns.close()
+
+
+class TestIncrementalParallelResume:
+    """End-to-end: interrupt parallel copy, resume incrementally."""
+
+    @pytest.fixture
+    def temp_dir(self):
+        d = tempfile.mkdtemp()
+        yield d
+        shutil.rmtree(d)
+
+    @pytest.fixture
+    def source_with_10_txns(self, temp_dir):
+        """FileStorage with 10 explicit transactions."""
+        fs_path = os.path.join(temp_dir, "source.fs")
+        blob_dir = os.path.join(temp_dir, "blobs")
+        os.makedirs(blob_dir)
+        source = FileStorage(fs_path, blob_dir=blob_dir)
+        db = ZODB.DB(source)
+        conn = db.open()
+        root = conn.root()
+        for i in range(10):
+            root[f"key{i}"] = PersistentMapping({"val": i})
+            txn_mod.commit()
+        conn.close()
+        db.close()
+        return FileStorage(fs_path, blob_dir=blob_dir, read_only=True)
+
+    def test_resume_after_interruption(self, source_with_10_txns):
+        """Interrupted parallel copy + incremental resume = all data present."""
+        clean_db()
+        dest = PGJsonbStorage(DSN, pool_max_size=4)
+
+        # Phase 1: Interrupt after ~4 worker commits.
+        # Patch _prepare_transaction on the instance (not module level),
+        # since it runs on the main thread and propagates cleanly.
+        original_prepare = dest._prepare_transaction
+        call_count = 0
+
+        def _interrupt_after_4(txn_info, source):
+            nonlocal call_count
+            result = original_prepare(txn_info, source)
+            call_count += 1
+            if call_count >= 5:
+                raise RuntimeError("simulated interruption")
+            return result
+
+        dest._prepare_transaction = _interrupt_after_4
+        try:
+            with pytest.raises(RuntimeError, match="simulated interruption"):
+                dest.copyTransactionsFrom(source_with_10_txns, workers=2)
+        finally:
+            dest._prepare_transaction = original_prepare
+        dest.close()
+
+        # Read watermark
+        conn = psycopg.connect(DSN)
+        with conn.cursor() as cur:
+            cur.execute("SELECT tid FROM migration_watermark WHERE id = TRUE")
+            watermark_row = cur.fetchone()
+        conn.close()
+        assert watermark_row is not None
+        watermark_tid = watermark_row[0]
+
+        # Phase 2: Resume with start_tid from watermark
+        dest2 = PGJsonbStorage(DSN, pool_max_size=4)
+        resume_tid = p64(watermark_tid + 1)
+        dest2.copyTransactionsFrom(source_with_10_txns, workers=2, start_tid=resume_tid)
+
+        # Verify ALL data is present (11 txns: 1 root + 10 explicit)
+        dest_db = ZODB.DB(dest2)
+        conn2 = dest_db.open()
+        root = conn2.root()
+        for i in range(10):
+            assert root[f"key{i}"]["val"] == i, f"key{i} missing or wrong"
+        conn2.close()
+        dest_db.close()
+        source_with_10_txns.close()
+
+    def test_fresh_parallel_no_watermark_overhead(self, source_with_10_txns):
+        """Fresh parallel copy (no start_tid) drops watermark on success."""
+        clean_db()
+        dest = PGJsonbStorage(DSN, pool_max_size=4)
+        dest.copyTransactionsFrom(source_with_10_txns, workers=2)
+
+        # All data intact
+        dest_db = ZODB.DB(dest)
+        conn = dest_db.open()
+        root = conn.root()
+        for i in range(10):
+            assert root[f"key{i}"]["val"] == i
+        conn.close()
+        dest_db.close()
+
+        # Watermark table gone
+        pg_conn = psycopg.connect(DSN)
+        with pg_conn.cursor() as cur:
+            cur.execute("SELECT to_regclass('migration_watermark') IS NOT NULL")
+            assert cur.fetchone()[0] is False
+        pg_conn.close()
+        source_with_10_txns.close()
