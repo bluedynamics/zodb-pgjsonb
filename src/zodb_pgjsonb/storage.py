@@ -2482,8 +2482,13 @@ def _stage_blob(src, temp_dir):
     fd, tmp = tempfile.mkstemp(suffix=".blob", dir=temp_dir)
     os.close(fd)
     os.unlink(tmp)  # remove empty placeholder
-    os.link(src, tmp)
-    return tmp, True
+    try:
+        os.link(src, tmp)
+        return tmp, True
+    except OSError:
+        # Hard-link failed (e.g. fs.protected_hardlinks blocks linking
+        # to files owned by another user). Use source directly.
+        return src, False
 
 
 def _table_exists(cur, table_name):

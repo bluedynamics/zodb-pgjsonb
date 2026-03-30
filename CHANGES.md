@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.6.1
+
+- Fix `_stage_blob` `PermissionError` when hard-linking blobs owned by
+  another user (e.g. Docker's uid 500). `fs.protected_hardlinks` blocks
+  the link even on the same filesystem. Now falls back to using the
+  source path directly.
+
 ## 1.6.0
 
 - Support incremental parallel imports with watermark-based resume.
