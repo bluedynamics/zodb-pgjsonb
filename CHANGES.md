@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.5.6
+
+- Fix `_stage_blob` crash when source blobs and temp directory are on
+  different filesystems. The hard-link fallback tried to unlink an
+  already-removed placeholder, causing `FileNotFoundError` during
+  `copyTransactionsFrom` with `--workers`.
+
 ## 1.5.5
 
 - Parallel S3 blob uploads in `_batch_write_blobs()`. When a transaction

@@ -2358,7 +2358,8 @@ def _stage_blob(src, temp_dir):
         os.link(src, tmp)
         return tmp, True
     except OSError:
-        os.unlink(tmp)  # clean up placeholder
+        # Hard-link failed (e.g. cross-filesystem). tmp was already
+        # unlinked above, so just use the source path directly.
         return src, False
 
 
