@@ -2481,12 +2481,17 @@ def _deserialize_extension(ext_data):
     return {}
 
 
-def _write_txn_log(cur, tid_int, user, desc, ext):
-    """Write a transaction log entry."""
+def _write_txn_log(cur, tid_int, user, desc, ext, idempotent=False):
+    """Write a transaction log entry.
+
+    When *idempotent* is True, silently skips if the TID already exists
+    (used for resuming interrupted parallel imports).
+    """
+    conflict_clause = " ON CONFLICT (tid) DO NOTHING" if idempotent else ""
     cur.execute(
         "INSERT INTO transaction_log "
         "(tid, username, description, extension) "
-        "VALUES (%s, %s, %s, %s)",
+        f"VALUES (%s, %s, %s, %s){conflict_clause}",
         (tid_int, user, desc, _serialize_extension(ext)),
     )
 
