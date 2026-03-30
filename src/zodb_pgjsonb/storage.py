@@ -2916,6 +2916,49 @@ def _batch_delete_objects(cur, zoids, tid_int, history_preserving=False):
     )
 
 
+_S3_MAX_WORKERS = 8
+
+
+def _upload_s3_blobs(s3_client, uploads):
+    """Upload blobs to S3 in parallel using a thread pool.
+
+    *uploads* is a list of (blob_path, s3_key, zoid, size) tuples.
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    def _upload_one(blob_path, s3_key, zoid, size):
+        if size >= 10_000_000:  # pragma: no cover
+            logger.info(
+                "Uploading blob oid=0x%016x (%s) to S3 ...",
+                zoid,
+                _fmt_blob_size(size),
+            )
+        t0 = time.time()
+        s3_client.upload_file(blob_path, s3_key)
+        upload_secs = time.time() - t0
+        if upload_secs >= 5.0:  # pragma: no cover
+            logger.info(
+                "S3 upload oid=0x%016x (%s) took %s",
+                zoid,
+                _fmt_blob_size(size),
+                _fmt_elapsed(upload_secs),
+            )
+
+    if len(uploads) == 1:
+        # Single blob — no thread pool overhead
+        blob_path, s3_key, zoid, size = uploads[0]
+        _upload_one(blob_path, s3_key, zoid, size)
+        return
+
+    with ThreadPoolExecutor(max_workers=min(_S3_MAX_WORKERS, len(uploads))) as pool:
+        futures = {
+            pool.submit(_upload_one, blob_path, s3_key, zoid, size): s3_key
+            for blob_path, s3_key, zoid, size in uploads
+        }
+        for future in as_completed(futures):
+            future.result()  # Raises on failure
+
+
 def _batch_write_blobs(
     cur,
     blobs,
@@ -2935,6 +2978,8 @@ def _batch_write_blobs(
 
     pg_params = []  # (zoid, tid, size, data) — PG bytea blobs
     s3_params = []  # (zoid, tid, size, s3_key) — S3 metadata-only rows
+    s3_uploads = []  # (blob_path, s3_key, zoid, size) — pending S3 uploads
+    temp_paths = []  # paths to unlink after all uploads complete
 
     for blob_entry in blobs:
         # Support both (zoid, path) and (zoid, path, is_temp) tuples.
@@ -2945,24 +2990,9 @@ def _batch_write_blobs(
             is_temp = True
         size = os.path.getsize(blob_path)
         if s3_client is not None and size >= blob_threshold:
-            # Large blob → S3
+            # Large blob → S3 (upload deferred for parallel execution)
             s3_key = f"blobs/{zoid:016x}/{tid_int:016x}.blob"
-            if size >= 10_000_000:  # pragma: no cover — S3 runtime only
-                logger.info(
-                    "Uploading blob oid=0x%016x (%s) to S3 ...",
-                    zoid,
-                    _fmt_blob_size(size),
-                )
-            t0 = time.time()
-            s3_client.upload_file(blob_path, s3_key)
-            upload_secs = time.time() - t0
-            if upload_secs >= 5.0:  # pragma: no cover — S3 runtime only
-                logger.info(
-                    "S3 upload oid=0x%016x (%s) took %s",
-                    zoid,
-                    _fmt_blob_size(size),
-                    _fmt_elapsed(upload_secs),
-                )
+            s3_uploads.append((blob_path, s3_key, zoid, size))
             s3_params.append((zoid, tid_int, size, s3_key))
         else:
             # Small blob or no S3 → PG bytea
@@ -2970,7 +3000,15 @@ def _batch_write_blobs(
                 blob_data = f.read()
             pg_params.append((zoid, tid_int, size, blob_data))
         if is_temp:
-            os.unlink(blob_path)
+            temp_paths.append(blob_path)
+
+    # Upload S3 blobs in parallel
+    if s3_uploads:
+        _upload_s3_blobs(s3_client, s3_uploads)
+
+    # Clean up temp files after all uploads complete
+    for path in temp_paths:
+        os.unlink(path)
 
     # Batch insert PG bytea blobs (blob_state keeps all versions via PK (zoid, tid))
     if pg_params:
