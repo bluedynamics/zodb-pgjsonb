@@ -1,6 +1,6 @@
 # Changelog
 
-## unreleased
+## 1.7.0
 
 - Add `blob_mode` parameter to `copyTransactionsFrom()` for decoupled S3 blob
   uploads during parallel migration. Three modes: `"inline"` (default, current
