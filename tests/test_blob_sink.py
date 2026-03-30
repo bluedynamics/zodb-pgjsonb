@@ -1,7 +1,11 @@
+import time
+import threading
+
 import pytest
 from unittest.mock import MagicMock
 
 from zodb_pgjsonb.blob_sink import InlineBlobSink
+from zodb_pgjsonb.blob_sink import BackgroundBlobSink
 
 
 class TestInlineBlobSink:
@@ -53,3 +57,77 @@ class TestInlineBlobSink:
     def test_close_is_noop(self):
         sink = InlineBlobSink(MagicMock())
         sink.close()  # should not raise
+
+
+class TestBackgroundBlobSink:
+    def test_submit_returns_immediately(self, tmp_path):
+        """submit() should not block waiting for upload."""
+        s3 = MagicMock()
+        barrier = threading.Event()
+
+        def slow_upload(*a, **kw):
+            barrier.wait(timeout=5)
+
+        s3.upload_file = slow_upload
+        sink = BackgroundBlobSink(s3, max_workers=2)
+        blob = tmp_path / "test.blob"
+        blob.write_bytes(b"data")
+
+        sink.submit(str(blob), "blobs/key.blob", 1, 4)
+        # If submit blocked, we'd never get here
+        barrier.set()
+        sink.close()
+
+    def test_drain_waits_for_uploads(self, tmp_path):
+        s3 = MagicMock()
+        completed = []
+
+        def track_upload(path, key):
+            time.sleep(0.05)
+            completed.append(key)
+
+        s3.upload_file = track_upload
+        sink = BackgroundBlobSink(s3, max_workers=2)
+
+        for i in range(5):
+            blob = tmp_path / f"blob{i}"
+            blob.write_bytes(b"data")
+            sink.submit(str(blob), f"blobs/{i}.blob", i, 4)
+
+        sink.drain()
+        assert len(completed) == 5
+
+    def test_drain_raises_on_failure(self, tmp_path):
+        s3 = MagicMock()
+        s3.upload_file.side_effect = Exception("fail")
+        sink = BackgroundBlobSink(s3, max_workers=1,
+                                  max_retries=1, retry_base_delay=0)
+        blob = tmp_path / "test.blob"
+        blob.write_bytes(b"data")
+
+        sink.submit(str(blob), "blobs/key.blob", 1, 4)
+
+        with pytest.raises(RuntimeError, match="blob upload.*failed"):
+            sink.drain()
+
+    def test_submit_cleans_temp_after_upload(self, tmp_path):
+        s3 = MagicMock()
+        sink = BackgroundBlobSink(s3, max_workers=1)
+        blob = tmp_path / "test.blob"
+        blob.write_bytes(b"data")
+
+        sink.submit(str(blob), "blobs/key.blob", 1, 4, cleanup_path=str(blob))
+        sink.drain()
+
+        assert not blob.exists()
+
+    def test_close_drains_and_shuts_down(self, tmp_path):
+        s3 = MagicMock()
+        sink = BackgroundBlobSink(s3, max_workers=1)
+        blob = tmp_path / "test.blob"
+        blob.write_bytes(b"data")
+
+        sink.submit(str(blob), "blobs/key.blob", 1, 4)
+        sink.close()
+
+        s3.upload_file.assert_called_once()

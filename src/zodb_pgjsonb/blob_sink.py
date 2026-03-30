@@ -13,6 +13,8 @@ import contextlib
 import logging
 import os
 import time
+from concurrent.futures import Future
+from concurrent.futures import ThreadPoolExecutor
 from typing import Protocol
 
 
@@ -20,6 +22,7 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_MAX_RETRIES = 3
 _DEFAULT_RETRY_BASE_DELAY = 2.0
+_DEFAULT_BACKGROUND_WORKERS = 16
 
 
 def _upload_with_retry(s3_client, blob_path, s3_key, zoid, size,
@@ -107,3 +110,56 @@ class InlineBlobSink:
 
     def close(self):
         pass
+
+
+class BackgroundBlobSink:
+    """Upload blobs via a background thread pool, decoupled from PG workers."""
+
+    def __init__(self, s3_client, max_workers=_DEFAULT_BACKGROUND_WORKERS,
+                 max_retries=_DEFAULT_MAX_RETRIES,
+                 retry_base_delay=_DEFAULT_RETRY_BASE_DELAY):
+        self._s3 = s3_client
+        self._max_retries = max_retries
+        self._retry_base_delay = retry_base_delay
+        self._pool = ThreadPoolExecutor(max_workers=max_workers)
+        self._futures: list[Future] = []
+        self._closed = False
+
+    def _do_upload(self, blob_path, s3_key, zoid, size, cleanup_path):
+        try:
+            _upload_with_retry(
+                self._s3, blob_path, s3_key, zoid, size,
+                self._max_retries, self._retry_base_delay,
+            )
+        finally:
+            if cleanup_path:
+                with contextlib.suppress(OSError):
+                    os.unlink(cleanup_path)
+
+    def submit(self, blob_path, s3_key, zoid, size, cleanup_path=None):
+        if self._closed:
+            raise RuntimeError("BlobSink is closed")
+        fut = self._pool.submit(
+            self._do_upload, blob_path, s3_key, zoid, size, cleanup_path,
+        )
+        self._futures.append(fut)
+
+    def drain(self):
+        errors = []
+        for fut in self._futures:
+            try:
+                fut.result()
+            except Exception as exc:
+                errors.append(exc)
+        self._futures.clear()
+        if errors:
+            raise RuntimeError(
+                f"{len(errors)} blob upload(s) failed. "
+                f"First error: {errors[0]}"
+            )
+
+    def close(self):
+        if not self._closed:
+            self.drain()
+            self._pool.shutdown(wait=True)
+            self._closed = True
