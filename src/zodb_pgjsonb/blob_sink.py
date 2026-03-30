@@ -7,6 +7,7 @@ copyTransactionsFrom. Three modes:
 - BackgroundBlobSink: upload via background thread pool (PG continues)
 - DeferredBlobSink: write manifest file, upload later via CLI tool
 """
+
 from __future__ import annotations
 
 from concurrent.futures import Future
@@ -27,14 +28,21 @@ _DEFAULT_RETRY_BASE_DELAY = 2.0
 _DEFAULT_BACKGROUND_WORKERS = 16
 
 
-def _upload_with_retry(s3_client, blob_path, s3_key, zoid, size,
-                       max_retries=_DEFAULT_MAX_RETRIES,
-                       retry_base_delay=_DEFAULT_RETRY_BASE_DELAY):
+def _upload_with_retry(
+    s3_client,
+    blob_path,
+    s3_key,
+    zoid,
+    size,
+    max_retries=_DEFAULT_MAX_RETRIES,
+    retry_base_delay=_DEFAULT_RETRY_BASE_DELAY,
+):
     """Upload a single blob to S3 with exponential-backoff retry."""
     if size >= 10_000_000:
         logger.info(
             "Uploading blob oid=0x%016x (%s) to S3 ...",
-            zoid, _fmt_size(size),
+            zoid,
+            _fmt_size(size),
         )
     t0 = time.time()
     last_exc = None
@@ -45,11 +53,15 @@ def _upload_with_retry(s3_client, blob_path, s3_key, zoid, size,
         except Exception as exc:
             last_exc = exc
             if attempt < max_retries - 1:
-                delay = retry_base_delay * (2 ** attempt)
+                delay = retry_base_delay * (2**attempt)
                 logger.warning(
                     "S3 upload oid=0x%016x attempt %d/%d failed (%s), "
                     "retrying in %.0fs ...",
-                    zoid, attempt + 1, max_retries, exc, delay,
+                    zoid,
+                    attempt + 1,
+                    max_retries,
+                    exc,
+                    delay,
                 )
                 time.sleep(delay)
     else:
@@ -58,7 +70,9 @@ def _upload_with_retry(s3_client, blob_path, s3_key, zoid, size,
     if elapsed >= 5.0:
         logger.info(
             "S3 upload oid=0x%016x (%s) took %.0fs",
-            zoid, _fmt_size(size), elapsed,
+            zoid,
+            _fmt_size(size),
+            elapsed,
         )
 
 
@@ -75,8 +89,14 @@ def _fmt_size(size):
 class BlobSink(Protocol):
     """Protocol for blob upload destinations."""
 
-    def submit(self, blob_path: str, s3_key: str, zoid: int, size: int,
-               cleanup_path: str | None = None) -> None:
+    def submit(
+        self,
+        blob_path: str,
+        s3_key: str,
+        zoid: int,
+        size: int,
+        cleanup_path: str | None = None,
+    ) -> None:
         """Submit a blob for upload. May block (inline) or enqueue (background)."""
         ...
 
@@ -92,16 +112,25 @@ class BlobSink(Protocol):
 class InlineBlobSink:
     """Upload blobs synchronously in the calling thread (current behavior)."""
 
-    def __init__(self, s3_client, max_retries=_DEFAULT_MAX_RETRIES,
-                 retry_base_delay=_DEFAULT_RETRY_BASE_DELAY):
+    def __init__(
+        self,
+        s3_client,
+        max_retries=_DEFAULT_MAX_RETRIES,
+        retry_base_delay=_DEFAULT_RETRY_BASE_DELAY,
+    ):
         self._s3 = s3_client
         self._max_retries = max_retries
         self._retry_base_delay = retry_base_delay
 
     def submit(self, blob_path, s3_key, zoid, size, cleanup_path=None):
         _upload_with_retry(
-            self._s3, blob_path, s3_key, zoid, size,
-            self._max_retries, self._retry_base_delay,
+            self._s3,
+            blob_path,
+            s3_key,
+            zoid,
+            size,
+            self._max_retries,
+            self._retry_base_delay,
         )
         if cleanup_path:
             with contextlib.suppress(OSError):
@@ -117,9 +146,13 @@ class InlineBlobSink:
 class BackgroundBlobSink:
     """Upload blobs via a background thread pool, decoupled from PG workers."""
 
-    def __init__(self, s3_client, max_workers=_DEFAULT_BACKGROUND_WORKERS,
-                 max_retries=_DEFAULT_MAX_RETRIES,
-                 retry_base_delay=_DEFAULT_RETRY_BASE_DELAY):
+    def __init__(
+        self,
+        s3_client,
+        max_workers=_DEFAULT_BACKGROUND_WORKERS,
+        max_retries=_DEFAULT_MAX_RETRIES,
+        retry_base_delay=_DEFAULT_RETRY_BASE_DELAY,
+    ):
         self._s3 = s3_client
         self._max_retries = max_retries
         self._retry_base_delay = retry_base_delay
@@ -130,8 +163,13 @@ class BackgroundBlobSink:
     def _do_upload(self, blob_path, s3_key, zoid, size, cleanup_path):
         try:
             _upload_with_retry(
-                self._s3, blob_path, s3_key, zoid, size,
-                self._max_retries, self._retry_base_delay,
+                self._s3,
+                blob_path,
+                s3_key,
+                zoid,
+                size,
+                self._max_retries,
+                self._retry_base_delay,
             )
         finally:
             if cleanup_path:
@@ -142,7 +180,12 @@ class BackgroundBlobSink:
         if self._closed:
             raise RuntimeError("BlobSink is closed")
         fut = self._pool.submit(
-            self._do_upload, blob_path, s3_key, zoid, size, cleanup_path,
+            self._do_upload,
+            blob_path,
+            s3_key,
+            zoid,
+            size,
+            cleanup_path,
         )
         self._futures.append(fut)
 
@@ -156,8 +199,7 @@ class BackgroundBlobSink:
         self._futures.clear()
         if errors:
             raise RuntimeError(
-                f"{len(errors)} blob upload(s) failed. "
-                f"First error: {errors[0]}"
+                f"{len(errors)} blob upload(s) failed. First error: {errors[0]}"
             )
 
     def close(self):

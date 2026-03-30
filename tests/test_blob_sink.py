@@ -100,8 +100,7 @@ class TestBackgroundBlobSink:
     def test_drain_raises_on_failure(self, tmp_path):
         s3 = MagicMock()
         s3.upload_file.side_effect = Exception("fail")
-        sink = BackgroundBlobSink(s3, max_workers=1,
-                                  max_retries=1, retry_base_delay=0)
+        sink = BackgroundBlobSink(s3, max_workers=1, max_retries=1, retry_base_delay=0)
         blob = tmp_path / "test.blob"
         blob.write_bytes(b"data")
 
@@ -204,6 +203,7 @@ class TestDeferredBlobSink:
         sink.submit(str(blob), "blobs/key.blob", 1, 4)
 
         import logging
+
         with caplog.at_level(logging.INFO):
             sink.close()
 

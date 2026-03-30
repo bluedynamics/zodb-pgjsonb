@@ -642,6 +642,7 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
             _batch_delete_objects(cur, deletes, tid_int, hp)
             if self._s3_client is not None:
                 from zodb_pgjsonb.blob_sink import InlineBlobSink
+
                 _vote_blob_sink = InlineBlobSink(self._s3_client)
             else:
                 _vote_blob_sink = None
@@ -1117,7 +1118,9 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
             shutil.move(blobfilename, staged)
             self._blob_tmp[zoid] = staged
 
-    def copyTransactionsFrom(self, other, workers=1, start_tid=None, blob_mode="inline"):
+    def copyTransactionsFrom(
+        self, other, workers=1, start_tid=None, blob_mode="inline"
+    ):
         """Copy all transactions from another storage, including blobs.
 
         Overrides BaseStorage.copyTransactionsFrom to correctly handle
@@ -1143,7 +1146,10 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
         """
         if workers > 1:
             return self._copyTransactionsFrom_parallel(
-                other, workers, start_tid=start_tid, blob_mode=blob_mode,
+                other,
+                workers,
+                start_tid=start_tid,
+                blob_mode=blob_mode,
             )
         return self._copyTransactionsFrom_sequential(other, start_tid=start_tid)
 
@@ -1305,8 +1311,9 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
                 total_missing_blobs,
             )
 
-    def _copyTransactionsFrom_parallel(self, other, num_workers, start_tid=None,
-                                        blob_mode="inline"):
+    def _copyTransactionsFrom_parallel(
+        self, other, num_workers, start_tid=None, blob_mode="inline"
+    ):
         """Parallel copy — N worker threads write to PG concurrently.
 
         The main thread reads from the source storage, decodes pickles,
@@ -2245,6 +2252,7 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
             _batch_delete_objects(cur, deletes, tid_int, hp)
             if self._s3_client is not None:
                 from zodb_pgjsonb.blob_sink import InlineBlobSink
+
                 _vote_blob_sink = InlineBlobSink(self._s3_client)
             else:
                 _vote_blob_sink = None
@@ -3086,7 +3094,6 @@ def _batch_delete_objects(cur, zoids, tid_int, history_preserving=False):
         "DELETE FROM object_state WHERE zoid = %s",
         [(zoid,) for zoid in zoids],
     )
-
 
 
 def _batch_write_blobs(
