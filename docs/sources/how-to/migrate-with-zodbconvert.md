@@ -73,7 +73,45 @@ source.close()
 
 Workers are capped to the destination storage's `pool_max_size`.
 The main thread iterates the source and decodes pickles; worker threads write to PostgreSQL concurrently.
-Set `pool_max_size` to at least the number of workers you plan to use.
+Set `pool_max_size` to at least the number of workers you plan to use plus one (for the watermark tracker).
+
+## Resume an interrupted parallel migration
+
+If a parallel migration is interrupted (Ctrl-C, crash, network failure), it can be
+resumed without losing progress or re-copying already-committed transactions:
+
+```python
+from zodb_pgjsonb.storage import PGJsonbStorage
+from ZODB.FileStorage import FileStorage
+from ZODB.blob import BlobStorage
+from ZODB.utils import p64, u64
+
+source = BlobStorage("/path/to/blobstorage", FileStorage("/path/to/Data.fs"))
+dest = PGJsonbStorage(
+    dsn="dbname=zodb_new user=zodb host=localhost",
+    pool_max_size=10,
+)
+
+# Determine where to resume from
+start_tid = p64(u64(dest.lastTransaction()) + 1)
+dest.copyTransactionsFrom(source, workers=4, start_tid=start_tid)
+dest.close()
+source.close()
+```
+
+During parallel copy, the storage tracks a *watermark* — the highest TID where all
+prior TIDs are also committed.
+On resume, iteration starts from the watermark (not `lastTransaction()`) to fill any
+gaps left by out-of-order worker commits.
+Already-committed transactions are skipped automatically.
+The watermark table is dropped on successful completion, adding zero overhead to
+non-incremental imports.
+
+With [zodb-convert](https://github.com/bluedynamics/zodb-convert), this is simply:
+
+```bash
+zodb-convert --incremental -w 4 migrate.cfg
+```
 
 ## Migrate blobs
 

@@ -1112,7 +1112,7 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
             shutil.move(blobfilename, staged)
             self._blob_tmp[zoid] = staged
 
-    def copyTransactionsFrom(self, other, workers=1):
+    def copyTransactionsFrom(self, other, workers=1, start_tid=None):
         """Copy all transactions from another storage, including blobs.
 
         Overrides BaseStorage.copyTransactionsFrom to correctly handle
@@ -1126,10 +1126,16 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
         transactions concurrently.  The main thread handles source
         iteration and pickle decoding; worker threads handle PG writes.
         OID ordering is preserved by the main-thread orchestrator.
+
+        When *start_tid* is given (bytes), only transactions with
+        ``tid >= start_tid`` are copied.  This allows resuming an
+        interrupted import from the last successfully written TID.
         """
         if workers > 1:
-            return self._copyTransactionsFrom_parallel(other, workers)
-        return self._copyTransactionsFrom_sequential(other)
+            return self._copyTransactionsFrom_parallel(
+                other, workers, start_tid=start_tid
+            )
+        return self._copyTransactionsFrom_sequential(other, start_tid=start_tid)
 
     def _prepare_transaction(self, txn_info, source_storage):
         """Decode all records in a transaction for batch writing.
@@ -1208,14 +1214,14 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
             "missing_blobs": missing_blobs,
         }
 
-    def _copyTransactionsFrom_sequential(self, other):
+    def _copyTransactionsFrom_sequential(self, other, start_tid=None):
         """Sequential copy — one transaction at a time via TPC protocol."""
         begin_time = time.time()
         txnum = 0
         total_size = 0
         total_missing_blobs = 0
         logger.info("Copying transactions (sequential) ...")
-        for txn_info in other.iterator():
+        for txn_info in other.iterator(start=start_tid):
             txnum += 1
             self.tpc_begin(txn_info, txn_info.tid, txn_info.status)
             num_txn_records = 0
@@ -1289,7 +1295,7 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
                 total_missing_blobs,
             )
 
-    def _copyTransactionsFrom_parallel(self, other, num_workers):
+    def _copyTransactionsFrom_parallel(self, other, num_workers, start_tid=None):
         """Parallel copy — N worker threads write to PG concurrently.
 
         The main thread reads from the source storage, decodes pickles,
@@ -1304,14 +1310,17 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
         begin_time = time.time()
 
         pool_max = self._instance_pool.max_size
-        if num_workers > pool_max:
+        # Reserve 1 connection for the watermark tracker.
+        max_workers = max(pool_max - 1, 1)
+        if num_workers > max_workers:
             logger.warning(
-                "Requested %d workers but pool_max_size is %d. Using %d workers.",
+                "Requested %d workers but pool_max_size is %d "
+                "(reserving 1 for watermark). Using %d workers.",
                 num_workers,
                 pool_max,
-                pool_max,
+                max_workers,
             )
-            num_workers = pool_max
+            num_workers = max_workers
 
         # Total OIDs for progress % (O(1) for FileStorage).
         total_oids = 0
@@ -1326,6 +1335,43 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
         extra_columns = self._get_extra_columns()
         hp = self._history_preserving
         processors = list(self._state_processors)
+
+        # ── Watermark setup ──────────────────────────────────────────
+        idempotent = start_tid is not None
+        wm_conn = self._instance_pool.getconn()
+        try:
+            wm_conn.execute(
+                "CREATE TABLE IF NOT EXISTS migration_watermark ("
+                "  id BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (id),"
+                "  tid BIGINT NOT NULL"
+                ")"
+            )
+            # Read existing watermark (from interrupted previous run)
+            with wm_conn.cursor() as cur:
+                cur.execute("SELECT tid FROM migration_watermark WHERE id = TRUE")
+                row = cur.fetchone()
+            if row is not None and start_tid is not None:
+                watermark_tid = row["tid"]
+                effective_start_int = min(u64(start_tid), watermark_tid + 1)
+                effective_start = p64(effective_start_int)
+                logger.info(
+                    "Resuming from watermark TID 0x%016x "
+                    "(start_tid=0x%016x, effective=0x%016x)",
+                    watermark_tid,
+                    u64(start_tid),
+                    effective_start_int,
+                )
+            elif start_tid is not None:
+                effective_start = start_tid
+                logger.info(
+                    "Starting incremental copy from TID 0x%016x",
+                    u64(start_tid),
+                )
+            else:
+                effective_start = None
+        except BaseException:
+            self._instance_pool.putconn(wm_conn)
+            raise
 
         # Thread-local PG connections — one per worker thread.
         _local = threading.local()
@@ -1366,6 +1412,7 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
                     processors,
                     s3_client=self._s3_client,
                     blob_threshold=self._blob_threshold,
+                    idempotent=idempotent,
                 )
                 n_objs = len(txn_data["objects"])
                 n_blobs = len(txn_data["blobs"])
@@ -1398,9 +1445,15 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
         _prev_done_objs = 0
         _prev_done_time = begin_time
 
+        # Watermark tracking: ordered list of dispatched (tid_int, future).
+        dispatched = []  # [(tid_int, future), ...]
+        watermark_idx = 0
+        _last_wm_flush = begin_time
+        _wm_flush_interval = 1.0  # seconds
+
         executor = ThreadPoolExecutor(max_workers=num_workers)
         try:
-            for txn_info in other.iterator():
+            for txn_info in other.iterator(start=effective_start):
                 txn_data = self._prepare_transaction(txn_info, other)
                 txn_oids = {obj["zoid"] for obj in txn_data["objects"]}
                 # Include blob OIDs (they reference the same zoid)
@@ -1430,6 +1483,33 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
                 future = executor.submit(_write_worker, txn_data)
                 for oid in txn_oids:
                     in_flight[oid] = future
+
+                dispatched.append((txn_data["tid_int"], future))
+
+                # Advance watermark: highest contiguous committed TID.
+                while watermark_idx < len(dispatched):
+                    _wm_tid, _wm_fut = dispatched[watermark_idx]
+                    if not _wm_fut.done():
+                        break
+                    _wm_fut.result()  # re-raise worker errors
+                    watermark_idx += 1
+
+                # Flush watermark to PG periodically.
+                now_wm = time.time()
+                if watermark_idx > 0 and now_wm - _last_wm_flush >= _wm_flush_interval:
+                    _wm_tid_val = dispatched[watermark_idx - 1][0]
+                    wm_conn.execute(
+                        "INSERT INTO migration_watermark (id, tid) "
+                        "VALUES (TRUE, %s) "
+                        "ON CONFLICT (id) DO UPDATE SET tid = EXCLUDED.tid",
+                        (_wm_tid_val,),
+                    )
+                    _last_wm_flush = now_wm
+
+                # Prune dispatched list to avoid unbounded memory.
+                if watermark_idx > 1000:
+                    dispatched = dispatched[watermark_idx:]
+                    watermark_idx = 0
 
                 txn_count += 1
                 total_missing_blobs += txn_data["missing_blobs"]
@@ -1543,18 +1623,63 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
                     "Is the target database empty?"
                 )
 
+            # Final watermark advancement after drain.
+            while watermark_idx < len(dispatched):
+                _wm_tid, _wm_fut = dispatched[watermark_idx]
+                if _wm_fut.done():
+                    _wm_fut.result()
+                    watermark_idx += 1
+                else:
+                    break
+
+            if watermark_idx > 0:
+                _wm_tid_val = dispatched[watermark_idx - 1][0]
+                wm_conn.execute(
+                    "INSERT INTO migration_watermark (id, tid) "
+                    "VALUES (TRUE, %s) "
+                    "ON CONFLICT (id) DO UPDATE SET tid = EXCLUDED.tid",
+                    (_wm_tid_val,),
+                )
+
+            # Clean completion — drop watermark table.
+            wm_conn.execute("DROP TABLE IF EXISTS migration_watermark")
+
             # Update last TID on main storage.
             if last_tid is not None:
                 self._ltid = last_tid
 
         except BaseException:
             executor.shutdown(wait=False, cancel_futures=True)
+            # Flush watermark on error so interrupted imports can resume.
+            try:
+                while watermark_idx < len(dispatched):
+                    _wm_tid, _wm_fut = dispatched[watermark_idx]
+                    if _wm_fut.done():
+                        try:
+                            _wm_fut.result()
+                        except Exception:
+                            break
+                        watermark_idx += 1
+                    else:
+                        break
+                if watermark_idx > 0:
+                    _wm_tid_val = dispatched[watermark_idx - 1][0]
+                    wm_conn.execute(
+                        "INSERT INTO migration_watermark (id, tid) "
+                        "VALUES (TRUE, %s) "
+                        "ON CONFLICT (id) DO UPDATE SET tid = EXCLUDED.tid",
+                        (_wm_tid_val,),
+                    )
+            except Exception:
+                logger.debug("Failed to flush watermark on error", exc_info=True)
             raise
 
         finally:
             for conn in worker_conns:
                 with contextlib.suppress(Exception):
                     self._instance_pool.putconn(conn)
+            with contextlib.suppress(Exception):
+                self._instance_pool.putconn(wm_conn)
 
         elapsed = time.time() - begin_time
         logger.info(
@@ -2481,12 +2606,17 @@ def _deserialize_extension(ext_data):
     return {}
 
 
-def _write_txn_log(cur, tid_int, user, desc, ext):
-    """Write a transaction log entry."""
+def _write_txn_log(cur, tid_int, user, desc, ext, idempotent=False):
+    """Write a transaction log entry.
+
+    When *idempotent* is True, silently skips if the TID already exists
+    (used for resuming interrupted parallel imports).
+    """
+    conflict_clause = " ON CONFLICT (tid) DO NOTHING" if idempotent else ""
     cur.execute(
         "INSERT INTO transaction_log "
         "(tid, username, description, extension) "
-        "VALUES (%s, %s, %s, %s)",
+        f"VALUES (%s, %s, %s, %s){conflict_clause}",
         (tid_int, user, desc, _serialize_extension(ext)),
     )
 
@@ -3041,11 +3171,15 @@ def _write_prepared_transaction(
     processors,
     s3_client=None,
     blob_threshold=102_400,
+    idempotent=False,
 ):
     """Write a pre-decoded transaction directly to PG.
 
     Bypasses the TPC protocol and advisory lock — intended only for
     parallel migration where the caller guarantees OID ordering.
+
+    When *idempotent* is True, duplicate TIDs and OIDs are silently
+    skipped (used for resuming interrupted parallel imports).
 
     *conn* must have ``autocommit=True`` (the default for pool conns).
     """
@@ -3060,6 +3194,7 @@ def _write_prepared_transaction(
                 txn_data["user"],
                 txn_data["description"],
                 txn_data["extension"],
+                idempotent=idempotent,
             )
             _batch_write_objects(
                 cur,

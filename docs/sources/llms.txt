@@ -261,6 +261,7 @@ WHERE state @> '{"portal_type": "Document"}';
 ```python
 storage = PGJsonbStorage(dsn="...")
 storage.copyTransactionsFrom(source_storage, workers=4)  # parallel blob-aware copy
+storage.copyTransactionsFrom(source, workers=4, start_tid=tid)  # incremental resume
 ```
 
 ### Blob Statistics
