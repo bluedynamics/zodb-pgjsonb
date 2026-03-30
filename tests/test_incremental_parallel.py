@@ -148,3 +148,78 @@ class TestCopyTransactionsFromStartTid:
 
         dest.close()
         source_with_5_txns.close()
+
+
+class TestWatermarkLifecycle:
+    """migration_watermark table is created, advanced, and dropped."""
+
+    @pytest.fixture
+    def temp_dir(self):
+        d = tempfile.mkdtemp()
+        yield d
+        shutil.rmtree(d)
+
+    @pytest.fixture
+    def source_with_5_txns(self, temp_dir):
+        fs_path = os.path.join(temp_dir, "source.fs")
+        blob_dir = os.path.join(temp_dir, "blobs")
+        os.makedirs(blob_dir)
+        source = FileStorage(fs_path, blob_dir=blob_dir)
+        db = ZODB.DB(source)
+        conn = db.open()
+        root = conn.root()
+        for i in range(5):
+            root[f"key{i}"] = PersistentMapping({"val": i})
+            txn_mod.commit()
+        conn.close()
+        db.close()
+        return FileStorage(fs_path, blob_dir=blob_dir, read_only=True)
+
+    def test_watermark_dropped_after_success(self, source_with_5_txns):
+        """Watermark table is dropped after successful parallel copy."""
+        clean_db()
+        dest = PGJsonbStorage(DSN, pool_max_size=4)
+        dest.copyTransactionsFrom(source_with_5_txns, workers=2)
+
+        conn = psycopg.connect(DSN)
+        with conn.cursor() as cur:
+            cur.execute("SELECT to_regclass('migration_watermark') IS NOT NULL")
+            exists = cur.fetchone()[0]
+        conn.close()
+        assert exists is False
+
+        dest.close()
+        source_with_5_txns.close()
+
+    def test_watermark_survives_interruption(self, source_with_5_txns):
+        """Watermark table persists when copy is interrupted."""
+        clean_db()
+        dest = PGJsonbStorage(DSN, pool_max_size=4)
+
+        original_prepare = dest._prepare_transaction
+        call_count = 0
+
+        def _interrupt_after_3(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count > 3:
+                raise RuntimeError("simulated interruption")
+            return original_prepare(*args, **kwargs)
+
+        dest._prepare_transaction = _interrupt_after_3
+        try:
+            with pytest.raises(RuntimeError, match="simulated interruption"):
+                dest.copyTransactionsFrom(source_with_5_txns, workers=2)
+        finally:
+            dest._prepare_transaction = original_prepare
+
+        conn = psycopg.connect(DSN)
+        with conn.cursor() as cur:
+            cur.execute("SELECT tid FROM migration_watermark WHERE id = TRUE")
+            row = cur.fetchone()
+        conn.close()
+        assert row is not None
+        assert row[0] > 0
+
+        dest.close()
+        source_with_5_txns.close()
