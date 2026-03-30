@@ -2,7 +2,7 @@
 
 # Changelog
 
-## 1.5.7
+## 1.6.0
 
 - Support incremental parallel imports with watermark-based resume.
   `copyTransactionsFrom(source, workers=N, start_tid=X)` now accepts a
