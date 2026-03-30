@@ -9,14 +9,15 @@ copyTransactionsFrom. Three modes:
 """
 from __future__ import annotations
 
+from concurrent.futures import Future
+from concurrent.futures import ThreadPoolExecutor
+from typing import Protocol
+
 import contextlib
 import logging
 import os
 import threading
 import time
-from concurrent.futures import Future
-from concurrent.futures import ThreadPoolExecutor
-from typing import Protocol
 
 
 logger = logging.getLogger(__name__)

@@ -1,12 +1,11 @@
-import time
-import threading
-
-import pytest
 from unittest.mock import MagicMock
-
-from zodb_pgjsonb.blob_sink import InlineBlobSink
 from zodb_pgjsonb.blob_sink import BackgroundBlobSink
 from zodb_pgjsonb.blob_sink import DeferredBlobSink
+from zodb_pgjsonb.blob_sink import InlineBlobSink
+
+import pytest
+import threading
+import time
 
 
 class TestInlineBlobSink:
@@ -108,7 +107,7 @@ class TestBackgroundBlobSink:
 
         sink.submit(str(blob), "blobs/key.blob", 1, 4)
 
-        with pytest.raises(RuntimeError, match="blob upload.*failed"):
+        with pytest.raises(RuntimeError, match=r"blob upload.*failed"):
             sink.drain()
 
     def test_submit_cleans_temp_after_upload(self, tmp_path):
