@@ -2351,16 +2351,14 @@ def _stage_blob(src, temp_dir):
 
     Returns (path, is_temp) — caller must only unlink if is_temp is True.
     """
+    if os.stat(src).st_dev != os.stat(temp_dir).st_dev:
+        # Cross-filesystem — hard-link impossible, use source directly.
+        return src, False
     fd, tmp = tempfile.mkstemp(suffix=".blob", dir=temp_dir)
     os.close(fd)
-    try:
-        os.unlink(tmp)  # remove empty placeholder
-        os.link(src, tmp)
-        return tmp, True
-    except OSError:
-        # Hard-link failed (e.g. cross-filesystem). tmp was already
-        # unlinked above, so just use the source path directly.
-        return src, False
+    os.unlink(tmp)  # remove empty placeholder
+    os.link(src, tmp)
+    return tmp, True
 
 
 def _table_exists(cur, table_name):
