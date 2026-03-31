@@ -32,6 +32,7 @@ from ZODB.interfaces import IStorageUndoable
 from ZODB.POSException import ConflictError
 from ZODB.POSException import POSKeyError
 from ZODB.POSException import ReadConflictError
+from ZODB.POSException import ReadOnlyError
 from ZODB.POSException import StorageTransactionError
 from ZODB.POSException import UndoError
 from ZODB.utils import p64
@@ -336,8 +337,6 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
         database (#31).
         """
         if self._is_read_only:
-            from ZODB.POSException import ReadOnlyError
-
             raise ReadOnlyError()
         with self._conn.cursor() as cur:
             cur.execute("SELECT nextval('zoid_seq') AS oid")
