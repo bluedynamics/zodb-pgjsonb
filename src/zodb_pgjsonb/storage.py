@@ -328,6 +328,23 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
                 # so _new_tid() generates monotonically increasing TIDs.
                 self._ts = TimeStamp(self._ltid)
 
+    def new_oid(self):
+        """Allocate a new OID via PostgreSQL sequence (cross-process safe).
+
+        Overrides BaseStorage.new_oid() which uses an in-memory counter
+        that causes OID collisions when multiple processes share the same
+        database (#31).
+        """
+        if self._is_read_only:
+            from ZODB.POSException import ReadOnlyError
+
+            raise ReadOnlyError()
+        with self._conn.cursor() as cur:
+            cur.execute("SELECT nextval('zoid_seq') AS oid")
+            row = cur.fetchone()
+            oid_int = row["oid"]
+        return p64(oid_int)
+
     # ── State Processors ───────────────────────────────────────────
 
     def register_state_processor(self, processor):
@@ -1475,7 +1492,7 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
         # Column width for right-aligned counters (based on total_oids).
         _cw = len(f"{total_oids:,}") if total_oids else 0
         # ETA: exponential moving average of OID throughput rate.
-        # Smoothing factor α=0.3 balances responsiveness vs stability.
+        # Smoothing factor alpha=0.3 balances responsiveness vs stability.
         _prev_done_objs = 0
         _prev_done_time = begin_time
         _ema_rate = 0.0  # OIDs/sec, smoothed

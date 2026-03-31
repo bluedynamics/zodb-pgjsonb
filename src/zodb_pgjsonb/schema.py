@@ -83,6 +83,40 @@ CREATE TABLE IF NOT EXISTS pack_state (
 """
 
 
+def _ensure_zoid_seq(conn):
+    """Create or synchronize the zoid_seq sequence.
+
+    If the sequence doesn't exist, creates it starting after the
+    current MAX(zoid) in object_state.  If it already exists but is
+    behind MAX(zoid) (e.g. after a migration that inserted OIDs
+    directly), advances it to MAX(zoid) + 1.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT EXISTS ("
+            "  SELECT 1 FROM pg_sequences WHERE sequencename = 'zoid_seq'"
+            ") AS exists"
+        )
+        row = cur.fetchone()
+        seq_exists = row["exists"] if isinstance(row, dict) else row[0]
+
+        cur.execute("SELECT COALESCE(MAX(zoid), 0) AS max_oid FROM object_state")
+        row = cur.fetchone()
+        max_oid = row["max_oid"] if isinstance(row, dict) else row[0]
+
+        if not seq_exists:
+            start = max_oid + 1
+            cur.execute(f"CREATE SEQUENCE zoid_seq START WITH {start}")
+        else:
+            # Ensure sequence is ahead of existing data.
+            cur.execute("SELECT last_value FROM zoid_seq")
+            row = cur.fetchone()
+            last_val = row["last_value"] if isinstance(row, dict) else row[0]
+            if last_val <= max_oid:
+                cur.execute(f"SELECT setval('zoid_seq', {max_oid + 1}, false)")
+    conn.commit()
+
+
 def _table_exists(conn, name):
     """Check if a table exists (lightweight, no ACCESS EXCLUSIVE lock)."""
     with conn.cursor() as cur:
@@ -115,6 +149,9 @@ def install_schema(conn, *, history_preserving=False):
     if history_preserving and not _table_exists(conn, "object_history"):
         conn.execute(HISTORY_PRESERVING_ADDITIONS)
     conn.commit()
+
+    # OID sequence for cross-process uniqueness (#31).
+    _ensure_zoid_seq(conn)
 
 
 def drop_history_tables(conn):
