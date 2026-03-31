@@ -1,6 +1,5 @@
 """Tests for PG sequence-based OID allocation (#31)."""
 
-from ZODB.utils import p64
 from ZODB.utils import u64
 from zodb_pgjsonb.storage import PGJsonbStorage
 
@@ -91,18 +90,20 @@ class TestOidSequence:
 
     def test_sequence_starts_after_existing_data(self):
         """If objects already exist, sequence starts above MAX(zoid)."""
-        import transaction
-
         storage = _make_storage()
         try:
-            txn = transaction.get()
-            storage.tpc_begin(txn)
-            storage.store(p64(50000), p64(0), b"data", "", txn)
-            storage.tpc_vote(txn)
-            storage.tpc_finish(txn)
+            # Insert a row directly to simulate existing high-OID data.
+            storage._conn.execute("INSERT INTO transaction_log (tid) VALUES (1)")
+            storage._conn.execute(
+                "INSERT INTO object_state "
+                "(zoid, tid, class_mod, class_name, state, state_size, refs) "
+                "VALUES (50000, 1, 'mod', 'cls', '{}', 2, '{}')"
+            )
+            storage._conn.commit()
         finally:
             storage.close()
 
+        # Reopen — sequence must sync above MAX(zoid)
         storage2 = _make_storage()
         try:
             oid = storage2.new_oid()
