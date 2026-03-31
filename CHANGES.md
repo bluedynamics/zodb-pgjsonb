@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.7.2
+
+- Fix OID collisions across multiple application pods (#31). Replace
+  BaseStorage's in-memory OID counter with a PostgreSQL sequence (`zoid_seq`).
+  `new_oid()` now calls `nextval('zoid_seq')`, guaranteeing uniqueness across
+  all processes sharing the same database. The sequence is created automatically
+  during schema initialization and synchronized with existing data on restart.
+
 ## 1.7.1
 
 - Smooth ETA during parallel migration using exponential moving average instead
