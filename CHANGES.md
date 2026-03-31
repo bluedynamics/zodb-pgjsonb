@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.7.1
+
+- Smooth ETA during parallel migration using exponential moving average instead
+  of single-window rate. Eliminates wild jumps caused by S3 retries or variable
+  transaction sizes.
+
 ## 1.7.0
 
 - Add `blob_mode` parameter to `copyTransactionsFrom()` for decoupled S3 blob
