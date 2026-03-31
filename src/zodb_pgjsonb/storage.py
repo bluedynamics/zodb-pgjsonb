@@ -1474,9 +1474,12 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
         log_interval = 10.0  # seconds
         # Column width for right-aligned counters (based on total_oids).
         _cw = len(f"{total_oids:,}") if total_oids else 0
-        # ETA: track previous snapshot for recent-window rate.
+        # ETA: exponential moving average of OID throughput rate.
+        # Smoothing factor α=0.3 balances responsiveness vs stability.
         _prev_done_objs = 0
         _prev_done_time = begin_time
+        _ema_rate = 0.0  # OIDs/sec, smoothed
+        _EMA_ALPHA = 0.3
 
         # Watermark tracking: ordered list of dispatched (tid_int, future).
         dispatched = []  # [(tid_int, future), ...]
@@ -1588,15 +1591,22 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
                     if total_oids and done_objs > 0:
                         pct = min(done_objs * 100.0 / total_oids, 99.9)
                         parts[0] += f" ({pct:5.1f}%)"
-                        # ETA from recent throughput (last log window),
-                        # not overall average — much more accurate when
-                        # early transactions are empty (packed DB).
+                        # ETA from exponential moving average of throughput.
+                        # Smooths out spikes from S3 retries or variable
+                        # transaction sizes while still adapting over time.
                         dt = now - _prev_done_time
                         d_objs = done_objs - _prev_done_objs
                         if dt > 0 and d_objs > 0:
-                            rate = d_objs / dt  # OIDs/sec in last window
+                            window_rate = d_objs / dt
+                            if _ema_rate <= 0:
+                                _ema_rate = window_rate  # seed
+                            else:
+                                _ema_rate = (
+                                    _EMA_ALPHA * window_rate
+                                    + (1 - _EMA_ALPHA) * _ema_rate
+                                )
                             remaining = total_oids - done_objs
-                            eta_s = remaining / rate
+                            eta_s = remaining / _ema_rate
                             if eta_s < 60:
                                 eta = f"{eta_s:.0f}s"
                             elif eta_s < 3600:
