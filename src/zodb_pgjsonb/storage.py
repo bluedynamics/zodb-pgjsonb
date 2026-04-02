@@ -484,7 +484,12 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
     # ── IStorage: load ───────────────────────────────────────────────
 
     def load(self, oid, version=""):
-        """Load current object state, returning (pickle_bytes, tid_bytes)."""
+        """Load current object state, returning (pickle_bytes, tid_bytes).
+
+        Also prefetches directly referenced objects (from the ``refs``
+        column) into ``_load_cache`` so subsequent loads of annotations,
+        sub-mappings, etc. are cache hits instead of individual roundtrips.
+        """
         zoid = u64(oid)
 
         # Check load cache first
@@ -494,7 +499,7 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
 
         with self._conn.cursor() as cur:
             cur.execute(
-                "SELECT tid, class_mod, class_name, state "
+                "SELECT tid, class_mod, class_name, state, refs "
                 "FROM object_state WHERE zoid = %s",
                 (zoid,),
                 prepare=True,
@@ -512,6 +517,18 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
         tid = p64(row["tid"])
         self._serial_cache[(oid, tid)] = data
         self._load_cache.set(zoid, data, tid)
+
+        # Prefetch referenced objects (annotations, sub-mappings, etc.)
+        refs = row.get("refs") if isinstance(row, dict) else None
+        if refs:
+            ref_oids = [
+                p64(ref_zoid)
+                for ref_zoid in refs
+                if self._load_cache.get(ref_zoid) is None
+            ]
+            if ref_oids:
+                self.load_multiple(ref_oids)
+
         return data, tid
 
     def loadBefore(self, oid, tid):
