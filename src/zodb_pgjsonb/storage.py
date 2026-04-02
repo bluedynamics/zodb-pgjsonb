@@ -267,6 +267,9 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
         # Set via register_prefetch_refs_expr(). When None, load() does
         # not include refs and no prefetching occurs.
         self._prefetch_refs_expr = None
+        self._load_sql = (
+            "SELECT tid, class_mod, class_name, state FROM object_state WHERE zoid = %s"
+        )
 
         # Pending stores for current transaction (direct use only)
         self._tmp = []
@@ -409,6 +412,17 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
         Call with ``None`` to disable prefetching.
         """
         self._prefetch_refs_expr = sql_expr
+        if sql_expr:
+            self._load_sql = (
+                "SELECT tid, class_mod, class_name, state, "
+                f"{sql_expr} AS refs "
+                "FROM object_state WHERE zoid = %s"
+            )
+        else:
+            self._load_sql = (
+                "SELECT tid, class_mod, class_name, state "
+                "FROM object_state WHERE zoid = %s"
+            )
         logger.info("Prefetch refs expr: %s", sql_expr or "(disabled)")
 
     def _apply_processor_ddl(self, sql, processor_name):
