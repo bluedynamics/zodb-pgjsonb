@@ -45,24 +45,32 @@ Implementation:
 New method on `CatalogSearchResults`:
 
 ```python
-def prefetch_objects(self):
-    """Prefetch ZODB objects for all brains in this result set.
+def _prefetch_objects(self, start_index, batch_size=100):
+    """Prefetch ZODB objects for a batch of brains.
 
     Warms the storage _load_cache so subsequent getObject() calls
     hit the cache instead of making individual SQL queries.
+
+    Only prefetches `batch_size` brains starting from `start_index`,
+    not the entire result set. Safe for large result sets where
+    only a page is rendered (e.g. b_size=20 out of 10,000).
     """
 ```
 
 Implementation:
 
-1. Collect all zoids from brains in the result set
-2. Convert to oids via `p64(zoid)`
+1. Slice brains from `start_index` to `start_index + batch_size`
+2. Collect zoids from the slice, convert to oids via `p64(zoid)`
 3. Get the storage instance via `catalog._p_jar._storage`
-4. Call `storage.load_multiple(oids)`
-5. Mark result set as prefetched (`_objects_prefetched = True`)
+4. Call `storage.load_multiple(oids)` --- fills storage cache
+5. Track prefetched range to avoid re-fetching
 
-Trigger: automatically on the first `brain.getObject()` call in
-the result set, same pattern as lazy `_load_idx_batch()`.
+Trigger: automatically on `brain.getObject()`. When a brain at
+index N calls getObject(), prefetch brains N to N+batch_size.
+If index N is already in a prefetched range, skip. Same pattern
+as lazy `_load_idx_batch()` but window-based instead of all-at-once.
+
+Configurable via `PGCATALOG_PREFETCH_BATCH` env var (default 100).
 
 ### What does NOT change
 
@@ -84,9 +92,10 @@ the result set, same pattern as lazy `_load_idx_batch()`.
 
 | Scenario | Before | After |
 |----------|--------|-------|
-| Collection (50 items) | 50 roundtrips | 1 batch + 50 cache hits |
-| /veranstaltungen (3000 loads) | 3000 roundtrips | ~50-100 batches + rest from cache |
-| Second page load (warm cache) | Cache hits | Same (no change) |
+| Collection (20 of 10k shown) | 20 roundtrips | 1 batch(100) + 20 cache hits |
+| Collection (50 items total) | 50 roundtrips | 1 batch(100) + 50 cache hits |
+| /veranstaltungen (3000 loads) | 3000 roundtrips | 30 batches(100) + rest from ZODB cache |
+| Second page load (warm cache) | ZODB cache hits | Same (no change) |
 
 ## Implementation steps
 
