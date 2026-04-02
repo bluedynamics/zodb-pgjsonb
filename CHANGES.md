@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.9.0
+
+- Prefetch referenced objects on `load()` (#38). When an object is
+  loaded, its `refs` column (annotations, sub-mappings, OOBTrees) is
+  used to prefetch all directly referenced objects in a single
+  `load_multiple()` call. Turns N+1 individual loads into 1 batch
+  load. Default-on, no configuration needed. Cold-start page loads
+  reduced by ~85% fewer roundtrips per object.
+
 ## 1.8.1
 
 - Fix packer DELETE using NOT IN anti-join (#35). Replaced all
