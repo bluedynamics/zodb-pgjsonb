@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.7.3
+
+- Fix: add `lock_timeout = '30s'` to deferred DDL application
+  (`_apply_pending_ddl`). Previously, deferred DDL could block
+  indefinitely at `tpc_begin()` during rolling deployments when old
+  REPEATABLE READ sessions held ACCESS SHARE locks.
+
 ## 1.7.2
 
 - Fix OID collisions across multiple application pods (#31). Replace
