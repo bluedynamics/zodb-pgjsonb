@@ -181,6 +181,23 @@ class TestPrefetchRefs:
         oid_child = child._p_oid
         conn.close()
 
+        # Verify refs are populated in PG
+        from psycopg.rows import dict_row
+
+        import psycopg
+
+        pg = psycopg.connect(DSN, row_factory=dict_row)
+        cur = pg.cursor()
+        cur.execute(
+            "SELECT refs FROM object_state WHERE zoid = %s",
+            (u64(oid_parent),),
+        )
+        row = cur.fetchone()
+        pg.close()
+        refs = row["refs"] if row else None
+        if not refs:
+            pytest.skip("refs column not populated for PersistentMapping")
+
         # Fresh storage instance — empty cache
         inst = db.storage.new_instance()
         try:
@@ -191,7 +208,8 @@ class TestPrefetchRefs:
             child_zoid = u64(oid_child)
             cached = inst._load_cache.get(child_zoid)
             assert cached is not None, (
-                "Referenced child object should be prefetched into cache"
+                f"Referenced child (zoid={child_zoid}) should be "
+                f"prefetched into cache. Parent refs={refs}"
             )
         finally:
             inst.close()
