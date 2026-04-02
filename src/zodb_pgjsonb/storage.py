@@ -519,7 +519,7 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
         self._load_cache.set(zoid, data, tid)
 
         # Prefetch referenced objects (annotations, sub-mappings, etc.)
-        refs = row.get("refs")
+        refs = row.get("refs") if isinstance(row, dict) else None
         if refs:
             ref_oids = [
                 p64(ref_zoid)
@@ -527,13 +527,7 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
                 if self._load_cache.get(ref_zoid) is None
             ]
             if ref_oids:
-                loaded = self.load_multiple(ref_oids)
-                logger.debug(
-                    "Prefetched %d/%d refs for zoid=%d",
-                    len(loaded),
-                    len(ref_oids),
-                    zoid,
-                )
+                self.load_multiple(ref_oids)
 
         return data, tid
 

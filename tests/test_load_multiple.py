@@ -191,11 +191,16 @@ class TestPrefetchRefs:
         # Load parent — should also prefetch child via refs
         storage.load(oid_parent)
 
-        # Child should now be in cache (prefetched via refs)
-        cached = storage._load_cache.get(child_zoid)
-        assert cached is not None, (
+        # Check what's in cache now
+        parent_in_cache = storage._load_cache.get(u64(oid_parent)) is not None
+        child_in_cache = storage._load_cache.get(child_zoid) is not None
+        all_keys = list(storage._load_cache._data.keys())
+
+        assert child_in_cache, (
             f"Referenced child (zoid={child_zoid}) should be "
-            f"prefetched into cache. Parent refs={parent_refs}"
+            f"prefetched into cache. Parent refs={parent_refs}. "
+            f"parent_in_cache={parent_in_cache}. "
+            f"cache_keys={all_keys}"
         )
         conn.close()
 
