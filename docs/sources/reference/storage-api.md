@@ -288,6 +288,37 @@ existing data.
   Returns `(deleted_object_history_rows, deleted_blob_history_rows)`.
   Returns `(0, 0)` in history-free mode.
 
+### Prefetch registration
+
+`register_prefetch_refs_expr(sql_expr: str | None) -> None`
+: Register a SQL expression for automatic refs prefetching on `load()`.
+  *Added in v1.9.2.*
+
+  When set, `load()` includes the expression as an extra column aliased
+  `refs` in its SELECT query.
+  If the expression evaluates to a non-NULL integer array, the referenced
+  objects are prefetched into the load cache via `load_multiple()`.
+  This turns N+1 individual loads into 1+1 batch loads when traversing
+  object trees.
+
+  Call with `None` to disable prefetching (the default).
+
+  The expression is arbitrary SQL evaluated per row, so it can filter
+  which objects trigger prefetch.
+  For example, plone-pgcatalog registers an expression that only
+  prefetches for cataloged content objects:
+
+  ```python
+  storage.register_prefetch_refs_expr(
+      "CASE WHEN idx IS NOT NULL THEN refs END"
+  )
+  ```
+
+  Non-content objects (BTrees, PersistentMappings, etc.) have
+  `idx IS NULL` and produce a NULL result, suppressing prefetch.
+  This avoids the cascade problem where internal ZODB structures
+  reference thousands of objects that are never accessed.
+
 ### State processor registration
 
 `register_state_processor(processor) -> None`
@@ -336,6 +367,25 @@ Inherits from: `ConflictResolvingStorage`.
 : Load the current object state.
   Returns `(pickle_bytes, tid_bytes)`.
   Results are cached in the per-instance LRU cache.
+  When a prefetch refs expression is registered (see
+  `register_prefetch_refs_expr()`), load also fetches the `refs`
+  column and prefetches all referenced objects via `load_multiple()`.
+
+`load_multiple(oids: Iterable[bytes]) -> dict[bytes, tuple[bytes, bytes]]`
+: Load multiple objects in a single SQL query.
+  *Added in v1.8.0.*
+
+  Returns a dict mapping `oid_bytes -> (pickle_bytes, tid_bytes)`.
+  Only includes OIDs that exist; missing OIDs are silently omitted.
+  Checks the per-instance LRU cache first and only queries the
+  database for cache misses using a single
+  `SELECT ... WHERE zoid = ANY(...)` statement.
+  All results are cached.
+
+  This method is the foundation for batch object loading.
+  plone-pgcatalog uses it to prefetch the next N objects when
+  `brain.getObject()` is called on a search result, reducing
+  per-object SQL roundtrips from N individual queries to 1 batch query.
 
 `loadBefore(oid: bytes, tid: bytes) -> tuple[bytes, bytes, bytes] | None`
 : Load object data before a given TID.

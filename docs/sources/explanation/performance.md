@@ -192,6 +192,33 @@ This provided a 1.3x end-to-end improvement on real-world data.
 
 Changing `object_history` from full dual-write to copy-before-overwrite reduced HP batch writes by 33%, HP loadBefore by 15%, and HP storage overhead by roughly 50%.
 
+### Packer NOT EXISTS anti-join (1.8.1)
+
+The packer's unreachable object deletion was changed from `NOT IN (SELECT zoid FROM reachable_oids)` to `NOT EXISTS (SELECT 1 FROM reachable_oids r WHERE r.zoid = ...)`.
+`NOT IN` builds a hash of the entire reachable set and checks every row.
+`NOT EXISTS` uses an indexed anti-join that short-circuits on the first match.
+On a 4.4M-object database, pack went from 48+ minutes (incomplete) to approximately 2 minutes.
+The same pattern was applied to all deletion phases (objects, blobs, transaction log cleanup).
+
+### Batch object loading (1.8.0)
+
+`load_multiple(oids)` on `PGJsonbStorageInstance` loads multiple objects in a single `SELECT ... WHERE zoid = ANY(...)` query instead of individual roundtrips.
+The method checks the per-instance LRU cache first and only queries misses.
+This is the building block for the refs prefetch feature (1.9.0+).
+
+### Pluggable refs prefetch (1.9.0--1.9.2)
+
+When an object is loaded, its `refs` column (which lists OIDs of referenced objects such as annotations and sub-mappings) can be used to prefetch all directly referenced objects via `load_multiple()`.
+This turns the N+1 individual loads typical of ZODB object traversal into 1+1 batch loads.
+
+The initial implementation (v1.9.0) prefetched unconditionally, which caused severe over-fetching for internal ZODB structures like BTrees and PersistentMappings whose refs cascade into thousands of objects.
+Cold-start performance was 40--84% slower than without prefetch.
+v1.9.1 added a class-based blacklist, but maintaining a list of "non-content" classes proved fragile.
+v1.9.2 replaced the blacklist with a pluggable SQL expression via `register_prefetch_refs_expr()`.
+The expression is included in the `load()` query as a conditional `refs` column.
+When `None` (the default), no prefetch occurs.
+plone-pgcatalog registers `CASE WHEN idx IS NOT NULL THEN refs END`, which limits prefetch to rows that have catalog index data -- a reliable proxy for "is a content object".
+
 ### Composite TID/ZOID index (1.5.3)
 
 A composite index on `(tid, zoid)` was added to `object_state` to speed up `poll_invalidations()` queries.
