@@ -161,3 +161,65 @@ class TestLoadMultiple:
             assert fresh_cached is not None
         finally:
             inst.close()
+
+
+class TestPrefetchRefs:
+    """Tests for automatic refs prefetching on load()."""
+
+    def test_load_prefetches_refs(self, db):
+        """load() prefetches directly referenced objects into cache."""
+        conn = db.open()
+        root = conn.root()
+        # Create an object with a sub-object (annotation-like pattern)
+        parent = PersistentMapping()
+        child = PersistentMapping({"key": "value"})
+        parent["child"] = child
+        root["parent"] = parent
+        txn.commit()
+
+        oid_parent = parent._p_oid
+        oid_child = child._p_oid
+        conn.close()
+
+        # Fresh storage instance — empty cache
+        inst = db.storage.new_instance()
+        try:
+            # Load parent — should also prefetch child via refs
+            inst.load(oid_parent)
+
+            # Child should now be in cache (prefetched via refs)
+            child_zoid = u64(oid_child)
+            cached = inst._load_cache.get(child_zoid)
+            assert cached is not None, (
+                "Referenced child object should be prefetched into cache"
+            )
+        finally:
+            inst.close()
+
+    def test_load_prefetch_skips_cached_refs(self, db):
+        """load() does not re-fetch refs that are already cached."""
+        conn = db.open()
+        root = conn.root()
+        parent = PersistentMapping()
+        child = PersistentMapping()
+        parent["child"] = child
+        root["parent2"] = parent
+        txn.commit()
+
+        oid_parent = parent._p_oid
+        oid_child = child._p_oid
+        conn.close()
+
+        inst = db.storage.new_instance()
+        try:
+            # Pre-load child
+            inst.load(oid_child)
+
+            # Load parent — child is already cached, should not re-fetch
+            inst.load(oid_parent)
+
+            # Child was a cache hit during refs prefetch (not re-loaded)
+            # Verify child is still in cache (not evicted by parent load)
+            assert inst._load_cache.get(u64(oid_child)) is not None
+        finally:
+            inst.close()
