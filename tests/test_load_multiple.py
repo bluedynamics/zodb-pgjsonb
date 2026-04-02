@@ -201,15 +201,34 @@ class TestPrefetchRefs:
         # Fresh storage instance — empty cache
         inst = db.storage.new_instance()
         try:
+            # Verify load_multiple works directly first
+            child_zoid = u64(oid_child)
+            direct = inst.load_multiple([oid_child])
+            assert oid_child in direct, (
+                f"load_multiple should find child zoid={child_zoid}"
+            )
+
+            # Clear cache to test prefetch path
+            inst._load_cache = type(inst._load_cache)(inst._load_cache.max_mb)
+
             # Load parent — should also prefetch child via refs
             inst.load(oid_parent)
 
+            # Verify the load query included refs
+            with inst._conn.cursor() as cur:
+                cur.execute(
+                    "SELECT refs FROM object_state WHERE zoid = %s",
+                    (u64(oid_parent),),
+                )
+                row_check = cur.fetchone()
+            parent_refs = row_check["refs"] if row_check else None
+
             # Child should now be in cache (prefetched via refs)
-            child_zoid = u64(oid_child)
             cached = inst._load_cache.get(child_zoid)
             assert cached is not None, (
                 f"Referenced child (zoid={child_zoid}) should be "
-                f"prefetched into cache. Parent refs={refs}"
+                f"prefetched into cache. Parent refs={parent_refs}, "
+                f"cache keys={list(inst._load_cache._cache.keys())[:20]}"
             )
         finally:
             inst.close()

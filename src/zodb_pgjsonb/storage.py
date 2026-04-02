@@ -519,7 +519,7 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
         self._load_cache.set(zoid, data, tid)
 
         # Prefetch referenced objects (annotations, sub-mappings, etc.)
-        refs = row["refs"]
+        refs = row.get("refs")
         if refs:
             ref_oids = [
                 p64(ref_zoid)
@@ -527,7 +527,10 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
                 if self._load_cache.get(ref_zoid) is None
             ]
             if ref_oids:
-                self.load_multiple(ref_oids)
+                try:
+                    self.load_multiple(ref_oids)
+                except Exception:
+                    logger.debug("refs prefetch failed", exc_info=True)
 
         return data, tid
 
