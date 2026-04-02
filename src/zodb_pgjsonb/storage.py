@@ -2120,6 +2120,56 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
         self._load_cache.set(zoid, data, tid)
         return data, tid
 
+    def load_multiple(self, oids):
+        """Load multiple objects in a single query.
+
+        Args:
+            oids: iterable of oid bytes
+
+        Returns:
+            dict mapping oid_bytes -> (pickle_bytes, tid_bytes).
+            Only includes oids that exist; missing oids are silently omitted.
+        """
+        result = {}
+        miss_oids = []  # list of (oid_bytes, zoid_int) for cache misses
+
+        for oid in oids:
+            zoid = u64(oid)
+            cached = self._load_cache.get(zoid)
+            if cached is not None:
+                result[oid] = cached
+            else:
+                miss_oids.append((oid, zoid))
+
+        if not miss_oids:
+            return result
+
+        zoid_list = [zoid for _, zoid in miss_oids]
+        zoid_to_oid = {zoid: oid for oid, zoid in miss_oids}
+
+        with self._conn.cursor() as cur:
+            cur.execute(
+                "SELECT zoid, tid, class_mod, class_name, state "
+                "FROM object_state WHERE zoid = ANY(%s)",
+                (zoid_list,),
+                prepare=True,
+            )
+            rows = cur.fetchall()
+
+        for row in rows:
+            record = {
+                "@cls": [row["class_mod"], row["class_name"]],
+                "@s": _unsanitize_from_pg(row["state"]),
+            }
+            data = zodb_json_codec.encode_zodb_record(record)
+            tid = p64(row["tid"])
+            oid = zoid_to_oid[row["zoid"]]
+            self._serial_cache[(oid, tid)] = data
+            self._load_cache.set(row["zoid"], data, tid)
+            result[oid] = (data, tid)
+
+        return result
+
     def loadBefore(self, oid, tid):
         """Load object data before a given TID."""
         zoid = u64(oid)
