@@ -29,6 +29,13 @@ WITH RECURSIVE reachable AS (
 SELECT zoid FROM reachable
 """
 
+# Anti-join pattern: NOT EXISTS is faster than NOT IN for large tables.
+# NOT IN builds a hash of the entire subquery and checks every row.
+# NOT EXISTS uses an anti-join that short-circuits on the first match.
+_NOT_REACHABLE = (
+    "NOT EXISTS (SELECT 1 FROM reachable_oids r WHERE r.zoid = {alias}.zoid)"
+)
+
 
 def pack(conn, pack_time=None, history_preserving=False):
     """Remove unreachable objects and their blobs.
@@ -53,79 +60,68 @@ def pack(conn, pack_time=None, history_preserving=False):
         # Phase 1: Find reachable objects
         cur.execute(f"SELECT zoid INTO TEMP reachable_oids FROM ({REACHABLE_QUERY}) q")
         cur.execute("CREATE INDEX ON reachable_oids (zoid)")
+        logger.info("Pack: reachability trace complete")
 
         # Phase 2: Delete unreachable objects
+        not_reachable_os = _NOT_REACHABLE.format(alias="o")
         if history_preserving and pack_tid is not None:
-            # HP mode: only delete unreachable objects whose current
-            # tid <= pack_time (preserve objects created/modified after)
             cur.execute(
-                "DELETE FROM object_state "
-                "WHERE zoid NOT IN (SELECT zoid FROM reachable_oids) "
-                "AND tid <= %s",
+                f"DELETE FROM object_state o WHERE {not_reachable_os} AND o.tid <= %s",
                 (pack_tid,),
             )
         else:
-            cur.execute(
-                "DELETE FROM object_state "
-                "WHERE zoid NOT IN (SELECT zoid FROM reachable_oids)"
-            )
+            cur.execute(f"DELETE FROM object_state o WHERE {not_reachable_os}")
         deleted_objects = cur.rowcount
+        logger.info("Pack: deleted %d unreachable objects", deleted_objects)
 
         # Phase 3: Delete unreachable blobs, collecting S3 keys
+        not_reachable_bs = _NOT_REACHABLE.format(alias="b")
         if history_preserving and pack_tid is not None:
             cur.execute(
-                "DELETE FROM blob_state "
-                "WHERE zoid NOT IN (SELECT zoid FROM reachable_oids) "
-                "AND tid <= %s "
+                f"DELETE FROM blob_state b WHERE {not_reachable_bs} "
+                "AND b.tid <= %s "
                 "RETURNING s3_key",
                 (pack_tid,),
             )
         else:
             cur.execute(
-                "DELETE FROM blob_state "
-                "WHERE zoid NOT IN (SELECT zoid FROM reachable_oids) "
-                "RETURNING s3_key"
+                f"DELETE FROM blob_state b WHERE {not_reachable_bs} RETURNING s3_key"
             )
         deleted_blobs = cur.rowcount
         for row in cur.fetchall():
             if row[0]:
                 s3_keys.append(row[0])
+        logger.info("Pack: deleted %d unreachable blobs", deleted_blobs)
 
         # Phase 4: History cleanup (history-preserving mode only)
         deleted_history = 0
         deleted_blob_revisions = 0
         if history_preserving:
+            not_reachable_oh = _NOT_REACHABLE.format(alias="oh")
             if pack_tid is not None:
-                # Delete history for unreachable objects only before pack_time
                 cur.execute(
-                    "DELETE FROM object_history "
-                    "WHERE zoid NOT IN (SELECT zoid FROM reachable_oids) "
-                    "AND tid <= %s",
+                    f"DELETE FROM object_history oh "
+                    f"WHERE {not_reachable_oh} AND oh.tid <= %s",
                     (pack_tid,),
                 )
             else:
-                # No pack_time: delete all history for unreachable objects
-                cur.execute(
-                    "DELETE FROM object_history "
-                    "WHERE zoid NOT IN (SELECT zoid FROM reachable_oids)"
-                )
+                cur.execute(f"DELETE FROM object_history oh WHERE {not_reachable_oh}")
             deleted_history += cur.rowcount
 
-            # Clean up blob_history for unreachable objects (backward compat
-            # for databases upgraded from dual-write mode)
+            # Clean up blob_history for unreachable objects (backward compat)
             if _table_exists(cur, "blob_history"):
+                not_reachable_bh = _NOT_REACHABLE.format(alias="bh")
                 if pack_tid is not None:
                     cur.execute(
-                        "DELETE FROM blob_history "
-                        "WHERE zoid NOT IN (SELECT zoid FROM reachable_oids) "
-                        "AND tid <= %s "
+                        f"DELETE FROM blob_history bh "
+                        f"WHERE {not_reachable_bh} AND bh.tid <= %s "
                         "RETURNING s3_key",
                         (pack_tid,),
                     )
                 else:
                     cur.execute(
-                        "DELETE FROM blob_history "
-                        "WHERE zoid NOT IN (SELECT zoid FROM reachable_oids) "
+                        f"DELETE FROM blob_history bh "
+                        f"WHERE {not_reachable_bh} "
                         "RETURNING s3_key"
                     )
                 for row in cur.fetchall():
@@ -134,14 +130,12 @@ def pack(conn, pack_time=None, history_preserving=False):
 
             # Remove old revisions for reachable objects before pack_time
             if pack_tid is not None:
-                # For each reachable object, keep the most recent revision
-                # at or before pack_time, delete all older ones.
-                # Check both object_history and object_state for newer versions
-                # (object_state holds the current version, not object_history).
                 cur.execute(
                     "DELETE FROM object_history oh "
                     "WHERE oh.tid < %s "
-                    "AND oh.zoid IN (SELECT zoid FROM reachable_oids) "
+                    "AND EXISTS ("
+                    "  SELECT 1 FROM reachable_oids r WHERE r.zoid = oh.zoid"
+                    ") "
                     "AND ("
                     "  EXISTS ("
                     "    SELECT 1 FROM object_history oh2 "
@@ -158,12 +152,13 @@ def pack(conn, pack_time=None, history_preserving=False):
                 )
                 deleted_history += cur.rowcount
 
-                # Clean old blob_state revisions for reachable objects.
-                # blob_state has PK (zoid, tid) and accumulates all versions.
+                # Clean old blob_state revisions for reachable objects
                 cur.execute(
                     "DELETE FROM blob_state bs "
                     "WHERE bs.tid < %s "
-                    "AND bs.zoid IN (SELECT zoid FROM reachable_oids) "
+                    "AND EXISTS ("
+                    "  SELECT 1 FROM reachable_oids r WHERE r.zoid = bs.zoid"
+                    ") "
                     "AND EXISTS ("
                     "  SELECT 1 FROM blob_state bs2 "
                     "  WHERE bs2.zoid = bs.zoid "
@@ -182,7 +177,10 @@ def pack(conn, pack_time=None, history_preserving=False):
                     cur.execute(
                         "DELETE FROM blob_history bh "
                         "WHERE bh.tid < %s "
-                        "AND bh.zoid IN (SELECT zoid FROM reachable_oids) "
+                        "AND EXISTS ("
+                        "  SELECT 1 FROM reachable_oids r "
+                        "  WHERE r.zoid = bh.zoid"
+                        ") "
                         "AND EXISTS ("
                         "  SELECT 1 FROM blob_history bh2 "
                         "  WHERE bh2.zoid = bh.zoid "
@@ -197,7 +195,6 @@ def pack(conn, pack_time=None, history_preserving=False):
 
         # Phase 5: Clean up transaction_log entries at or before pack_time
         # that are no longer referenced by object_state (FK constraint).
-        # These transactions are no longer undoable after pack.
         _deleted_txns = 0
         if history_preserving and pack_tid is not None:
             cur.execute(

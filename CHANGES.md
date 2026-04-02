@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.8.1
+
+- Fix packer DELETE using NOT IN anti-join (#35). Replaced all
+  `NOT IN (SELECT zoid FROM reachable_oids)` with
+  `NOT EXISTS (SELECT 1 FROM reachable_oids r WHERE r.zoid = ...)`.
+  NOT IN builds a hash of millions of rows; NOT EXISTS uses an
+  indexed anti-join that short-circuits. Pack on 4.4M objects went
+  from 48+ minutes (incomplete) to expected minutes.
+  Also added progress logging per phase.
+
 ## 1.8.0
 
 - Add `load_multiple(oids)` method to `PGJsonbStorageInstance` for
