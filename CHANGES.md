@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.9.2
+
+- Fix refs prefetch over-fetching (#40). Replace hardcoded class_mod
+  blacklist with a pluggable SQL expression via
+  `register_prefetch_refs_expr()`. The expression is included in the
+  load() query as a conditional refs column. When None (default), no
+  prefetch occurs — same behavior as pre-v1.9.0. Applications register
+  their own expression (e.g. pgcatalog uses
+  `CASE WHEN idx IS NOT NULL THEN refs END` to prefetch only for
+  cataloged content objects).
+
 ## 1.9.1
 
 - Fix refs prefetch over-fetching (#40). Only prefetch refs for

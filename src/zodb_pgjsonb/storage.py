@@ -263,6 +263,14 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
         self._state_processors = []
         self._pending_ddl = []  # Deferred DDL: [(sql, name), ...]
 
+        # Refs prefetch: SQL expression for the refs column in load().
+        # Set via register_prefetch_refs_expr(). When None, load() does
+        # not include refs and no prefetching occurs.
+        self._prefetch_refs_expr = None
+        self._load_sql = (
+            "SELECT tid, class_mod, class_name, state FROM object_state WHERE zoid = %s"
+        )
+
         # Pending stores for current transaction (direct use only)
         self._tmp = []
         self._blob_tmp = {}  # pending blob stores: {oid_int: blob_path}
@@ -387,6 +395,36 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
             if sql:
                 self._apply_processor_ddl(sql, type(processor).__name__)
 
+    def register_prefetch_refs_expr(self, sql_expr):
+        """Register a SQL expression for refs prefetching in load().
+
+        When set, load() includes the expression as an extra column
+        aliased ``refs``.  If it evaluates to a non-NULL array, the
+        referenced objects are prefetched into the load cache.
+
+        Example (plone-pgcatalog uses this to prefetch only for
+        cataloged content objects)::
+
+            storage.register_prefetch_refs_expr(
+                "CASE WHEN idx IS NOT NULL THEN refs END"
+            )
+
+        Call with ``None`` to disable prefetching.
+        """
+        self._prefetch_refs_expr = sql_expr
+        if sql_expr:
+            self._load_sql = (
+                "SELECT tid, class_mod, class_name, state, "
+                f"{sql_expr} AS refs "
+                "FROM object_state WHERE zoid = %s"
+            )
+        else:
+            self._load_sql = (
+                "SELECT tid, class_mod, class_name, state "
+                "FROM object_state WHERE zoid = %s"
+            )
+        logger.info("Prefetch refs expr: %s", sql_expr or "(disabled)")
+
     def _apply_processor_ddl(self, sql, processor_name):
         """Apply DDL from a state processor, handling lock conflicts.
 
@@ -498,9 +536,10 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
     def load(self, oid, version=""):
         """Load current object state, returning (pickle_bytes, tid_bytes).
 
-        Also prefetches directly referenced objects (from the ``refs``
-        column) into ``_load_cache`` so subsequent loads of annotations,
-        sub-mappings, etc. are cache hits instead of individual roundtrips.
+        If ``_prefetch_refs_expr`` is set on the main storage, the load
+        query includes it as an extra column aliased ``refs``.  When the
+        expression evaluates to a non-NULL array, the referenced objects
+        are prefetched into ``_load_cache`` via ``load_multiple()``.
         """
         zoid = u64(oid)
 
@@ -511,8 +550,7 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
 
         with self._conn.cursor() as cur:
             cur.execute(
-                "SELECT tid, class_mod, class_name, state, refs "
-                "FROM object_state WHERE zoid = %s",
+                self._load_sql,
                 (zoid,),
                 prepare=True,
             )
@@ -530,14 +568,9 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
         self._serial_cache[(oid, tid)] = data
         self._load_cache.set(zoid, data, tid)
 
-        # Prefetch referenced objects, but skip internal ZODB data
-        # structures whose refs cascade into massive over-fetching (#40).
-        # The blacklist covers types that are loaded frequently during
-        # traversal but whose refs are just other internal structures.
-        class_mod = row["class_mod"]
-        if (
-            refs := row.get("refs") if isinstance(row, dict) else None
-        ) and not class_mod.startswith(_PREFETCH_SKIP_MODULES):
+        # Prefetch refs if the expression yielded a non-NULL array
+        refs = row.get("refs") if isinstance(row, dict) else None
+        if refs:
             ref_oids = [
                 p64(ref_zoid)
                 for ref_zoid in refs
@@ -2033,6 +2066,19 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
         # Propagate conflict resolution transform hooks from main storage
         self._crs_transform_record_data = main_storage._crs_transform_record_data
         self._crs_untransform_record_data = main_storage._crs_untransform_record_data
+        # Build load SQL with optional refs prefetch expression
+        expr = main_storage._prefetch_refs_expr
+        if expr:
+            self._load_sql = (
+                "SELECT tid, class_mod, class_name, state, "
+                f"{expr} AS refs "
+                "FROM object_state WHERE zoid = %s"
+            )
+        else:
+            self._load_sql = (
+                "SELECT tid, class_mod, class_name, state "
+                "FROM object_state WHERE zoid = %s"
+            )
 
     @property
     def pg_connection(self):
