@@ -164,7 +164,8 @@ class TestPrefetchRefs:
         storage = conn._storage
 
         # Clear load cache to force a fresh load with refs prefetch
-        storage._load_cache._cache.clear()
+        storage._load_cache._data.clear()
+        storage._load_cache._size = 0
 
         # Load parent — should also prefetch child via refs
         storage.load(oid_parent)
@@ -191,7 +192,8 @@ class TestPrefetchRefs:
         oid_child = child._p_oid
 
         storage = conn._storage
-        storage._load_cache._cache.clear()
+        storage._load_cache._data.clear()
+        storage._load_cache._size = 0
 
         # Pre-load child
         storage.load(oid_child)
