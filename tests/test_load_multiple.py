@@ -163,6 +163,27 @@ class TestPrefetchRefs:
         # (guaranteed to see committed data in its snapshot)
         storage = conn._storage
 
+        # First verify refs exist and load_multiple works
+        child_zoid = u64(oid_child)
+        parent_zoid = u64(oid_parent)
+
+        # Check refs directly in PG
+        with storage._conn.cursor() as cur:
+            cur.execute(
+                "SELECT refs FROM object_state WHERE zoid = %s",
+                (parent_zoid,),
+            )
+            pg_row = cur.fetchone()
+        parent_refs = pg_row["refs"] if pg_row else None
+        assert parent_refs and child_zoid in parent_refs, (
+            f"PG refs for parent should contain child. "
+            f"refs={parent_refs}, child_zoid={child_zoid}"
+        )
+
+        # Verify load_multiple works for the child
+        direct = storage.load_multiple([oid_child])
+        assert oid_child in direct, "load_multiple should find child"
+
         # Clear load cache to force a fresh load with refs prefetch
         storage._load_cache._data.clear()
         storage._load_cache._size = 0
@@ -171,10 +192,10 @@ class TestPrefetchRefs:
         storage.load(oid_parent)
 
         # Child should now be in cache (prefetched via refs)
-        child_zoid = u64(oid_child)
         cached = storage._load_cache.get(child_zoid)
         assert cached is not None, (
-            f"Referenced child (zoid={child_zoid}) should be prefetched into cache"
+            f"Referenced child (zoid={child_zoid}) should be "
+            f"prefetched into cache. Parent refs={parent_refs}"
         )
         conn.close()
 

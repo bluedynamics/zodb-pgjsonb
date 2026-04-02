@@ -527,10 +527,13 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
                 if self._load_cache.get(ref_zoid) is None
             ]
             if ref_oids:
-                try:
-                    self.load_multiple(ref_oids)
-                except Exception:
-                    logger.debug("refs prefetch failed", exc_info=True)
+                loaded = self.load_multiple(ref_oids)
+                logger.debug(
+                    "Prefetched %d/%d refs for zoid=%d",
+                    len(loaded),
+                    len(ref_oids),
+                    zoid,
+                )
 
         return data, tid
 
