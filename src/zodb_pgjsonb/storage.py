@@ -414,11 +414,13 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
         for sql, name in pending:
             try:
                 with psycopg.connect(self._dsn, autocommit=True) as ddl_conn:
+                    ddl_conn.execute("SET lock_timeout = '30s'")
                     ddl_conn.execute(sql)
                 logger.info("Applied deferred schema DDL from %s", name)
             except Exception:
                 logger.warning(
-                    "Failed to apply deferred DDL from %s",
+                    "Failed to apply deferred DDL from %s "
+                    "(lock timeout or other error — will retry on next startup)",
                     name,
                     exc_info=True,
                 )
