@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.8.0
+
+- Add `load_multiple(oids)` method to `PGJsonbStorageInstance` for
+  batch object loading (#34). Loads multiple objects in a single
+  `SELECT WHERE zoid = ANY()` query instead of individual roundtrips.
+  Checks `_load_cache` first, only queries misses. Caches all results.
+
 ## 1.7.3
 
 - Fix: add `lock_timeout = '30s'` to deferred DDL application
