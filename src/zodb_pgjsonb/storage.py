@@ -101,6 +101,18 @@ class ExtraColumn:
 # Default cache size: 16 MB per instance (tunable via cache_local_mb parameter)
 DEFAULT_CACHE_LOCAL_MB = 16
 
+# Modules whose objects should NOT trigger refs prefetching (#40).
+# These are ZODB-internal data structures loaded frequently during traversal
+# whose refs point to other internal structures — prefetching them cascades
+# into massive over-fetching.  Application-level objects (OFS, Plone content)
+# are NOT listed here: their refs (annotations, workflows) are worth prefetching.
+_PREFETCH_SKIP_MODULES = (
+    "persistent.",  # PersistentMapping, PersistentList
+    "Persistence.",  # Persistence.mapping.PersistentMapping (C variant)
+    "BTrees.",  # OOBTree, OOBucket, IIBTree, LOBTree, Length, etc.
+    "ZODB.blob",  # Blob objects
+)
+
 # Logarithmic bucket boundaries for blob size histograms.
 _HISTOGRAM_BOUNDARIES = [
     10240,  # 10 KB
@@ -518,9 +530,14 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
         self._serial_cache[(oid, tid)] = data
         self._load_cache.set(zoid, data, tid)
 
-        # Prefetch referenced objects (annotations, sub-mappings, etc.)
-        refs = row.get("refs") if isinstance(row, dict) else None
-        if refs:
+        # Prefetch referenced objects, but skip internal ZODB data
+        # structures whose refs cascade into massive over-fetching (#40).
+        # The blacklist covers types that are loaded frequently during
+        # traversal but whose refs are just other internal structures.
+        class_mod = row["class_mod"]
+        if (
+            refs := row.get("refs") if isinstance(row, dict) else None
+        ) and not class_mod.startswith(_PREFETCH_SKIP_MODULES):
             ref_oids = [
                 p64(ref_zoid)
                 for ref_zoid in refs

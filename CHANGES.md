@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.9.1
+
+- Fix refs prefetch over-fetching (#40). Only prefetch refs for
+  content-type objects, not internal ZODB structures
+  (PersistentMapping, OOBTree, etc.) whose refs cascade into massive
+  over-fetching. v1.9.0 made cold-start 40-84% slower; this fix
+  restores the benefit by limiting prefetch to objects that actually
+  have useful sub-objects (annotations, workflows, etc.).
+
 ## 1.9.0
 
 - Prefetch referenced objects on `load()` (#38). When an object is
