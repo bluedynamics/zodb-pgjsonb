@@ -44,30 +44,39 @@
 
   /**
    * Fetch GitHub open issues and PRs for a repo.
-   * Issues endpoint includes PRs, so we subtract PR count.
+   * Uses search API: one query for issues, one for PRs — same cost but
+   * returns total_count directly without needing to fetch all items.
    */
   async function fetchGitHub(repo) {
-    var baseUrl = "https://api.github.com/repos/" + repo;
+    var headers = { Accept: "application/vnd.github.v3+json" };
+    var searchBase = "https://api.github.com/search/issues?q=repo:" + repo;
 
-    var [repoResp, prsResp] = await Promise.all([
-      fetch(baseUrl, { headers: { Accept: "application/vnd.github.v3+json" } }),
-      fetch(baseUrl + "/pulls?state=open&per_page=100", {
-        headers: { Accept: "application/vnd.github.v3+json" },
-      }),
+    var [issuesResp, prsResp] = await Promise.all([
+      fetch(searchBase + "+type:issue+state:open", { headers: headers }),
+      fetch(searchBase + "+type:pr+state:open", { headers: headers }),
     ]);
 
-    if (!repoResp.ok || !prsResp.ok) {
+    if (issuesResp.status === 403 || prsResp.status === 403) {
+      var reset = issuesResp.headers.get("x-ratelimit-reset") ||
+                  prsResp.headers.get("x-ratelimit-reset");
+      if (reset) {
+        var mins = Math.ceil((parseInt(reset) * 1000 - Date.now()) / 60000);
+        console.warn("GitHub rate limit hit. Resets in " + mins + " min.");
+      }
       return { issues: null, prs: null };
     }
 
-    var repoData = await repoResp.json();
+    if (!issuesResp.ok || !prsResp.ok) {
+      return { issues: null, prs: null };
+    }
+
+    var issuesData = await issuesResp.json();
     var prsData = await prsResp.json();
 
-    var totalOpen = repoData.open_issues_count || 0;
-    var prCount = Array.isArray(prsData) ? prsData.length : 0;
-    var issueCount = totalOpen - prCount;
-
-    return { issues: issueCount, prs: prCount };
+    return {
+      issues: issuesData.total_count || 0,
+      prs: prsData.total_count || 0,
+    };
   }
 
   /** Fetch latest PyPI version. */
