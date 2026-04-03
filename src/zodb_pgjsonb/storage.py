@@ -326,9 +326,12 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
 
         # Load max OID and last TID from database
         self._restore_state()
-        # Commit implicit transaction so self._conn is clean for later DDL
-        # (register_state_processor needs ACCESS EXCLUSIVE for ALTER TABLE)
         self._conn.commit()
+
+        # Switch to autocommit so SELECTs (new_oid, load, history, stats)
+        # don't leave the connection "idle in transaction" indefinitely (#45).
+        # Write paths that need transactions use explicit BEGIN/COMMIT.
+        self._conn.autocommit = True
         logger.debug("Storage initialized (max_oid=%s, ltid=%s)", self._oid, self._ltid)
 
     def _restore_state(self):

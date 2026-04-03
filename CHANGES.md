@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.9.5
+
+- Fix `new_oid()` leaving main connection "idle in transaction"
+  indefinitely (#45).  The main storage connection now uses
+  `autocommit=True` after schema init, so SELECTs (new_oid, load,
+  history, stats) never open implicit transactions.  Write paths
+  that need transactions continue using explicit `BEGIN`/`COMMIT`.
+
 ## 1.9.4
 
 - Enable LZ4 TOAST compression on JSONB and BYTEA columns (PG 14+).
