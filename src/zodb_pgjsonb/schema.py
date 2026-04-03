@@ -83,6 +83,32 @@ CREATE TABLE IF NOT EXISTS pack_state (
 """
 
 
+def _set_lz4_compression(conn):
+    """Set LZ4 TOAST compression on JSONB and BYTEA columns (PG 14+).
+
+    LZ4 decompresses ~10x faster than the default pglz at similar
+    compression ratios — a significant win for OLTP read workloads.
+    Only affects newly written rows; existing rows keep their current
+    compression until rewritten (UPDATE or VACUUM FULL).
+
+    Silently skipped on PG < 14 where LZ4 is not available.
+    """
+    columns = [
+        ("object_state", "state"),
+        ("object_history", "state"),  # HP mode only — skipped if table absent
+        ("blob_state", "data"),
+    ]
+    for table, column in columns:
+        try:
+            conn.execute(
+                f"ALTER TABLE {table} ALTER COLUMN {column} SET COMPRESSION lz4"
+            )
+            conn.commit()
+        except Exception:
+            # PG < 14, table or column doesn't exist — skip silently
+            conn.rollback()
+
+
 def _ensure_zoid_seq(conn):
     """Create or synchronize the zoid_seq sequence.
 
@@ -149,6 +175,12 @@ def install_schema(conn, *, history_preserving=False):
     if history_preserving and not _table_exists(conn, "object_history"):
         conn.execute(HISTORY_PRESERVING_ADDITIONS)
     conn.commit()
+
+    # LZ4 TOAST compression for JSONB columns (PG 14+).
+    # LZ4 decompresses ~10x faster than the default pglz with similar
+    # compression ratio.  Only affects new writes — existing rows keep
+    # their current compression until rewritten.
+    _set_lz4_compression(conn)
 
     # OID sequence for cross-process uniqueness (#31).
     _ensure_zoid_seq(conn)
