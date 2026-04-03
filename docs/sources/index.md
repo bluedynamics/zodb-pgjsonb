@@ -82,6 +82,7 @@ caption: Documentation
 titlesonly: true
 hidden: true
 ---
+ecosystem
 tutorials/index
 how-to/index
 reference/index

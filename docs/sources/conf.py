@@ -1,5 +1,12 @@
 # Configuration file for the Sphinx documentation builder.
 
+from pathlib import Path
+
+import sys
+
+
+sys.path.insert(0, str(Path(__file__).parent / "_ext"))
+
 # -- Project information -----------------------------------------------------
 
 project = "zodb-pgjsonb"
@@ -14,6 +21,7 @@ extensions = [
     "sphinxcontrib.mermaid",
     "sphinx_design",
     "sphinx_copybutton",
+    "ecosystem_dashboard",
 ]
 
 myst_enable_extensions = [
@@ -40,6 +48,37 @@ html_theme_options = {
     "color_mode": "dark",
     "dark_code": True,
     "nav_links": [
+        {
+            "title": "Ecosystem",
+            "url": "https://bluedynamics.github.io/zodb-pgjsonb/ecosystem.html",
+            "children": [
+                {
+                    "title": "Dashboard",
+                    "url": "https://bluedynamics.github.io/zodb-pgjsonb/ecosystem.html",
+                    "summary": "Overview of all packages",
+                },
+                {
+                    "title": "zodb-pgjsonb",
+                    "url": "https://bluedynamics.github.io/zodb-pgjsonb/",
+                    "summary": "PostgreSQL JSONB storage",
+                },
+                {
+                    "title": "zodb-json-codec",
+                    "url": "https://bluedynamics.github.io/zodb-json-codec/",
+                    "summary": "Rust pickle↔JSON transcoder",
+                },
+                {
+                    "title": "plone-pgcatalog",
+                    "url": "https://bluedynamics.github.io/plone-pgcatalog/",
+                    "summary": "PostgreSQL-backed catalog",
+                },
+                {
+                    "title": "plone-pgthumbor",
+                    "url": "https://bluedynamics.github.io/plone-pgthumbor/",
+                    "summary": "Thumbor image scaling",
+                },
+            ],
+        },
         {
             "title": "GitHub",
             "url": "https://github.com/bluedynamics/zodb-pgjsonb",
