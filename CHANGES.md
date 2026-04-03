@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.9.6
+
+- Fix startup DDL blocking rolling updates (#96).  `ALTER TABLE SET
+  COMPRESSION` and `CREATE INDEX IF NOT EXISTS` now use `lock_timeout
+  = '5s'`.  If blocked by old pods' REPEATABLE READ connections, the
+  DDL is silently skipped and retried on next startup.
+
 ## 1.9.5
 
 - Fix `new_oid()` leaving main connection "idle in transaction"

@@ -1,5 +1,8 @@
 """PostgreSQL schema definitions for zodb-pgjsonb."""
 
+import contextlib
+
+
 SCHEMA_VERSION = 2
 
 # History-free mode: only current object state
@@ -100,13 +103,20 @@ def _set_lz4_compression(conn):
     ]
     for table, column in columns:
         try:
+            conn.execute("SET lock_timeout = '5s'")
             conn.execute(
                 f"ALTER TABLE {table} ALTER COLUMN {column} SET COMPRESSION lz4"
             )
             conn.commit()
         except Exception:
-            # PG < 14, table or column doesn't exist — skip silently
+            # PG < 14, lock timeout, table absent — skip, retry on next startup
             conn.rollback()
+        finally:
+            try:
+                conn.execute("SET lock_timeout = 0")
+                conn.commit()
+            except Exception:
+                conn.rollback()
 
 
 def _ensure_zoid_seq(conn):
@@ -167,11 +177,18 @@ def install_schema(conn, *, history_preserving=False):
         conn.execute(HISTORY_FREE_SCHEMA)
     else:
         # Ensure indexes added in later schema versions exist.
-        # CREATE INDEX IF NOT EXISTS is lightweight (no ACCESS EXCLUSIVE lock).
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_object_state_tid_zoid "
-            "ON object_state (tid, zoid)"
-        )
+        # Use lock_timeout to avoid blocking during rolling updates (#96).
+        try:
+            conn.execute("SET lock_timeout = '5s'")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_object_state_tid_zoid "
+                "ON object_state (tid, zoid)"
+            )
+        except Exception:
+            conn.rollback()  # lock timeout — retry on next startup
+        finally:
+            with contextlib.suppress(Exception):
+                conn.execute("SET lock_timeout = 0")
     if history_preserving and not _table_exists(conn, "object_history"):
         conn.execute(HISTORY_PRESERVING_ADDITIONS)
     conn.commit()
