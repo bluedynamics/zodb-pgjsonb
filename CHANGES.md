@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.9.3
+
+- Fix ZODB undo nullifying catalog columns (plone-pgcatalog #30).
+  `undo()` now calls `_process_state()` on restored entries (same as
+  `restore()` does), so catalog columns (path, idx, searchable_text,
+  allowed_roles, etc.) are recomputed from the restored state instead
+  of being left as NULL.
+
 ## 1.9.2
 
 - Fix refs prefetch over-fetching (#40). Replace hardcoded class_mod
