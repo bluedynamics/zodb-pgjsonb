@@ -9,3 +9,5 @@ build/
 instance/
 uv.lock
 .worktrees/
+docs/html/
+docs/html/
