@@ -2,7 +2,7 @@
 layout: landing
 ---
 
-# Ecosystem
+# Cloudbrine Ecosystem
 
 ```{ecosystem-dashboard}
 
