@@ -1,3 +1,7 @@
+---
+layout: landing
+---
+
 # Ecosystem
 
 ```{ecosystem-dashboard}
