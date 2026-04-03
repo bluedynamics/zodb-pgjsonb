@@ -46,6 +46,7 @@ layout: landing
 
 - repo: bluedynamics/zodb-convert
   pypi: zodb-convert
+  icon: https://bluedynamics.github.io/zodb-pgjsonb/_static/logo-zodb-convert.png
   group: Tools & Libraries
   description: Generic ZODB storage conversion tool
 
