@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.9.4
+
+- Enable LZ4 TOAST compression on JSONB and BYTEA columns (PG 14+).
+  LZ4 decompresses ~10x faster than the default pglz at similar
+  compression ratios.  Applied automatically during schema init.
+  Only affects new writes — existing rows keep pglz until rewritten.
+  Silently skipped on PG < 14.
+
 ## 1.9.3
 
 - Fix ZODB undo nullifying catalog columns (plone-pgcatalog #30).
