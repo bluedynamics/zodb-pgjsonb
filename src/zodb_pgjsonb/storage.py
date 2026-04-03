@@ -1133,16 +1133,25 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
                     }
                 )
             else:
-                self._tmp.append(
-                    {
-                        "zoid": item["zoid"],
-                        "class_mod": item["class_mod"],
-                        "class_name": item["class_name"],
-                        "state": item["state"],
-                        "state_size": item["state_size"],
-                        "refs": item["refs"],
-                    }
+                entry = {
+                    "zoid": item["zoid"],
+                    "class_mod": item["class_mod"],
+                    "class_name": item["class_name"],
+                    "state": item["state"],
+                    "state_size": item["state_size"],
+                    "refs": item["refs"],
+                }
+                # Run state processors so catalog columns are recomputed
+                # from the restored state, not left as NULL.
+                extra = self._process_state(
+                    item["zoid"],
+                    item["class_mod"],
+                    item["class_name"],
+                    item["state"],
                 )
+                if extra:
+                    entry["_extra"] = extra
+                self._tmp.append(entry)
 
         return self._tid, oid_list
 
@@ -2598,16 +2607,26 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
                     }
                 )
             else:
-                self._tmp.append(
-                    {
-                        "zoid": item["zoid"],
-                        "class_mod": item["class_mod"],
-                        "class_name": item["class_name"],
-                        "state": item["state"],
-                        "state_size": item["state_size"],
-                        "refs": item["refs"],
-                    }
+                entry = {
+                    "zoid": item["zoid"],
+                    "class_mod": item["class_mod"],
+                    "class_name": item["class_name"],
+                    "state": item["state"],
+                    "state_size": item["state_size"],
+                    "refs": item["refs"],
+                }
+                # Run state processors so catalog columns (path, idx,
+                # searchable_text, etc.) are recomputed from the restored
+                # state, not left as NULL (#30 in plone-pgcatalog).
+                extra = self._main._process_state(
+                    item["zoid"],
+                    item["class_mod"],
+                    item["class_name"],
+                    item["state"],
                 )
+                if extra:
+                    entry["_extra"] = extra
+                self._tmp.append(entry)
 
         return self._tid, oid_list
 
