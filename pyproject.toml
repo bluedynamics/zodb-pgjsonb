@@ -59,7 +59,6 @@ packages = ["src/zodb_pgjsonb"]
 
 [tool.hatch.version]
 source = "vcs"
-root = "../.."
 raw-options = { local_scheme = "no-local-version" }
 
 [tool.pytest.ini_options]
