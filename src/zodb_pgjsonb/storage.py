@@ -101,18 +101,6 @@ class ExtraColumn:
 # Default cache size: 16 MB per instance (tunable via cache_local_mb parameter)
 DEFAULT_CACHE_LOCAL_MB = 16
 
-# Modules whose objects should NOT trigger refs prefetching (#40).
-# These are ZODB-internal data structures loaded frequently during traversal
-# whose refs point to other internal structures — prefetching them cascades
-# into massive over-fetching.  Application-level objects (OFS, Plone content)
-# are NOT listed here: their refs (annotations, workflows) are worth prefetching.
-_PREFETCH_SKIP_MODULES = (
-    "persistent.",  # PersistentMapping, PersistentList
-    "Persistence.",  # Persistence.mapping.PersistentMapping (C variant)
-    "BTrees.",  # OOBTree, OOBucket, IIBTree, LOBTree, Length, etc.
-    "ZODB.blob",  # Blob objects
-)
-
 # Logarithmic bucket boundaries for blob size histograms.
 _HISTOGRAM_BOUNDARIES = [
     10240,  # 10 KB
@@ -483,6 +471,11 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
             )
 
         Call with ``None`` to disable prefetching.
+
+        **Security:** ``sql_expr`` is interpolated directly into SELECT
+        statements without escaping.  Only pass expressions from trusted,
+        audited code.  A malicious expression can read or modify any data
+        in the database.  See :class:`ExtraColumn` for the same trust model.
         """
         self._prefetch_refs_expr = sql_expr
         if sql_expr:
@@ -2273,8 +2266,7 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
 
         with self._conn.cursor() as cur:
             cur.execute(
-                "SELECT tid, class_mod, class_name, state "
-                "FROM object_state WHERE zoid = %s",
+                self._load_sql,
                 (zoid,),
                 prepare=True,
             )
@@ -2291,6 +2283,17 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
         tid = p64(row["tid"])
         self._serial_cache[(oid, tid)] = data
         self._load_cache.set(zoid, data, tid)
+
+        # Prefetch refs if the expression yielded a non-NULL array
+        refs = row.get("refs") if isinstance(row, dict) else None
+        if refs:
+            ref_oids = [
+                p64(ref_zoid)
+                for ref_zoid in refs
+                if self._load_cache.get(ref_zoid) is None
+            ]
+            if ref_oids:
+                self.load_multiple(ref_oids)
 
         # Record for cache warmer (#48)
         if warmer and warmer.recording:
