@@ -665,44 +665,9 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
 
     def loadSerial(self, oid, serial):
         """Load a specific revision of an object."""
-        # Check serial cache first (needed for conflict resolution in
-        # history-free mode where old versions are overwritten)
-        cached = self._serial_cache.get((oid, serial))
-        if cached is not None:
-            return cached
-
-        zoid = u64(oid)
-        tid_int = u64(serial)
-        with self._conn.cursor() as cur:
-            if self._history_preserving:
-                cur.execute(
-                    "SELECT class_mod, class_name, state FROM ("
-                    "  SELECT class_mod, class_name, state"
-                    "  FROM object_history WHERE zoid = %s AND tid = %s"
-                    "  UNION"
-                    "  SELECT class_mod, class_name, state"
-                    "  FROM object_state WHERE zoid = %s AND tid = %s"
-                    ") sub LIMIT 1",
-                    (zoid, tid_int, zoid, tid_int),
-                    prepare=True,
-                )
-            else:
-                cur.execute(
-                    "SELECT class_mod, class_name, state "
-                    "FROM object_state WHERE zoid = %s AND tid = %s",
-                    (zoid, tid_int),
-                    prepare=True,
-                )
-            row = cur.fetchone()
-
-        if row is None:
-            raise POSKeyError(oid)
-
-        record = {
-            "@cls": [row["class_mod"], row["class_name"]],
-            "@s": _unsanitize_from_pg(row["state"]),
-        }
-        return zodb_json_codec.encode_zodb_record(record)
+        return _do_loadSerial(
+            self._conn, self._serial_cache, self._history_preserving, oid, serial
+        )
 
     # ── IStorage: store ──────────────────────────────────────────────
 
@@ -2369,44 +2334,9 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
 
     def loadSerial(self, oid, serial):
         """Load a specific revision of an object."""
-        # Check serial cache first (needed for conflict resolution in
-        # history-free mode where old versions are overwritten)
-        cached = self._serial_cache.get((oid, serial))
-        if cached is not None:
-            return cached
-
-        zoid = u64(oid)
-        tid_int = u64(serial)
-        with self._conn.cursor() as cur:
-            if self._history_preserving:
-                cur.execute(
-                    "SELECT class_mod, class_name, state FROM ("
-                    "  SELECT class_mod, class_name, state"
-                    "  FROM object_history WHERE zoid = %s AND tid = %s"
-                    "  UNION"
-                    "  SELECT class_mod, class_name, state"
-                    "  FROM object_state WHERE zoid = %s AND tid = %s"
-                    ") sub LIMIT 1",
-                    (zoid, tid_int, zoid, tid_int),
-                    prepare=True,
-                )
-            else:
-                cur.execute(
-                    "SELECT class_mod, class_name, state "
-                    "FROM object_state WHERE zoid = %s AND tid = %s",
-                    (zoid, tid_int),
-                    prepare=True,
-                )
-            row = cur.fetchone()
-
-        if row is None:
-            raise POSKeyError(oid)
-
-        record = {
-            "@cls": [row["class_mod"], row["class_name"]],
-            "@s": _unsanitize_from_pg(row["state"]),
-        }
-        return zodb_json_codec.encode_zodb_record(record)
+        return _do_loadSerial(
+            self._conn, self._serial_cache, self._history_preserving, oid, serial
+        )
 
     # ── Write path ───────────────────────────────────────────────────
 
@@ -2806,6 +2736,49 @@ def _load_blob_from_s3(s3_client, blob_cache, s3_key, oid, serial, path):
     if blob_cache is not None:
         blob_cache.put(oid, serial, path)
     return path
+
+
+def _do_loadSerial(conn, serial_cache, history_preserving, oid, serial):
+    """Load a specific revision of an object (shared implementation).
+
+    Used by both PGJsonbStorage and PGJsonbStorageInstance.
+    """
+    cached = serial_cache.get((oid, serial))
+    if cached is not None:
+        return cached
+
+    zoid = u64(oid)
+    tid_int = u64(serial)
+    with conn.cursor() as cur:
+        if history_preserving:
+            cur.execute(
+                "SELECT class_mod, class_name, state FROM ("
+                "  SELECT class_mod, class_name, state"
+                "  FROM object_history WHERE zoid = %s AND tid = %s"
+                "  UNION"
+                "  SELECT class_mod, class_name, state"
+                "  FROM object_state WHERE zoid = %s AND tid = %s"
+                ") sub LIMIT 1",
+                (zoid, tid_int, zoid, tid_int),
+                prepare=True,
+            )
+        else:
+            cur.execute(
+                "SELECT class_mod, class_name, state "
+                "FROM object_state WHERE zoid = %s AND tid = %s",
+                (zoid, tid_int),
+                prepare=True,
+            )
+        row = cur.fetchone()
+
+    if row is None:
+        raise POSKeyError(oid)
+
+    record = {
+        "@cls": [row["class_mod"], row["class_name"]],
+        "@s": _unsanitize_from_pg(row["state"]),
+    }
+    return zodb_json_codec.encode_zodb_record(record)
 
 
 def _loadBefore_hf(cur, oid, zoid, tid_int):
