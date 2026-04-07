@@ -63,6 +63,7 @@ raw-options = { local_scheme = "no-local-version" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = ["db: test requires PostgreSQL (skipped when DB unavailable)"]
 
 [tool.coverage.run]
 parallel = true

@@ -57,6 +57,7 @@ class TestDsnValidation:
         assert "Invalid DSN format" not in str(exc_info.value)
 
 
+@pytest.mark.db
 class TestZConfig:
     """Test that ZConfig <pgjsonb> section creates a working storage."""
 

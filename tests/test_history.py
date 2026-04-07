@@ -23,6 +23,9 @@ import transaction as txn
 import ZODB
 
 
+pytestmark = pytest.mark.db
+
+
 class TestHistoryPreservingSchema:
     """Test that history tables are created in HP mode."""
 

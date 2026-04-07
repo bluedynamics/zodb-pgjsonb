@@ -14,6 +14,9 @@ import psycopg
 import pytest
 
 
+pytestmark = pytest.mark.db
+
+
 S3_BUCKET = "test-parallel-blobs"
 S3_REGION = "us-east-1"
 

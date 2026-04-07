@@ -15,6 +15,9 @@ import pytest
 import zodb_json_codec
 
 
+pytestmark = pytest.mark.db
+
+
 @pytest.fixture
 def conn():
     """Fresh database connection with clean schema."""

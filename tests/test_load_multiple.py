@@ -1,7 +1,6 @@
 """Tests for PGJsonbStorageInstance.load_multiple() and refs prefetch."""
 
 from persistent.mapping import PersistentMapping
-from tests.conftest import DSN
 from ZODB.utils import p64
 from ZODB.utils import u64
 
@@ -9,22 +8,7 @@ import pytest
 import transaction as txn
 
 
-def _pg_available():
-    """Check if test PostgreSQL is reachable."""
-    try:
-        import psycopg
-
-        conn = psycopg.connect(DSN, connect_timeout=2)
-        conn.close()
-        return True
-    except Exception:
-        return False
-
-
-pytestmark = pytest.mark.skipif(
-    not _pg_available(),
-    reason="PostgreSQL not available",
-)
+pytestmark = pytest.mark.db
 
 
 class TestLoadMultiple:

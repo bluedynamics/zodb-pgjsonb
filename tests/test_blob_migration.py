@@ -22,6 +22,9 @@ import transaction as txn
 import ZODB
 
 
+pytestmark = pytest.mark.db
+
+
 @pytest.fixture
 def temp_dir():
     d = tempfile.mkdtemp()

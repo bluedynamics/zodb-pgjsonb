@@ -142,6 +142,7 @@ class TestCacheWarmerWarm:
         assert len(w._warm_cache) == 0
 
 
+@pytest.mark.db
 class TestCacheWarmerDB:
     """Integration tests for DB-dependent methods (require PostgreSQL)."""
 

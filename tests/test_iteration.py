@@ -20,6 +20,9 @@ import ZODB
 import zodb_json_codec
 
 
+pytestmark = pytest.mark.db
+
+
 class TestInterfaces:
     """Verify interface declarations."""
 

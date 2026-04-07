@@ -10,8 +10,12 @@ from persistent.mapping import PersistentMapping
 from ZODB.interfaces import IMVCCStorage
 from zodb_pgjsonb.instance import PGJsonbStorageInstance
 
+import pytest
 import transaction as txn
 import ZODB
+
+
+pytestmark = pytest.mark.db
 
 
 class TestIMVCCStorageInterface:

@@ -20,6 +20,9 @@ import transaction as txn
 import ZODB
 
 
+pytestmark = pytest.mark.db
+
+
 def _state_as_dict(state):
     """Convert state (dict or JSON string) to dict for annotation extraction."""
     if isinstance(state, str):

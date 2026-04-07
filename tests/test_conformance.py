@@ -37,11 +37,15 @@ from ZODB.tests.TransactionalUndoStorage import TransactionalUndoStorage
 from zodb_pgjsonb.storage import PGJsonbStorage
 
 import psycopg
+import pytest
 import threading
 import time
 import transaction
 import unittest
 import ZODB
+
+
+pytestmark = pytest.mark.db
 
 
 # ── History-Free Conformance ─────────────────────────────────────────

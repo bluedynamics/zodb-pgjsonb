@@ -25,6 +25,9 @@ import transaction as txn
 import ZODB
 
 
+pytestmark = pytest.mark.db
+
+
 S3_BUCKET = "test-zodb-blobs"
 S3_REGION = "us-east-1"
 

@@ -9,6 +9,9 @@ import psycopg
 import pytest
 
 
+pytestmark = pytest.mark.db
+
+
 @pytest.fixture
 def test_db():
     """Provide a PGTestDB instance with schema installed."""

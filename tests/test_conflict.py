@@ -16,6 +16,9 @@ import pytest
 import transaction as txn
 
 
+pytestmark = pytest.mark.db
+
+
 class TestConflictResolutionBTrees:
     """BTrees have _p_resolveConflict — non-overlapping changes auto-resolve."""
 

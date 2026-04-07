@@ -14,6 +14,9 @@ import psycopg
 import pytest
 
 
+pytestmark = pytest.mark.db
+
+
 @pytest.fixture
 def hp_conn():
     """Fresh HP schema + raw psycopg connection."""

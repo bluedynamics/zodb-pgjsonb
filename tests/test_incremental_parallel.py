@@ -21,6 +21,9 @@ import transaction as txn_mod
 import ZODB
 
 
+pytestmark = pytest.mark.db
+
+
 class TestIdempotentWriteTxnLog:
     """_write_txn_log with idempotent=True skips duplicates."""
 

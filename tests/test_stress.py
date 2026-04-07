@@ -10,8 +10,12 @@ from BTrees.OOBTree import OOBTree
 from persistent.mapping import PersistentMapping
 from ZODB.POSException import ConflictError
 
+import pytest
 import threading
 import transaction as txn
+
+
+pytestmark = pytest.mark.db
 
 
 class TestConcurrentWrites:

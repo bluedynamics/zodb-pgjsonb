@@ -24,6 +24,9 @@ import tempfile
 import transaction as txn
 
 
+pytestmark = pytest.mark.db
+
+
 class TestSchemaIndexes:
     """Test that required indexes are created."""
 
