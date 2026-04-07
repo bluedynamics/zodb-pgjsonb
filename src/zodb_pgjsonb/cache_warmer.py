@@ -7,6 +7,7 @@ objects into a shared L2 warm cache on the next startup.
 See docs/plans/2026-04-03-learning-cache-warmer-design.md for details.
 """
 
+import contextlib
 import logging
 
 
@@ -78,12 +79,17 @@ class CacheWarmer:
             )
 
     def _flush(self, decay=False):
-        """Write pending OIDs to cache_warm_stats."""
+        """Write pending OIDs to cache_warm_stats.
+
+        Wrapped in an explicit transaction so the decay UPDATE, score
+        UPSERT, and low-score DELETE are atomic.
+        """
         zoids = list(self._pending)
         if not zoids:
             return
         self._pending.clear()
         try:
+            self._conn.execute("BEGIN")
             with self._conn.cursor() as cur:
                 if decay:
                     cur.execute(
@@ -99,7 +105,10 @@ class CacheWarmer:
                 )
                 if decay:
                     cur.execute("DELETE FROM cache_warm_stats WHERE score < 0.01")
+            self._conn.execute("COMMIT")
         except Exception:
+            with contextlib.suppress(Exception):
+                self._conn.execute("ROLLBACK")
             log.warning("Cache warmer: flush failed", exc_info=True)
 
     # ── Warming phase ────────────────────────────────────────────────
