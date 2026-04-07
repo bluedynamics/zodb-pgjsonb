@@ -717,6 +717,7 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
 
     def _begin(self, tid, u, d, e):
         """Called by BaseStorage.tpc_begin after acquiring commit lock."""
+        self._apply_pending_ddl()
         self._ude = (u, d, e)
         self._voted = False
         self._read_conflicts = []

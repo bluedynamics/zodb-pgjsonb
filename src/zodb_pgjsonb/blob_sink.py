@@ -179,6 +179,9 @@ class BackgroundBlobSink:
     def submit(self, blob_path, s3_key, zoid, size, cleanup_path=None):
         if self._closed:
             raise RuntimeError("BlobSink is closed")
+        # Prune completed futures every 256 submits to bound memory.
+        if len(self._futures) >= 256:
+            self._futures = [f for f in self._futures if not f.done()]
         fut = self._pool.submit(
             self._do_upload,
             blob_path,

@@ -9,6 +9,7 @@ See docs/plans/2026-04-03-learning-cache-warmer-design.md for details.
 
 import contextlib
 import logging
+import threading
 
 
 log = logging.getLogger(__name__)
@@ -46,7 +47,7 @@ class CacheWarmer:
 
         # L2 warm cache
         self._warm_cache = {}
-        self._warming_done = False
+        self._warming_done = threading.Event()
 
         # DB connection (main storage's conn, autocommit=True)
         self._conn = conn
@@ -141,7 +142,7 @@ class CacheWarmer:
 
         top_zoids = self._read_top_oids()
         if not top_zoids:
-            self._warming_done = True
+            self._warming_done.set()
             log.info("Cache warmer: no stats yet, skipping warmup")
             return
 
@@ -150,7 +151,7 @@ class CacheWarmer:
             results = load_multiple_fn(oids)
         except Exception:
             log.warning("Cache warmer: load_multiple failed", exc_info=True)
-            self._warming_done = True
+            self._warming_done.set()
             return
 
         from ZODB.utils import u64
@@ -160,7 +161,7 @@ class CacheWarmer:
             tmp[u64(oid)] = (data, tid)
 
         self._warm_cache = tmp  # atomic swap
-        self._warming_done = True
+        self._warming_done.set()
         log.info("Cache warmer: loaded %d objects into L2", len(tmp))
 
     # ── L2 cache access ──────────────────────────────────────────────
@@ -170,7 +171,7 @@ class CacheWarmer:
 
         Returns None while warming is still in progress.
         """
-        if not self._warming_done:
+        if not self._warming_done.is_set():
             return None
         return self._warm_cache.get(zoid)
 
