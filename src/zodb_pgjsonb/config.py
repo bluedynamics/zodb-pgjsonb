@@ -77,4 +77,6 @@ class PGJsonbStorageFactory(BaseConfig):
             s3_client=s3_client,
             blob_cache=blob_cache,
             blob_threshold=getattr(config, "blob_threshold", 100 * 1024),
+            cache_warm_pct=getattr(config, "cache_warm_pct", 10),
+            cache_warm_decay=getattr(config, "cache_warm_decay", 0.8),
         )
