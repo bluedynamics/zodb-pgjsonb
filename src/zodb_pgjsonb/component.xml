@@ -57,6 +57,24 @@
       </description>
     </key>
 
+    <!-- Cache warming (optional, learns access patterns across restarts) -->
+
+    <key name="cache-warm-pct" datatype="integer" default="10">
+      <description>
+        Percentage of cache size to pre-warm at startup. Set to 0 to
+        disable. The warmer learns which objects are loaded first after
+        each restart and pre-loads them on the next startup. Default: 10.
+      </description>
+    </key>
+
+    <key name="cache-warm-decay" datatype="float" default="0.8">
+      <description>
+        Score decay factor per restart cycle. Controls how quickly old
+        access patterns fade. 0.8 means scores from 10 restarts ago
+        have 10% of their original weight. Default: 0.8.
+      </description>
+    </key>
+
     <!-- S3 tiered blob storage (optional, requires zodb-pgjsonb[s3]) -->
 
     <key name="blob-threshold" datatype="byte-size" default="100KB">

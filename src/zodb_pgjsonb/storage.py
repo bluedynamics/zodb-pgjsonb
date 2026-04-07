@@ -246,6 +246,8 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
         s3_client=None,
         blob_cache=None,
         blob_threshold=102_400,
+        cache_warm_pct=10,
+        cache_warm_decay=0.8,
     ):
         BaseStorage.__init__(self, name)
         self._dsn = dsn
@@ -332,7 +334,69 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
         # don't leave the connection "idle in transaction" indefinitely (#45).
         # Write paths that need transactions use explicit BEGIN/COMMIT.
         self._conn.autocommit = True
+
+        # Learning cache warmer (#48): pre-load frequently needed objects
+        self._warmer = None
+        if cache_warm_pct > 0:
+            from zodb_pgjsonb.cache_warmer import CacheWarmer
+            from zodb_pgjsonb.cache_warmer import WARM_STATS_DDL
+
+            with contextlib.suppress(Exception):
+                self._conn.execute(WARM_STATS_DDL)
+            # Estimate target count from cache size: assume avg 2KB per object
+            estimated_objects = int(cache_local_mb * 1_000_000 / 2000)
+            target = max(1, int(estimated_objects * cache_warm_pct / 100))
+            self._warmer = CacheWarmer(
+                self._conn, target_count=target, decay=cache_warm_decay
+            )
+            import threading
+
+            threading.Thread(
+                target=self._warmer.warm,
+                args=(self._warm_load_multiple,),
+                daemon=True,
+                name="zodb-cache-warmer",
+            ).start()
+            logger.info(
+                "Cache warmer started (target=%d, decay=%.1f)",
+                target,
+                cache_warm_decay,
+            )
+
         logger.debug("Storage initialized (max_oid=%s, ltid=%s)", self._oid, self._ltid)
+
+    def _warm_load_multiple(self, oids):
+        """Load multiple objects for cache warming using a pool connection.
+
+        Uses a pool connection (not self._conn) because the warmer runs
+        in a background thread and self._conn may be in use.
+        """
+        conn = self._instance_pool.getconn()
+        try:
+            from ZODB.utils import p64
+            from ZODB.utils import u64
+
+            zoid_list = [u64(oid) for oid in oids]
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT zoid, tid, class_mod, class_name, state "
+                    "FROM object_state WHERE zoid = ANY(%s)",
+                    (zoid_list,),
+                )
+                rows = cur.fetchall()
+            result = {}
+            for row in rows:
+                record = {
+                    "@cls": [row["class_mod"], row["class_name"]],
+                    "@s": _unsanitize_from_pg(row["state"]),
+                }
+                data = zodb_json_codec.encode_zodb_record(record)
+                tid = p64(row["tid"])
+                oid = p64(row["zoid"])
+                result[oid] = (data, tid)
+            return result
+        finally:
+            self._instance_pool.putconn(conn)
 
     def _restore_state(self):
         """Load max OID and last TID from existing data."""
@@ -2164,10 +2228,13 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
                     (self._polled_tid, new_tid),
                 )
                 rows = cur.fetchall()
+            warmer = self._main._warmer
             for r in rows:
                 zoid = r["zoid"]
                 result.append(p64(zoid))
                 self._load_cache.invalidate(zoid)
+                if warmer:
+                    warmer.invalidate(zoid)
 
         self._polled_tid = new_tid
         return result
@@ -2185,10 +2252,18 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
         """Load current object state."""
         zoid = u64(oid)
 
-        # Check load cache first
+        # L1: instance load cache
         cached = self._load_cache.get(zoid)
         if cached is not None:
             return cached
+
+        # L2: shared warm cache (populated at startup, #48)
+        warmer = self._main._warmer
+        if warmer:
+            warm_hit = warmer.get(zoid)
+            if warm_hit is not None:
+                self._load_cache.set(zoid, *warm_hit)
+                return warm_hit
 
         with self._conn.cursor() as cur:
             cur.execute(
@@ -2210,6 +2285,11 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
         tid = p64(row["tid"])
         self._serial_cache[(oid, tid)] = data
         self._load_cache.set(zoid, data, tid)
+
+        # Record for cache warmer (#48)
+        if warmer and warmer.recording:
+            warmer.record(zoid)
+
         return data, tid
 
     def load_multiple(self, oids):

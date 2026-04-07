@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.10.0
+
+- Learning cache warmer with L2 warm cache (#48).  Records which objects
+  are loaded first after each startup, persists scores to PG with
+  exponential decay, and pre-loads the highest-scored objects into a
+  shared L2 warm cache on the next startup.  Expected cold-start latency
+  improvement: 5-14s → ~1-2s.  Configurable via `cache-warm-pct`
+  (default 10%) and `cache-warm-decay` (default 0.8).  Set
+  `cache-warm-pct` to 0 to disable.
+
 ## 1.9.6
 
 - Fix startup DDL blocking rolling updates (#96).  `ALTER TABLE SET
