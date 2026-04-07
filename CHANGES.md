@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.10.1
+
+- Cache warmer: use actual `AVG(state_size)` from DB instead of
+  hardcoded 2KB estimate (#51).  With median object size of 163B,
+  the warmer now targets ~40k objects instead of 3200 (at 64MB cache).
+
 ## 1.10.0
 
 - Learning cache warmer with L2 warm cache (#48).  Records which objects
