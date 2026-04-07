@@ -35,11 +35,11 @@ jobs:
       ZODB_TEST_DSN: "dbname=zodb_test user=zodb password=zodb host=localhost port=5432"
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
-      - uses: astral-sh/setup-uv@v7
+      - uses: astral-sh/setup-uv@v8
         with:
           enable-cache: true
           cache-dependency-glob: "pyproject.toml"
@@ -57,7 +57,7 @@ jobs:
         run: mv .coverage .coverage.${{ matrix.python-version }}
 
       - name: Upload coverage data
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: coverage-data-${{ matrix.python-version }}
           path: .coverage.${{ matrix.python-version }}
@@ -71,9 +71,9 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
 
-      - uses: astral-sh/setup-uv@v7
+      - uses: astral-sh/setup-uv@v8
         with:
           enable-cache: true
           cache-dependency-glob: "pyproject.toml"
@@ -81,7 +81,7 @@ jobs:
       - name: Install dependencies
         run: uv venv && uv pip install -e ".[test]"
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: coverage-data-*
           merge-multiple: true
@@ -94,7 +94,7 @@ jobs:
           uv run coverage report
 
       - name: Upload HTML report if check failed
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: html-report
           path: htmlcov
