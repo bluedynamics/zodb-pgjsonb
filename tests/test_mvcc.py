@@ -8,7 +8,7 @@ Requires PostgreSQL on localhost:5433.
 
 from persistent.mapping import PersistentMapping
 from ZODB.interfaces import IMVCCStorage
-from zodb_pgjsonb.storage import PGJsonbStorageInstance
+from zodb_pgjsonb.instance import PGJsonbStorageInstance
 
 import transaction as txn
 import ZODB
