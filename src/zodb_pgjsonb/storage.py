@@ -343,8 +343,14 @@ class PGJsonbStorage(ConflictResolvingStorage, BaseStorage):
 
             with contextlib.suppress(Exception):
                 self._conn.execute(WARM_STATS_DDL)
-            # Estimate target count from cache size: assume avg 2KB per object
-            estimated_objects = int(cache_local_mb * 1_000_000 / 2000)
+            # Estimate target count from actual avg object size (#51)
+            avg_size = 2000  # fallback
+            with contextlib.suppress(Exception), self._conn.cursor() as cur:
+                cur.execute("SELECT AVG(state_size) AS avg FROM object_state")
+                row = cur.fetchone()
+                if row and row["avg"]:
+                    avg_size = max(100, int(row["avg"]))
+            estimated_objects = int(cache_local_mb * 1_000_000 / avg_size)
             target = max(1, int(estimated_objects * cache_warm_pct / 100))
             self._warmer = CacheWarmer(
                 self._conn, target_count=target, decay=cache_warm_decay
