@@ -22,9 +22,10 @@
 - Cache warmer: use `threading.Event` instead of bare `bool` for the
   warming-done flag (future-proofs for free-threaded Python / PEP 703).
 
-- Internal: extract `storage.py` into focused modules (`batch.py`,
-  `conflict.py`, `undo.py`, `serialization.py`, `migration.py`).
-  Deduplicate `loadSerial` between main storage and instance.
+- Internal: extract `storage.py` (3700→1535 lines) into focused modules
+  (`batch.py`, `conflict.py`, `undo.py`, `serialization.py`, `migration.py`,
+  `stats.py`, `instance.py`).  Deduplicate `loadSerial` between main
+  storage and instance.  Migration pipeline moved to `CopyTransactionsMixin`.
 
 ## 1.10.1
 
