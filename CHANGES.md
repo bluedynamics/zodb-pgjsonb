@@ -1,5 +1,31 @@
 # Changelog
 
+## 1.10.2
+
+- Fix instance `load()` not using prefetch refs expression (#40).
+  `PGJsonbStorageInstance.load()` now uses the registered
+  `prefetch_refs_expr` and prefetches referenced objects into the
+  load cache — previously this only worked in direct-use mode.
+
+- Fix cache warmer `_flush()` atomicity.  The decay UPDATE, score
+  UPSERT, and low-score DELETE are now wrapped in an explicit
+  `BEGIN`/`COMMIT` transaction, preventing inconsistent scores if the
+  process is killed mid-flush.
+
+- Apply deferred processor DDL in direct-use storage path.  Previously
+  `_apply_pending_ddl()` only fired from instance `tpc_begin()`;
+  main storage `_begin()` now also applies deferred schema changes.
+
+- `BackgroundBlobSink`: prune completed futures every 256 submits to
+  bound memory during large migrations with many blobs.
+
+- Cache warmer: use `threading.Event` instead of bare `bool` for the
+  warming-done flag (future-proofs for free-threaded Python / PEP 703).
+
+- Internal: extract `storage.py` into focused modules (`batch.py`,
+  `conflict.py`, `undo.py`, `serialization.py`, `migration.py`).
+  Deduplicate `loadSerial` between main storage and instance.
+
 ## 1.10.1
 
 - Cache warmer: use actual `AVG(state_size)` from DB instead of
