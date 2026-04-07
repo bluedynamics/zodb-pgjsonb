@@ -11,8 +11,6 @@ from tests.conftest import clean_db
 from tests.conftest import DSN
 from ZODB.blob import Blob
 from ZODB.FileStorage import FileStorage
-from zodb_pgjsonb.migration import _fmt_blob_size
-from zodb_pgjsonb.migration import _fmt_elapsed
 from zodb_pgjsonb.storage import PGJsonbStorage
 
 import os
@@ -224,41 +222,6 @@ class TestBlobMigration:
         conn.close()
         dest_db.close()
         source.close()
-
-
-class TestFmtBlobSize:
-    """Unit tests for _fmt_blob_size helper."""
-
-    def test_bytes(self):
-        assert _fmt_blob_size(500) == "500 B"
-
-    def test_kilobytes(self):
-        assert _fmt_blob_size(4096) == "4 KB"
-
-    def test_megabytes(self):
-        assert _fmt_blob_size(52_400_000) == "52.4 MB"
-
-    def test_gigabytes(self):
-        assert _fmt_blob_size(1_500_000_000) == "1.5 GB"
-
-
-class TestFmtElapsed:
-    """Unit tests for _fmt_elapsed helper."""
-
-    def test_seconds(self):
-        assert _fmt_elapsed(5) == " 0:05"
-
-    def test_minutes(self):
-        assert _fmt_elapsed(65) == " 1:05"
-
-    def test_minutes_padded(self):
-        assert _fmt_elapsed(605) == "10:05"
-
-    def test_hours(self):
-        assert _fmt_elapsed(3661) == "1:01:01"
-
-    def test_zero(self):
-        assert _fmt_elapsed(0) == " 0:00"
 
 
 class TestParallelCopyTransactionsFrom:
