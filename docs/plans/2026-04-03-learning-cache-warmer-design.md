@@ -66,10 +66,16 @@ class CacheWarmer:
         """Decay old scores + insert new OIDs.  Runs once per startup."""
 
     def warm(self, load_multiple_fn):
-        """Load top-N ZOIDs into _warm_cache.  Runs in background thread."""
+        """Load top-N ZOIDs into _warm_cache.  Runs in background thread.
+
+        Builds a temporary dict, then swaps atomically to avoid race
+        conditions with poll_invalidations() during loading.
+        """
 
     def get(self, zoid):
-        """L2 lookup.  Returns (data, tid) or None."""
+        """L2 lookup.  Returns (data, tid) or None.
+        Returns None while warming is in progress (_warming_done=False).
+        """
 
     def invalidate(self, zoid):
         """Remove zoid from warm cache (called by poll_invalidations)."""
@@ -81,8 +87,13 @@ class CacheWarmer:
 - Populated once by `warm()`, never grows after that
 - Shrinks via `invalidate()` from `poll_invalidations()`
 - Thread-safe reads (dict lookup is atomic in CPython/GIL)
-- No lock needed: only the background thread writes (during warmup),
-  and `invalidate()` uses `dict.pop()` which is atomic
+- **Race condition prevention:** the background thread builds results
+  into a temporary dict, then does a single atomic swap
+  (`self._warm_cache = tmp`).  `get()` returns `None` until
+  `_warming_done` is set.  Invalidations during warming go into the
+  void (warm_cache is still `{}`).  After the swap, any OID that was
+  invalidated during warming may briefly be stale — the next
+  `poll_invalidations()` cycle clears it (milliseconds window)
 
 ### PG table
 
@@ -119,7 +130,21 @@ LIMIT %(limit)s;
 ```
 
 Then call `load_multiple(oids)` which does one `SELECT ... WHERE zoid = ANY(...)`.
-Store results in `_warm_cache`.
+Build results into a temporary dict, then atomic swap:
+
+```python
+def warm(self, load_fn):
+    top_oids = self._read_top_oids()
+    if not top_oids:
+        self._warming_done = True
+        return
+    tmp = {}
+    for zoid, (data, tid) in load_fn(top_oids).items():
+        tmp[zoid] = (data, tid)
+    self._warm_cache = tmp  # atomic swap
+    self._warming_done = True
+    log.info("Warm cache loaded: %d objects", len(tmp))
+```
 
 ## Integration points
 
