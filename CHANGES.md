@@ -26,6 +26,8 @@
   (`batch.py`, `conflict.py`, `undo.py`, `serialization.py`, `migration.py`,
   `stats.py`, `instance.py`).  Deduplicate `loadSerial` between main
   storage and instance.  Migration pipeline moved to `CopyTransactionsMixin`.
+  Reduce `_copyTransactionsFrom_parallel` cyclomatic complexity from 57→17
+  by extracting `WatermarkTracker`, `ProgressTracker`, `_create_blob_sink`.
 
 ## 1.10.1
 
