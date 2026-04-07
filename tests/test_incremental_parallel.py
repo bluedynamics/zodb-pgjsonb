@@ -8,8 +8,8 @@ from tests.conftest import clean_db
 from tests.conftest import DSN
 from ZODB.FileStorage import FileStorage
 from ZODB.utils import p64
-from zodb_pgjsonb.storage import _write_prepared_transaction
-from zodb_pgjsonb.storage import _write_txn_log
+from zodb_pgjsonb.batch import _write_prepared_transaction
+from zodb_pgjsonb.batch import _write_txn_log
 from zodb_pgjsonb.storage import PGJsonbStorage
 
 import os

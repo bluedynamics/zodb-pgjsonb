@@ -16,9 +16,9 @@ from ZODB.tests.StorageTestBase import zodb_pickle
 from ZODB.utils import p64
 from ZODB.utils import u64
 from ZODB.utils import z64
-from zodb_pgjsonb.storage import _deserialize_extension
-from zodb_pgjsonb.storage import _serialize_extension
-from zodb_pgjsonb.storage import _unsanitize_from_pg
+from zodb_pgjsonb.serialization import _deserialize_extension
+from zodb_pgjsonb.serialization import _serialize_extension
+from zodb_pgjsonb.serialization import _unsanitize_from_pg
 from zodb_pgjsonb.storage import LoadCache
 
 import os

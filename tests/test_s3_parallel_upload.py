@@ -4,8 +4,8 @@ from moto import mock_aws
 from tests.conftest import clean_db
 from tests.conftest import DSN
 from unittest.mock import MagicMock
+from zodb_pgjsonb.batch import _batch_write_blobs
 from zodb_pgjsonb.blob_sink import InlineBlobSink
-from zodb_pgjsonb.storage import _batch_write_blobs
 from zodb_pgjsonb.storage import PGJsonbStorage
 
 import boto3

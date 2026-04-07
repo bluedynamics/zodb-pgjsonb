@@ -6,7 +6,7 @@ import pytest
 
 class TestDeserializeExtension:
     def test_json_extension(self):
-        from zodb_pgjsonb.storage import _deserialize_extension
+        from zodb_pgjsonb.serialization import _deserialize_extension
 
         import json
 
@@ -14,20 +14,20 @@ class TestDeserializeExtension:
         assert _deserialize_extension(data) == {"user": "admin"}
 
     def test_empty_extension(self):
-        from zodb_pgjsonb.storage import _deserialize_extension
+        from zodb_pgjsonb.serialization import _deserialize_extension
 
         assert _deserialize_extension(b"") == {}
         assert _deserialize_extension(None) == {}
 
     def test_legacy_pickle_safe_types(self):
-        from zodb_pgjsonb.storage import _deserialize_extension
+        from zodb_pgjsonb.serialization import _deserialize_extension
 
         data = pickle.dumps({"user": "admin", "count": 42})
         result = _deserialize_extension(data)
         assert result == {"user": "admin", "count": 42}
 
     def test_pickle_with_dangerous_class_blocked(self):
-        from zodb_pgjsonb.storage import _deserialize_extension
+        from zodb_pgjsonb.serialization import _deserialize_extension
 
         # Craft a pickle that would execute os.system("echo pwned")
         malicious = (
@@ -38,7 +38,7 @@ class TestDeserializeExtension:
         assert _deserialize_extension(malicious) == {}
 
     def test_memoryview_input(self):
-        from zodb_pgjsonb.storage import _deserialize_extension
+        from zodb_pgjsonb.serialization import _deserialize_extension
 
         import json
 
@@ -70,12 +70,12 @@ class TestMaskDsn:
 
 class TestUnsanitizeFromPg:
     def test_normal_string_unchanged(self):
-        from zodb_pgjsonb.storage import _unsanitize_from_pg
+        from zodb_pgjsonb.serialization import _unsanitize_from_pg
 
         assert _unsanitize_from_pg("hello") == "hello"
 
     def test_ns_marker_restored(self):
-        from zodb_pgjsonb.storage import _unsanitize_from_pg
+        from zodb_pgjsonb.serialization import _unsanitize_from_pg
 
         import base64
 
@@ -83,7 +83,7 @@ class TestUnsanitizeFromPg:
         assert _unsanitize_from_pg(val) == "hello\x00world"
 
     def test_invalid_utf8_raises(self):
-        from zodb_pgjsonb.storage import _unsanitize_from_pg
+        from zodb_pgjsonb.serialization import _unsanitize_from_pg
 
         import base64
 

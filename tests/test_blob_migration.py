@@ -11,8 +11,8 @@ from tests.conftest import clean_db
 from tests.conftest import DSN
 from ZODB.blob import Blob
 from ZODB.FileStorage import FileStorage
-from zodb_pgjsonb.storage import _fmt_blob_size
-from zodb_pgjsonb.storage import _fmt_elapsed
+from zodb_pgjsonb.migration import _fmt_blob_size
+from zodb_pgjsonb.migration import _fmt_elapsed
 from zodb_pgjsonb.storage import PGJsonbStorage
 
 import os
