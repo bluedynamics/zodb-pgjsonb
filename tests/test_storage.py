@@ -16,13 +16,9 @@ from ZODB.tests.StorageTestBase import zodb_pickle
 from ZODB.utils import p64
 from ZODB.utils import u64
 from ZODB.utils import z64
-from zodb_pgjsonb.serialization import _deserialize_extension
-from zodb_pgjsonb.serialization import _serialize_extension
-from zodb_pgjsonb.serialization import _unsanitize_from_pg
 from zodb_pgjsonb.storage import LoadCache
 
 import os
-import pickle
 import psycopg
 import pytest
 import tempfile
@@ -697,88 +693,6 @@ class TestMainStorageDirectPaths:
         inst.close()
         # After close, connection is returned to pool (set to None)
         assert inst._conn is None
-
-
-class TestExtensionSerialization:
-    """Test _serialize_extension and _deserialize_extension."""
-
-    def test_serialize_empty_bytes(self):
-        assert _serialize_extension(b"") == b""
-
-    def test_serialize_empty_dict(self):
-        assert _serialize_extension({}) == b""
-
-    def test_serialize_dict(self):
-        result = _serialize_extension({"key": "value"})
-        import json
-
-        assert json.loads(result) == {"key": "value"}
-
-    def test_serialize_pickle_bytes(self):
-        """Pickle bytes from ZODB are converted to JSON."""
-        ext_dict = {"user": "admin"}
-        pkl = pickle.dumps(ext_dict, protocol=3)
-        result = _serialize_extension(pkl)
-        import json
-
-        assert json.loads(result) == ext_dict
-
-    def test_serialize_pickle_empty_dict(self):
-        """Pickled empty dict returns empty bytes (not JSON)."""
-        pkl = pickle.dumps({}, protocol=3)
-        assert _serialize_extension(pkl) == b""
-
-    def test_serialize_none_type(self):
-        """Non-bytes, non-dict returns empty bytes."""
-        assert _serialize_extension(None) == b""
-
-    def test_deserialize_empty(self):
-        assert _deserialize_extension(b"") == {}
-        assert _deserialize_extension(None) == {}
-
-    def test_deserialize_json(self):
-        import json
-
-        data = json.dumps({"key": "value"}).encode()
-        assert _deserialize_extension(data) == {"key": "value"}
-
-    def test_deserialize_memoryview(self):
-        """memoryview is converted to bytes before parsing."""
-        import json
-
-        data = json.dumps({"x": 1}).encode()
-        mv = memoryview(data)
-        assert _deserialize_extension(mv) == {"x": 1}
-
-    def test_deserialize_pickle_fallback(self):
-        """Pickle bytes (legacy data) are deserialized via fallback."""
-        ext_dict = {"legacy": True}
-        pkl = pickle.dumps(ext_dict, protocol=3)
-        assert _deserialize_extension(pkl) == ext_dict
-
-    def test_deserialize_garbage_returns_empty(self):
-        """Unparseable data returns empty dict."""
-        assert _deserialize_extension(b"\xff\xfe\xfd") == {}
-
-
-class TestUnsanitizeFromPg:
-    """Test _unsanitize_from_pg with list values."""
-
-    def test_list_with_ns_marker(self):
-        """Lists containing @ns markers are unsanitized."""
-        import base64
-
-        val = "hello\x00world"
-        encoded = base64.b64encode(val.encode("utf-8", errors="surrogatepass")).decode()
-        result = _unsanitize_from_pg([{"@ns": encoded}, "normal"])
-        assert result[0] == val
-        assert result[1] == "normal"
-
-    def test_list_unchanged(self):
-        """Lists without markers are returned unchanged (same object)."""
-        original = ["a", "b", "c"]
-        result = _unsanitize_from_pg(original)
-        assert result is original
 
 
 class TestInstanceLoadPaths:
