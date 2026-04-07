@@ -45,25 +45,41 @@ Recording (first N loads after startup):
 
 ```python
 class CacheWarmer:
-    def __init__(self, conn, warm_pct=10, decay=0.8):
+    def __init__(self, conn, warm_pct=10, decay=0.8, flush_interval=1000):
         self.recording = True
+        self._warming_done = False
         self._recorded = set()
-        self._target_count = 0  # set from cache size * warm_pct / 100
-        self._warm_cache = {}   # zoid → (pickle_bytes, tid_bytes)
+        self._pending = set()       # unflushed OIDs
+        self._target_count = 0      # set from cache size * warm_pct / 100
+        self._flush_interval = flush_interval
+        self._decayed = False       # decay applied once per startup
+        self._warm_cache = {}       # zoid → (pickle_bytes, tid_bytes)
         self._decay = decay
-        self._conn = conn       # main storage PG connection
+        self._conn = conn           # main storage PG connection
 
     def record(self, zoid):
-        """Called from Instance.load() during recording phase."""
+        """Called from Instance.load() during recording phase.
+
+        Flushes to PG every _flush_interval OIDs to limit data loss
+        if the pod is killed.  Decay is applied only on the first flush.
+        """
         if zoid in self._recorded:
             return
         self._recorded.add(zoid)
+        self._pending.add(zoid)
+        if len(self._pending) >= self._flush_interval:
+            self._flush(decay=not self._decayed)
+            self._decayed = True
         if len(self._recorded) >= self._target_count:
             self.recording = False
-            self._persist()
+            if self._pending:
+                self._flush(decay=not self._decayed)
+
+    def _flush(self, decay=False):
+        """Write pending OIDs to cache_warm_stats.  Called every N OIDs."""
 
     def _persist(self):
-        """Decay old scores + insert new OIDs.  Runs once per startup."""
+        """Deprecated — replaced by incremental _flush()."""
 
     def warm(self, load_multiple_fn):
         """Load top-N ZOIDs into _warm_cache.  Runs in background thread.
@@ -104,22 +120,33 @@ CREATE TABLE IF NOT EXISTS cache_warm_stats (
 );
 ```
 
-### Persist algorithm
+### Flush algorithm (incremental persist)
 
-```sql
--- 1. Decay all existing scores
-UPDATE cache_warm_stats SET score = score * %(decay)s;
+Recording flushes every `_flush_interval` OIDs (default 1000).
+At 7000 target that's ~7 flushes.  Max data loss on pod kill: 1000 OIDs.
 
--- 2. Upsert recorded ZOIDs
-INSERT INTO cache_warm_stats (zoid, score)
-VALUES (unnest(%(zoids)s::bigint[]), 1.0)
-ON CONFLICT (zoid) DO UPDATE SET score = cache_warm_stats.score + 1.0;
-
--- 3. Prune negligible scores
-DELETE FROM cache_warm_stats WHERE score < 0.01;
+```python
+def _flush(self, decay=False):
+    """Write pending OIDs to PG.  Decay only on first flush per startup."""
+    zoids = list(self._pending)
+    self._pending.clear()
+    with self._conn.cursor() as cur:
+        if decay:
+            cur.execute(
+                "UPDATE cache_warm_stats SET score = score * %(d)s",
+                {"d": self._decay},
+            )
+        cur.execute(
+            "INSERT INTO cache_warm_stats (zoid, score) "
+            "VALUES (unnest(%(z)s::bigint[]), 1.0) "
+            "ON CONFLICT (zoid) DO UPDATE "
+            "SET score = cache_warm_stats.score + 1.0",
+            {"z": zoids},
+        )
+        if decay:
+            cur.execute("DELETE FROM cache_warm_stats WHERE score < 0.01")
+    self._conn.commit()
 ```
-
-All three in one transaction — fast, ~7000 rows.
 
 ### Warm algorithm
 
