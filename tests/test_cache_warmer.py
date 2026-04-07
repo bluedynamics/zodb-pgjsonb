@@ -77,7 +77,7 @@ class TestCacheWarmerL2:
 
         w = CacheWarmer(conn=mock.Mock(), target_count=10)
         w._warm_cache = {1: (b"data", b"tid")}
-        w._warming_done = False
+        w._warming_done.clear()
         assert w.get(1) is None
 
     def test_get_returns_data_after_warming_done(self):
@@ -85,14 +85,14 @@ class TestCacheWarmerL2:
 
         w = CacheWarmer(conn=mock.Mock(), target_count=10)
         w._warm_cache = {1: (b"data", b"tid")}
-        w._warming_done = True
+        w._warming_done.set()
         assert w.get(1) == (b"data", b"tid")
 
     def test_get_returns_none_for_missing(self):
         from zodb_pgjsonb.cache_warmer import CacheWarmer
 
         w = CacheWarmer(conn=mock.Mock(), target_count=10)
-        w._warming_done = True
+        w._warming_done.set()
         assert w.get(999) is None
 
     def test_invalidate_removes_entry(self):
@@ -100,7 +100,7 @@ class TestCacheWarmerL2:
 
         w = CacheWarmer(conn=mock.Mock(), target_count=10)
         w._warm_cache = {1: (b"data", b"tid"), 2: (b"d2", b"t2")}
-        w._warming_done = True
+        w._warming_done.set()
         w.invalidate(1)
         assert w.get(1) is None
         assert w.get(2) == (b"d2", b"t2")
@@ -110,7 +110,7 @@ class TestCacheWarmerL2:
 
         w = CacheWarmer(conn=mock.Mock(), target_count=10)
         w._warm_cache = {}
-        w._warming_done = True
+        w._warming_done.set()
         w.invalidate(999)  # should not raise
 
 
@@ -129,7 +129,7 @@ class TestCacheWarmerWarm:
             return {p64(z): (f"data{z}".encode(), p64(100)) for z in [1, 2, 3]}
 
         w.warm(fake_load)
-        assert w._warming_done is True
+        assert w._warming_done.is_set()
         assert len(w._warm_cache) == 3
 
     def test_warm_empty_stats(self):
@@ -138,7 +138,7 @@ class TestCacheWarmerWarm:
         w = CacheWarmer(conn=mock.Mock(), target_count=10)
         w._read_top_oids = mock.Mock(return_value=[])
         w.warm(mock.Mock())
-        assert w._warming_done is True
+        assert w._warming_done.is_set()
         assert len(w._warm_cache) == 0
 
 

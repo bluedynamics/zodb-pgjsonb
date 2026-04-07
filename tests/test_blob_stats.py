@@ -1,7 +1,7 @@
 """Tests for blob storage statistics methods on PGJsonbStorage."""
 
 from unittest import mock
-from zodb_pgjsonb.storage import _format_size
+from zodb_pgjsonb.stats import _format_size
 
 
 # ---------------------------------------------------------------------------
