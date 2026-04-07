@@ -61,6 +61,307 @@ def _stage_blob(src, temp_dir):
         return src, False
 
 
+def _create_blob_sink(blob_mode, s3_client):
+    """Create a BlobSink based on the blob_mode string and S3 client.
+
+    Returns None when no S3 client is configured and mode is not deferred.
+    """
+    from zodb_pgjsonb.blob_sink import BackgroundBlobSink
+    from zodb_pgjsonb.blob_sink import DeferredBlobSink
+    from zodb_pgjsonb.blob_sink import InlineBlobSink
+
+    if blob_mode == "background" and s3_client is not None:
+        return BackgroundBlobSink(s3_client)
+    if isinstance(blob_mode, str) and blob_mode.startswith("deferred:"):
+        manifest_path = blob_mode.split(":", 1)[1]
+        return DeferredBlobSink(manifest_path)
+    if s3_client is not None:
+        return InlineBlobSink(s3_client)
+    return None
+
+
+# ── Watermark tracking ──────────────────────────────────────────────────
+
+
+class WatermarkTracker:
+    """Tracks the highest contiguously committed TID during parallel migration.
+
+    Manages the ``migration_watermark`` table lifecycle and periodic flushing.
+    On clean completion, the table is dropped.  On error, the watermark is
+    flushed so interrupted imports can resume.
+    """
+
+    _UPSERT_SQL = (
+        "INSERT INTO migration_watermark (id, tid) "
+        "VALUES (TRUE, %s) "
+        "ON CONFLICT (id) DO UPDATE SET tid = EXCLUDED.tid"
+    )
+
+    def __init__(self, conn, start_tid=None, flush_interval=1.0):
+        self._conn = conn
+        self._flush_interval = flush_interval
+        self._dispatched = []  # [(tid_int, future), ...]
+        self._idx = 0
+        self._last_flush = time.time()
+        self.effective_start = self._setup(start_tid)
+        self.idempotent = start_tid is not None
+
+    def _setup(self, start_tid):
+        """Create watermark table and compute effective start TID."""
+        self._conn.execute(
+            "CREATE TABLE IF NOT EXISTS migration_watermark ("
+            "  id BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (id),"
+            "  tid BIGINT NOT NULL"
+            ")"
+        )
+        with self._conn.cursor() as cur:
+            cur.execute("SELECT tid FROM migration_watermark WHERE id = TRUE")
+            row = cur.fetchone()
+        if row is not None and start_tid is not None:
+            watermark_tid = row["tid"]
+            effective_start_int = min(u64(start_tid), watermark_tid + 1)
+            logger.info(
+                "Resuming from watermark TID 0x%016x "
+                "(start_tid=0x%016x, effective=0x%016x)",
+                watermark_tid,
+                u64(start_tid),
+                effective_start_int,
+            )
+            return p64(effective_start_int)
+        if start_tid is not None:
+            logger.info(
+                "Starting incremental copy from TID 0x%016x",
+                u64(start_tid),
+            )
+            return start_tid
+        return None
+
+    def append(self, tid_int, future):
+        """Record a dispatched transaction."""
+        self._dispatched.append((tid_int, future))
+
+    def advance(self):
+        """Advance past contiguously completed futures. Re-raises worker errors."""
+        while self._idx < len(self._dispatched):
+            _tid, fut = self._dispatched[self._idx]
+            if not fut.done():
+                break
+            fut.result()  # re-raise worker errors
+            self._idx += 1
+
+    def maybe_flush(self):
+        """Flush watermark to PG if enough time has elapsed."""
+        now = time.time()
+        if self._idx > 0 and now - self._last_flush >= self._flush_interval:
+            tid_val = self._dispatched[self._idx - 1][0]
+            self._conn.execute(self._UPSERT_SQL, (tid_val,))
+            self._last_flush = now
+        # Prune dispatched list to avoid unbounded memory.
+        if self._idx > 1000:
+            self._dispatched = self._dispatched[self._idx :]
+            self._idx = 0
+
+    def flush_final(self):
+        """Advance and flush after all workers are done."""
+        self.advance()
+        if self._idx > 0:
+            tid_val = self._dispatched[self._idx - 1][0]
+            self._conn.execute(self._UPSERT_SQL, (tid_val,))
+
+    def flush_on_error(self):
+        """Best-effort flush for interrupted imports (swallows exceptions)."""
+        try:
+            while self._idx < len(self._dispatched):
+                _tid, fut = self._dispatched[self._idx]
+                if not fut.done():
+                    break
+                try:
+                    fut.result()
+                except Exception:
+                    break
+                self._idx += 1
+            if self._idx > 0:
+                tid_val = self._dispatched[self._idx - 1][0]
+                self._conn.execute(self._UPSERT_SQL, (tid_val,))
+        except Exception:
+            logger.debug("Failed to flush watermark on error", exc_info=True)
+
+    def drop_table(self):
+        """Drop the watermark table on clean completion."""
+        self._conn.execute("DROP TABLE IF EXISTS migration_watermark")
+
+
+# ── Progress tracking ────────────────────────────────────────────────────
+
+
+class ProgressTracker:
+    """Thread-safe progress counters and ETA estimation for parallel migration.
+
+    Workers call :meth:`record_write` after each committed transaction.
+    The main thread calls :meth:`log_progress` periodically.
+    """
+
+    _EMA_ALPHA = 0.3
+
+    def __init__(self, total_oids=0, log_interval=10.0):
+        self.total_oids = total_oids
+        self._log_interval = log_interval
+        self._lock = threading.Lock()
+        self.written_txns = 0
+        self.written_objs = 0
+        self.written_blobs = 0
+        self.written_errors = 0
+        self._begin_time = time.time()
+        self._last_log_time = self._begin_time
+        self._prev_done_objs = 0
+        self._prev_done_time = self._begin_time
+        self._ema_rate = 0.0
+        # Column width for right-aligned counters.
+        self._cw = len(f"{total_oids:,}") if total_oids else 0
+
+    def record_write(self, n_objs, n_blobs):
+        """Called by worker threads after a successful commit."""
+        with self._lock:
+            self.written_txns += 1
+            self.written_objs += n_objs
+            self.written_blobs += n_blobs
+
+    def record_error(self):
+        """Called by worker threads on failure."""
+        with self._lock:
+            self.written_errors += 1
+
+    @property
+    def errors(self):
+        with self._lock:
+            return self.written_errors
+
+    def snapshot(self):
+        """Return a consistent snapshot of (txns, objs, blobs, errors)."""
+        with self._lock:
+            return (
+                self.written_txns,
+                self.written_objs,
+                self.written_blobs,
+                self.written_errors,
+            )
+
+    def log_progress(self, txn_count):  # pragma: no cover
+        """Log progress if enough time has elapsed. Returns immediately otherwise."""
+        now = time.time()
+        if now - self._last_log_time < self._log_interval:
+            return
+        elapsed = now - self._begin_time
+        hms = _fmt_elapsed(elapsed)
+        done_txns, done_objs, done_blobs, errors = self.snapshot()
+        cw = self._cw
+        if cw:
+            label = (
+                f"[{hms}] Read {txn_count:>{cw},} txns |"
+                f" Written {done_txns:>{cw},} txns,"
+                f" {done_objs:>{cw},} OIDs,"
+                f" {done_blobs:>{cw},} blobs"
+            )
+        else:
+            label = (
+                f"[{hms}] Read {txn_count:,} txns |"
+                f" Written {done_txns:,} txns,"
+                f" {done_objs:,} OIDs,"
+                f" {done_blobs:,} blobs"
+            )
+        if errors:
+            label += f" ({errors} errors!)"
+        parts = [label]
+        if self.total_oids and done_objs > 0:
+            pct = min(done_objs * 100.0 / self.total_oids, 99.9)
+            parts[0] += f" ({pct:5.1f}%)"
+            dt = now - self._prev_done_time
+            d_objs = done_objs - self._prev_done_objs
+            if dt > 0 and d_objs > 0:
+                window_rate = d_objs / dt
+                if self._ema_rate <= 0:
+                    self._ema_rate = window_rate
+                else:
+                    self._ema_rate = (
+                        self._EMA_ALPHA * window_rate
+                        + (1 - self._EMA_ALPHA) * self._ema_rate
+                    )
+                remaining = self.total_oids - done_objs
+                eta_s = remaining / self._ema_rate
+                if eta_s < 60:
+                    eta = f"{eta_s:.0f}s"
+                elif eta_s < 3600:
+                    eta = f"{eta_s / 60:.0f}m"
+                else:
+                    eta = f"{eta_s / 3600:.1f}h"
+                parts.append(f"ETA: {eta}")
+        self._prev_done_objs = done_objs
+        self._prev_done_time = now
+        logger.info(" | ".join(parts))
+        self._last_log_time = now
+
+    def log_drain_wait(self, txn_count):
+        """Log that the reader is done and we're waiting for workers."""
+        _, _, _, _ = self.snapshot()
+        pending = txn_count - self.written_txns
+        if pending:
+            logger.info(
+                "[%s] Reader done (%d txns). Waiting for %d in-flight ...",
+                _fmt_elapsed(time.time() - self._begin_time),
+                txn_count,
+                pending,
+            )
+
+    def drain_workers(self, txn_count):
+        """Wait for all workers to finish, logging periodic progress."""
+        shutdown_start = time.time()
+        while True:
+            done_txns, _, _, done_errors = self.snapshot()
+            if done_txns + done_errors >= txn_count:
+                break
+            # pragma: no cover — drain loop only runs when workers
+            # take > 1s (slow S3 uploads); tests finish instantly.
+            time.sleep(1)  # pragma: no cover
+            waited = time.time() - shutdown_start  # pragma: no cover
+            if int(waited) % 10 == 0:  # pragma: no cover
+                still = txn_count - done_txns - done_errors
+                logger.info(
+                    "[%s] Still waiting for %d worker(s) ... (%d done, %d errors)",
+                    _fmt_elapsed(time.time() - self._begin_time),
+                    still,
+                    done_txns,
+                    done_errors,
+                )
+
+    def log_complete(self, txn_count, num_workers, total_missing_blobs):
+        """Log final completion message."""
+        elapsed = time.time() - self._begin_time
+        logger.info(
+            "[%s] All %d transactions copied with %d workers.",
+            _fmt_elapsed(elapsed),
+            txn_count,
+            num_workers,
+        )
+        if total_missing_blobs:  # pragma: no cover
+            logger.error(
+                "%d blob(s) missing in source storage and skipped during import!",
+                total_missing_blobs,
+            )
+
+
+def _check_worker_errors(progress):
+    """Raise RuntimeError if any worker errors have been recorded."""
+    if progress.errors:
+        raise RuntimeError(
+            f"Aborting: {progress.errors} worker error(s). "
+            "Check log for details. "
+            "Is the target database empty?"
+        )
+
+
+# ── Mixin ────────────────────────────────────────────────────────────────
+
+
 class CopyTransactionsMixin:
     """Mixin providing copyTransactionsFrom and helpers for PGJsonbStorage."""
 
@@ -271,11 +572,8 @@ class CopyTransactionsMixin:
         from concurrent.futures import ThreadPoolExecutor
         from concurrent.futures import wait as futures_wait
 
-        begin_time = time.time()
-
         pool_max = self._instance_pool.max_size
-        # Reserve 1 connection for the watermark tracker.
-        max_workers = max(pool_max - 1, 1)
+        max_workers = max(pool_max - 1, 1)  # reserve 1 for watermark
         if num_workers > max_workers:
             logger.warning(
                 "Requested %d workers but pool_max_size is %d "
@@ -286,7 +584,6 @@ class CopyTransactionsMixin:
             )
             num_workers = max_workers
 
-        # Total OIDs for progress % (O(1) for FileStorage).
         total_oids = 0
         with contextlib.suppress(TypeError):
             total_oids = len(other)
@@ -300,57 +597,16 @@ class CopyTransactionsMixin:
         hp = self._history_preserving
         processors = list(self._state_processors)
 
-        # ── Watermark setup ──────────────────────────────────────────
-        idempotent = start_tid is not None
+        # ── Setup ──────────────────────────────────────────────────
         wm_conn = self._instance_pool.getconn()
         try:
-            wm_conn.execute(
-                "CREATE TABLE IF NOT EXISTS migration_watermark ("
-                "  id BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (id),"
-                "  tid BIGINT NOT NULL"
-                ")"
-            )
-            # Read existing watermark (from interrupted previous run)
-            with wm_conn.cursor() as cur:
-                cur.execute("SELECT tid FROM migration_watermark WHERE id = TRUE")
-                row = cur.fetchone()
-            if row is not None and start_tid is not None:
-                watermark_tid = row["tid"]
-                effective_start_int = min(u64(start_tid), watermark_tid + 1)
-                effective_start = p64(effective_start_int)
-                logger.info(
-                    "Resuming from watermark TID 0x%016x "
-                    "(start_tid=0x%016x, effective=0x%016x)",
-                    watermark_tid,
-                    u64(start_tid),
-                    effective_start_int,
-                )
-            elif start_tid is not None:
-                effective_start = start_tid
-                logger.info(
-                    "Starting incremental copy from TID 0x%016x",
-                    u64(start_tid),
-                )
-            else:
-                effective_start = None
+            watermark = WatermarkTracker(wm_conn, start_tid)
         except BaseException:
             self._instance_pool.putconn(wm_conn)
             raise
 
-        # ── BlobSink setup ─────────────────────────────────────────
-        from zodb_pgjsonb.blob_sink import BackgroundBlobSink
-        from zodb_pgjsonb.blob_sink import DeferredBlobSink
-        from zodb_pgjsonb.blob_sink import InlineBlobSink
-
-        if blob_mode == "background" and self._s3_client is not None:
-            blob_sink = BackgroundBlobSink(self._s3_client)
-        elif isinstance(blob_mode, str) and blob_mode.startswith("deferred:"):
-            manifest_path = blob_mode.split(":", 1)[1]
-            blob_sink = DeferredBlobSink(manifest_path)
-        elif self._s3_client is not None:
-            blob_sink = InlineBlobSink(self._s3_client)
-        else:
-            blob_sink = None
+        blob_sink = _create_blob_sink(blob_mode, self._s3_client)
+        progress = ProgressTracker(total_oids)
 
         # Thread-local PG connections — one per worker thread.
         _local = threading.local()
@@ -365,22 +621,9 @@ class CopyTransactionsMixin:
                     worker_conns.append(conn)
             return _local.conn
 
-        # Backpressure: limit in-flight prepared transactions so blob
-        # temp files don't accumulate unbounded (important for large blobs).
         _dispatch_sem = threading.BoundedSemaphore(num_workers * 2)
 
-        # Track completed work for accurate ETA (written to PG/S3, not just
-        # dispatched).  Workers increment after commit; main thread reads for
-        # progress.  Using a simple int + Lock — the lock is held for
-        # microseconds per transaction, contention negligible with 6 workers.
-        _written_txns = 0
-        _written_objs = 0
-        _written_blobs = 0
-        _written_errors = 0
-        _written_lock = threading.Lock()
-
         def _write_worker(txn_data):
-            nonlocal _written_txns, _written_objs, _written_blobs, _written_errors
             try:
                 conn = _get_worker_conn()
                 _write_prepared_transaction(
@@ -391,253 +634,70 @@ class CopyTransactionsMixin:
                     processors,
                     blob_sink=blob_sink,
                     blob_threshold=self._blob_threshold,
-                    idempotent=idempotent,
+                    idempotent=watermark.idempotent,
                 )
-                n_objs = len(txn_data["objects"])
-                n_blobs = len(txn_data["blobs"])
-                with _written_lock:
-                    _written_txns += 1
-                    _written_objs += n_objs
-                    _written_blobs += n_blobs
+                progress.record_write(len(txn_data["objects"]), len(txn_data["blobs"]))
             except Exception:
                 logger.error(
                     "Worker error on tid=0x%016x: %s",
                     txn_data["tid_int"],
                     traceback.format_exc(),
                 )
-                with _written_lock:
-                    _written_errors += 1
+                progress.record_error()
                 raise
             finally:
                 _dispatch_sem.release()
 
-        # OID dependency tracking: zoid → Future currently writing it.
-        in_flight = {}
+        # ── Dispatch loop ──────────────────────────────────────────
+        in_flight = {}  # zoid → Future
         txn_count = 0
         total_missing_blobs = 0
         last_tid = None
-        last_log_time = begin_time
-        log_interval = 10.0  # seconds
-        # Column width for right-aligned counters (based on total_oids).
-        _cw = len(f"{total_oids:,}") if total_oids else 0
-        # ETA: exponential moving average of OID throughput rate.
-        # Smoothing factor alpha=0.3 balances responsiveness vs stability.
-        _prev_done_objs = 0
-        _prev_done_time = begin_time
-        _ema_rate = 0.0  # OIDs/sec, smoothed
-        _EMA_ALPHA = 0.3
-
-        # Watermark tracking: ordered list of dispatched (tid_int, future).
-        dispatched = []  # [(tid_int, future), ...]
-        watermark_idx = 0
-        _last_wm_flush = begin_time
-        _wm_flush_interval = 1.0  # seconds
 
         executor = ThreadPoolExecutor(max_workers=num_workers)
         try:
-            for txn_info in other.iterator(start=effective_start):
+            for txn_info in other.iterator(start=watermark.effective_start):
                 txn_data = self._prepare_transaction(txn_info, other)
                 txn_oids = {obj["zoid"] for obj in txn_data["objects"]}
-                # Include blob OIDs (they reference the same zoid)
                 txn_oids.update(entry[0] for entry in txn_data["blobs"])
 
                 # Wait for any in-flight transactions touching same OIDs.
-                blocking = set()
-                for oid in txn_oids:
-                    fut = in_flight.get(oid)
-                    if fut is not None and not fut.done():
-                        blocking.add(fut)
+                blocking = {
+                    in_flight[oid]
+                    for oid in txn_oids
+                    if oid in in_flight and not in_flight[oid].done()
+                }
                 if blocking:
                     futures_wait(blocking)
-                    # Re-raise worker exceptions early.
-                    with _written_lock:
-                        errors = _written_errors
-                    if errors:
-                        raise RuntimeError(
-                            f"Aborting: {errors} worker error(s). "
-                            "Check log for details. "
-                            "Is the target database empty?"
-                        )
+                    _check_worker_errors(progress)
 
-                # Backpressure: block if too many txns queued (limits
-                # temp blob disk usage to num_workers * 2 transactions).
                 _dispatch_sem.acquire()
                 future = executor.submit(_write_worker, txn_data)
                 for oid in txn_oids:
                     in_flight[oid] = future
 
-                dispatched.append((txn_data["tid_int"], future))
-
-                # Advance watermark: highest contiguous committed TID.
-                while watermark_idx < len(dispatched):
-                    _wm_tid, _wm_fut = dispatched[watermark_idx]
-                    if not _wm_fut.done():
-                        break
-                    _wm_fut.result()  # re-raise worker errors
-                    watermark_idx += 1
-
-                # Flush watermark to PG periodically.
-                now_wm = time.time()
-                if watermark_idx > 0 and now_wm - _last_wm_flush >= _wm_flush_interval:
-                    _wm_tid_val = dispatched[watermark_idx - 1][0]
-                    wm_conn.execute(
-                        "INSERT INTO migration_watermark (id, tid) "
-                        "VALUES (TRUE, %s) "
-                        "ON CONFLICT (id) DO UPDATE SET tid = EXCLUDED.tid",
-                        (_wm_tid_val,),
-                    )
-                    _last_wm_flush = now_wm
-
-                # Prune dispatched list to avoid unbounded memory.
-                if watermark_idx > 1000:
-                    dispatched = dispatched[watermark_idx:]
-                    watermark_idx = 0
+                watermark.append(txn_data["tid_int"], future)
+                watermark.advance()
+                watermark.maybe_flush()
 
                 txn_count += 1
                 total_missing_blobs += txn_data["missing_blobs"]
                 last_tid = txn_data["tid"]
 
-                # Abort early on worker errors (e.g. duplicate keys
-                # from a previous non-cleaned import).
-                with _written_lock:
-                    errors = _written_errors
-                if errors:
-                    raise RuntimeError(
-                        f"Aborting: {errors} worker error(s). "
-                        "Check log for details. "
-                        "Is the target database empty?"
-                    )
+                _check_worker_errors(progress)
+                progress.log_progress(txn_count)
 
-                now = time.time()
-                if now - last_log_time >= log_interval:  # pragma: no cover
-                    elapsed = now - begin_time
-                    hms = _fmt_elapsed(elapsed)
-                    with _written_lock:
-                        done_txns = _written_txns
-                        done_objs = _written_objs
-                        done_blobs = _written_blobs
-                        errors = _written_errors
-                    if _cw:
-                        label = (
-                            f"[{hms}] Read {txn_count:>{_cw},} txns |"
-                            f" Written {done_txns:>{_cw},} txns,"
-                            f" {done_objs:>{_cw},} OIDs,"
-                            f" {done_blobs:>{_cw},} blobs"
-                        )
-                    else:
-                        label = (
-                            f"[{hms}] Read {txn_count:,} txns |"
-                            f" Written {done_txns:,} txns,"
-                            f" {done_objs:,} OIDs,"
-                            f" {done_blobs:,} blobs"
-                        )
-                    if errors:
-                        label += f" ({errors} errors!)"
-                    parts = [label]
-                    if total_oids and done_objs > 0:
-                        pct = min(done_objs * 100.0 / total_oids, 99.9)
-                        parts[0] += f" ({pct:5.1f}%)"
-                        # ETA from exponential moving average of throughput.
-                        # Smooths out spikes from S3 retries or variable
-                        # transaction sizes while still adapting over time.
-                        dt = now - _prev_done_time
-                        d_objs = done_objs - _prev_done_objs
-                        if dt > 0 and d_objs > 0:
-                            window_rate = d_objs / dt
-                            if _ema_rate <= 0:
-                                _ema_rate = window_rate  # seed
-                            else:
-                                _ema_rate = (
-                                    _EMA_ALPHA * window_rate
-                                    + (1 - _EMA_ALPHA) * _ema_rate
-                                )
-                            remaining = total_oids - done_objs
-                            eta_s = remaining / _ema_rate
-                            if eta_s < 60:
-                                eta = f"{eta_s:.0f}s"
-                            elif eta_s < 3600:
-                                eta = f"{eta_s / 60:.0f}m"
-                            else:
-                                eta = f"{eta_s / 3600:.1f}h"
-                            parts.append(f"ETA: {eta}")
-                    _prev_done_objs = done_objs
-                    _prev_done_time = now
-                    logger.info(" | ".join(parts))
-                    last_log_time = now
-
-            # Wait for all remaining workers to finish.
-            with _written_lock:
-                pending = txn_count - _written_txns
-            if pending:
-                logger.info(
-                    "[%s] Reader done (%d txns). Waiting for %d in-flight ...",
-                    _fmt_elapsed(time.time() - begin_time),
-                    txn_count,
-                    pending,
-                )
-
-            # Drain with periodic progress instead of blocking forever.
+            # ── Drain ──────────────────────────────────────────────
+            progress.log_drain_wait(txn_count)
             executor.shutdown(wait=False)
-            shutdown_start = time.time()
-            while True:
-                # Check if all work is done.
-                with _written_lock:
-                    done = _written_txns + _written_errors
-                if done >= txn_count:
-                    break
-                # pragma: no cover — drain loop only runs when workers
-                # take > 1s (slow S3 uploads); tests finish instantly.
-                time.sleep(1)  # pragma: no cover
-                waited = time.time() - shutdown_start  # pragma: no cover
-                if int(waited) % 10 == 0:  # pragma: no cover
-                    with _written_lock:
-                        w_txns = _written_txns
-                        w_errs = _written_errors
-                    still = txn_count - w_txns - w_errs
-                    logger.info(
-                        "[%s] Still waiting for %d worker(s) ... (%d done, %d errors)",
-                        _fmt_elapsed(time.time() - begin_time),
-                        still,
-                        w_txns,
-                        w_errs,
-                    )
+            progress.drain_workers(txn_count)
+            _check_worker_errors(progress)
 
-            # Check for errors that occurred after the last loop check.
-            with _written_lock:
-                errors = _written_errors
-            if errors:  # pragma: no cover — tested via in-loop abort
-                raise RuntimeError(
-                    f"Aborting: {errors} worker error(s). "
-                    "Check log for details. "
-                    "Is the target database empty?"
-                )
-
-            # Final watermark advancement after drain.
-            while watermark_idx < len(dispatched):
-                _wm_tid, _wm_fut = dispatched[watermark_idx]
-                if _wm_fut.done():
-                    _wm_fut.result()
-                    watermark_idx += 1
-                else:
-                    break
-
-            if watermark_idx > 0:
-                _wm_tid_val = dispatched[watermark_idx - 1][0]
-                wm_conn.execute(
-                    "INSERT INTO migration_watermark (id, tid) "
-                    "VALUES (TRUE, %s) "
-                    "ON CONFLICT (id) DO UPDATE SET tid = EXCLUDED.tid",
-                    (_wm_tid_val,),
-                )
-
-            # Drain and close the blob sink (waits for background uploads).
+            watermark.flush_final()
             if blob_sink is not None:
                 blob_sink.close()
+            watermark.drop_table()
 
-            # Clean completion — drop watermark table.
-            wm_conn.execute("DROP TABLE IF EXISTS migration_watermark")
-
-            # Update last TID on main storage.
             if last_tid is not None:
                 self._ltid = last_tid
 
@@ -646,28 +706,7 @@ class CopyTransactionsMixin:
             if blob_sink is not None:
                 with contextlib.suppress(Exception):
                     blob_sink.close()
-            # Flush watermark on error so interrupted imports can resume.
-            try:
-                while watermark_idx < len(dispatched):
-                    _wm_tid, _wm_fut = dispatched[watermark_idx]
-                    if _wm_fut.done():
-                        try:
-                            _wm_fut.result()
-                        except Exception:
-                            break
-                        watermark_idx += 1
-                    else:
-                        break
-                if watermark_idx > 0:
-                    _wm_tid_val = dispatched[watermark_idx - 1][0]
-                    wm_conn.execute(
-                        "INSERT INTO migration_watermark (id, tid) "
-                        "VALUES (TRUE, %s) "
-                        "ON CONFLICT (id) DO UPDATE SET tid = EXCLUDED.tid",
-                        (_wm_tid_val,),
-                    )
-            except Exception:
-                logger.debug("Failed to flush watermark on error", exc_info=True)
+            watermark.flush_on_error()
             raise
 
         finally:
@@ -677,15 +716,4 @@ class CopyTransactionsMixin:
             with contextlib.suppress(Exception):
                 self._instance_pool.putconn(wm_conn)
 
-        elapsed = time.time() - begin_time
-        logger.info(
-            "[%s] All %d transactions copied with %d workers.",
-            _fmt_elapsed(elapsed),
-            txn_count,
-            num_workers,
-        )
-        if total_missing_blobs:  # pragma: no cover — source storage issue
-            logger.error(
-                "%d blob(s) missing in source storage and skipped during import!",
-                total_missing_blobs,
-            )
+        progress.log_complete(txn_count, num_workers, total_missing_blobs)
