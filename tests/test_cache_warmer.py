@@ -296,3 +296,37 @@ class TestCacheWarmerFlushEdge:
         calls = [c.args[0] for c in conn.execute.call_args_list]
         assert "BEGIN" in calls
         assert "ROLLBACK" in calls
+
+
+class TestWarmLoadMultiple:
+    """Integration test for PGJsonbStorage._warm_load_multiple()."""
+
+    def test_warm_load_multiple_end_to_end(self, db):
+        """Exercise _warm_load_multiple() with real objects in PG."""
+        from persistent.mapping import PersistentMapping
+
+        import transaction as txn
+        import zodb_json_codec
+
+        conn = db.open()
+        root = conn.root()
+        root["x"] = PersistentMapping({"key": "val1"})
+        root["y"] = PersistentMapping({"key": "val2"})
+        root["z"] = PersistentMapping({"key": "val3"})
+        txn.commit()
+
+        oids = [root["x"]._p_oid, root["y"]._p_oid, root["z"]._p_oid]
+        conn.close()
+
+        result = db.storage._warm_load_multiple(oids)
+
+        assert len(result) == 3
+        for oid in oids:
+            data, tid = result[oid]
+            assert isinstance(data, bytes)
+            assert isinstance(tid, bytes)
+            assert len(tid) == 8
+            # Verify the data round-trips through the codec
+            record = zodb_json_codec.decode_zodb_record(data)
+            assert "@cls" in record
+            assert "@s" in record
