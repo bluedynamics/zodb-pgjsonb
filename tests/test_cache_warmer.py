@@ -68,6 +68,19 @@ class TestCacheWarmerRecord:
         w = CacheWarmer(conn=mock.Mock(), target_count=0)
         assert w.recording is False
 
+    def test_record_noop_after_recording_stops(self):
+        from zodb_pgjsonb.cache_warmer import CacheWarmer
+
+        w = CacheWarmer(conn=mock.Mock(), target_count=2, flush_interval=100)
+        w._flush = mock.Mock()
+        w.record(1)
+        w.record(2)
+        assert w.recording is False
+        # This must hit the early return on line 65
+        w.record(3)
+        assert len(w._recorded) == 2
+        assert 3 not in w._recorded
+
 
 class TestCacheWarmerL2:
     """Test L2 warm cache get/invalidate."""
@@ -138,6 +151,19 @@ class TestCacheWarmerWarm:
         w = CacheWarmer(conn=mock.Mock(), target_count=10)
         w._read_top_oids = mock.Mock(return_value=[])
         w.warm(mock.Mock())
+        assert w._warming_done.is_set()
+        assert len(w._warm_cache) == 0
+
+    def test_warm_handles_load_multiple_exception(self):
+        from zodb_pgjsonb.cache_warmer import CacheWarmer
+
+        w = CacheWarmer(conn=mock.Mock(), target_count=10)
+        w._read_top_oids = mock.Mock(return_value=[1, 2])
+
+        def failing_load(oids):
+            raise RuntimeError("pool exhausted")
+
+        w.warm(failing_load)
         assert w._warming_done.is_set()
         assert len(w._warm_cache) == 0
 
@@ -243,3 +269,64 @@ class TestCacheWarmerDB:
         oids = w2._read_top_oids()
         assert len(oids) == 3
         assert set(oids).issubset({100, 200, 300, 400, 500})
+
+
+class TestCacheWarmerFlushEdge:
+    """Edge-case tests for _flush() — no DB required."""
+
+    def test_flush_empty_pending_is_noop(self):
+        from zodb_pgjsonb.cache_warmer import CacheWarmer
+
+        conn = mock.Mock()
+        w = CacheWarmer(conn=conn, target_count=100)
+        w._pending = set()  # already empty
+        w._flush(decay=False)
+        conn.execute.assert_not_called()
+
+    def test_flush_exception_triggers_rollback(self):
+        from zodb_pgjsonb.cache_warmer import CacheWarmer
+
+        conn = mock.Mock()
+        conn.execute.side_effect = RuntimeError("connection lost")
+        w = CacheWarmer(conn=conn, target_count=100)
+        w._pending = {10, 20}
+        # Must not propagate the exception
+        w._flush(decay=False)
+        # ROLLBACK attempted (second call after BEGIN failed)
+        calls = [c.args[0] for c in conn.execute.call_args_list]
+        assert "BEGIN" in calls
+        assert "ROLLBACK" in calls
+
+
+class TestWarmLoadMultiple:
+    """Integration test for PGJsonbStorage._warm_load_multiple()."""
+
+    def test_warm_load_multiple_end_to_end(self, db):
+        """Exercise _warm_load_multiple() with real objects in PG."""
+        from persistent.mapping import PersistentMapping
+
+        import transaction as txn
+        import zodb_json_codec
+
+        conn = db.open()
+        root = conn.root()
+        root["x"] = PersistentMapping({"key": "val1"})
+        root["y"] = PersistentMapping({"key": "val2"})
+        root["z"] = PersistentMapping({"key": "val3"})
+        txn.commit()
+
+        oids = [root["x"]._p_oid, root["y"]._p_oid, root["z"]._p_oid]
+        conn.close()
+
+        result = db.storage._warm_load_multiple(oids)
+
+        assert len(result) == 3
+        for oid in oids:
+            data, tid = result[oid]
+            assert isinstance(data, bytes)
+            assert isinstance(tid, bytes)
+            assert len(tid) == 8
+            # Verify the data round-trips through the codec
+            record = zodb_json_codec.decode_zodb_record(data)
+            assert "@cls" in record
+            assert "@s" in record
