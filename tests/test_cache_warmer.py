@@ -256,3 +256,30 @@ class TestCacheWarmerDB:
         oids = w2._read_top_oids()
         assert len(oids) == 3
         assert set(oids).issubset({100, 200, 300, 400, 500})
+
+
+class TestCacheWarmerFlushEdge:
+    """Edge-case tests for _flush() — no DB required."""
+
+    def test_flush_empty_pending_is_noop(self):
+        from zodb_pgjsonb.cache_warmer import CacheWarmer
+
+        conn = mock.Mock()
+        w = CacheWarmer(conn=conn, target_count=100)
+        w._pending = set()  # already empty
+        w._flush(decay=False)
+        conn.execute.assert_not_called()
+
+    def test_flush_exception_triggers_rollback(self):
+        from zodb_pgjsonb.cache_warmer import CacheWarmer
+
+        conn = mock.Mock()
+        conn.execute.side_effect = RuntimeError("connection lost")
+        w = CacheWarmer(conn=conn, target_count=100)
+        w._pending = {10, 20}
+        # Must not propagate the exception
+        w._flush(decay=False)
+        # ROLLBACK attempted (second call after BEGIN failed)
+        calls = [c.args[0] for c in conn.execute.call_args_list]
+        assert "BEGIN" in calls
+        assert "ROLLBACK" in calls
