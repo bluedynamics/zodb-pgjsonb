@@ -68,6 +68,19 @@ class TestCacheWarmerRecord:
         w = CacheWarmer(conn=mock.Mock(), target_count=0)
         assert w.recording is False
 
+    def test_record_noop_after_recording_stops(self):
+        from zodb_pgjsonb.cache_warmer import CacheWarmer
+
+        w = CacheWarmer(conn=mock.Mock(), target_count=2, flush_interval=100)
+        w._flush = mock.Mock()
+        w.record(1)
+        w.record(2)
+        assert w.recording is False
+        # This must hit the early return on line 65
+        w.record(3)
+        assert len(w._recorded) == 2
+        assert 3 not in w._recorded
+
 
 class TestCacheWarmerL2:
     """Test L2 warm cache get/invalidate."""
