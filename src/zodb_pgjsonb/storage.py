@@ -472,47 +472,59 @@ class PGJsonbStorage(CopyTransactionsMixin, ConflictResolvingStorage, BaseStorag
         logger.info("Prefetch refs expr: %s", sql_expr or "(disabled)")
 
     def _apply_processor_ddl(self, sql, processor_name):
-        """Apply DDL from a state processor, handling lock conflicts.
+        """Defer DDL from a state processor to the first write transaction.
 
-        ALTER TABLE needs ACCESS EXCLUSIVE which conflicts with
-        ACCESS SHARE held by REPEATABLE READ pool connections.
+        At registration time (IDatabaseOpenedWithRoot), a ZODB Connection
+        always holds an open REPEATABLE READ snapshot with ACCESS SHARE on
+        object_state.  DDL (ALTER TABLE, CREATE INDEX) needs ACCESS
+        EXCLUSIVE, which would deadlock against that snapshot (#100).
 
-        During Zope startup, a ZODB Connection loads objects via
-        REPEATABLE READ, holding ACCESS SHARE on object_state.
-        The IDatabaseOpenedWithRoot subscriber fires while that
-        read transaction is still open — so DDL would deadlock.
-
-        Strategy: try with a short lock_timeout.  If blocked,
-        defer the DDL.  It will be applied in tpc_begin() after
-        the read transaction is committed.
+        Always deferring avoids the race entirely.  The DDL runs in
+        ``_apply_pending_ddl()`` called from ``tpc_begin()`` / ``_begin()``
+        when the read transaction has been committed.
         """
-        try:
-            with psycopg.connect(self._dsn, autocommit=True) as ddl_conn:
-                ddl_conn.execute("SET lock_timeout = '2s'")
-                ddl_conn.execute(sql)
-            logger.info("Applied schema DDL from %s", processor_name)
-        except psycopg.errors.LockNotAvailable:
-            logger.info(
-                "DDL from %s deferred (lock conflict at startup). "
-                "Will apply on first write transaction.",
-                processor_name,
-            )
-            self._pending_ddl.append((sql, processor_name))
+        logger.info(
+            "DDL from %s deferred to first write transaction.",
+            processor_name,
+        )
+        self._pending_ddl.append((sql, processor_name))
+
+    def defer_startup_action(self, action, name):
+        """Defer a callable to be executed on the first write transaction.
+
+        Like ``_apply_processor_ddl`` but accepts an arbitrary callable
+        instead of a SQL string.  The callable receives the DSN as its
+        only argument and should open its own autocommit connection.
+
+        Used by plugins (e.g. plone-pgcatalog) to defer index creation
+        that would deadlock against open REPEATABLE READ snapshots at
+        startup.
+        """
+        logger.info("Startup action '%s' deferred to first write transaction.", name)
+        self._pending_ddl.append((action, name))
 
     def _apply_pending_ddl(self):
-        """Apply any deferred DDL.  Called from tpc_begin() after
-        the read transaction is committed (ACCESS SHARE released).
+        """Apply deferred DDL and startup actions.
+
+        Called from ``tpc_begin()`` / ``_begin()`` after the read
+        transaction is committed (ACCESS SHARE released).
+
+        Each entry is either ``(sql_string, name)`` or
+        ``(callable, name)``.  Callables receive ``self._dsn``.
         """
         if not self._pending_ddl:
             return
         pending = self._pending_ddl[:]
         self._pending_ddl.clear()
-        for sql, name in pending:
+        for action, name in pending:
             try:
-                with psycopg.connect(self._dsn, autocommit=True) as ddl_conn:
-                    ddl_conn.execute("SET lock_timeout = '30s'")
-                    ddl_conn.execute(sql)
-                logger.info("Applied deferred schema DDL from %s", name)
+                if callable(action):
+                    action(self._dsn)
+                else:
+                    with psycopg.connect(self._dsn, autocommit=True) as ddl_conn:
+                        ddl_conn.execute("SET lock_timeout = '30s'")
+                        ddl_conn.execute(action)
+                logger.info("Applied deferred DDL/action from %s", name)
             except Exception:
                 logger.warning(
                     "Failed to apply deferred DDL from %s "

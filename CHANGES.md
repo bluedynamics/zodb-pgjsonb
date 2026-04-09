@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.10.3
+
+- Fix startup self-deadlock when processor DDL blocks against own
+  REPEATABLE READ snapshot (#100).  `_apply_processor_ddl()` now
+  always defers DDL to the first write transaction (`tpc_begin()`),
+  when the read snapshot has been committed and ACCESS SHARE released.
+
+- New `defer_startup_action(callable, name)` API for plugins to defer
+  arbitrary startup work (e.g. index creation) to the first write
+  transaction.  Callables receive the DSN as argument.
+
 ## 1.10.2
 
 - Fix instance `load()` not using prefetch refs expression (#40).

@@ -325,6 +325,40 @@ existing data.
 : Register a state processor plugin.
   See {doc}`state-processor-api` for the processor protocol.
 
+### Deferred startup actions
+
+`defer_startup_action(action: callable, name: str) -> None`
+: Defer a callable to the first write transaction.
+  *Added in v1.10.3.*
+
+  At Zope startup, a ZODB Connection holds an open `REPEATABLE READ`
+  snapshot with `ACCESS SHARE` on `object_state`.  DDL statements
+  (`ALTER TABLE`, `CREATE INDEX`) need `ACCESS EXCLUSIVE`, which would
+  deadlock against that snapshot.
+
+  This method queues a callable that will be executed during the first
+  `tpc_begin()` call, when the read snapshot has been committed and
+  locks are released.  The callable receives the DSN string as its
+  only argument and should open its own autocommit connection.
+
+  ```python
+  def create_my_index(dsn):
+      import psycopg
+      with psycopg.connect(dsn, autocommit=True) as conn:
+          conn.execute("SET lock_timeout = '30s'")
+          conn.execute(
+              "CREATE INDEX IF NOT EXISTS idx_my_field "
+              "ON object_state ((idx->>'my_field')) "
+              "WHERE idx IS NOT NULL"
+          )
+
+  storage.defer_startup_action(create_my_index, "my_plugin_indexes")
+  ```
+
+  State processor DDL (from `get_schema_sql()`) is automatically
+  deferred — plugins only need this method for additional DDL that
+  is not part of the processor's schema.
+
 ## PGJsonbStorageInstance
 
 ```python
