@@ -154,6 +154,19 @@ class TestCacheWarmerWarm:
         assert w._warming_done.is_set()
         assert len(w._warm_cache) == 0
 
+    def test_warm_handles_load_multiple_exception(self):
+        from zodb_pgjsonb.cache_warmer import CacheWarmer
+
+        w = CacheWarmer(conn=mock.Mock(), target_count=10)
+        w._read_top_oids = mock.Mock(return_value=[1, 2])
+
+        def failing_load(oids):
+            raise RuntimeError("pool exhausted")
+
+        w.warm(failing_load)
+        assert w._warming_done.is_set()
+        assert len(w._warm_cache) == 0
+
 
 @pytest.mark.db
 class TestCacheWarmerDB:
