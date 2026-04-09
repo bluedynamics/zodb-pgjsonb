@@ -2,18 +2,12 @@
 
 from ZODB.utils import u64
 from zodb_pgjsonb.storage import PGJsonbStorage
+from zodb_pgjsonb.testing import get_test_dsn
 
-import os
 import psycopg
-import pytest
 
 
-DSN = os.environ.get(
-    "ZODB_TEST_DSN",
-    "dbname=zodb_test user=zodb password=zodb host=localhost port=5433",
-)
-
-pytestmark = pytest.mark.skipif(not DSN, reason="No PostgreSQL test database available")
+DSN = get_test_dsn()
 
 
 ALL_TABLES = (

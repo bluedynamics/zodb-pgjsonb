@@ -39,10 +39,14 @@ Future TODO
 """
 
 import logging
+import os
 import psycopg
 
 
-__all__ = ["TABLES", "PGTestDB"]
+__all__ = ["TABLES", "PGTestDB", "get_test_dsn"]
+
+# Default DSN for local Docker on port 5433 (development setup).
+_DEFAULT_DSN = "dbname=zodb_test user=zodb password=zodb host=localhost port=5433"
 
 log = logging.getLogger(__name__)
 
@@ -212,3 +216,62 @@ class PGTestDB:
     def depth(self):
         """Current snapshot stack depth."""
         return len(self._stack)
+
+
+# -- testcontainers helpers ---------------------------------------------------
+
+
+def get_test_dsn():
+    """Return a PostgreSQL DSN for testing.
+
+    Resolution order:
+    1. ``ZODB_TEST_DSN`` environment variable (CI or explicit override)
+    2. Default local Docker on port 5433 (if reachable)
+    3. testcontainers auto-start (fallback — container stopped via atexit)
+
+    Safe to call multiple times — returns the cached DSN after first call.
+    """
+    if _cache.dsn is not None:
+        return _cache.dsn
+
+    env_dsn = os.environ.get("ZODB_TEST_DSN")
+    if env_dsn:
+        _cache.dsn = env_dsn
+        return _cache.dsn
+
+    # Try the default local Docker container
+    try:
+        conn = psycopg.connect(_DEFAULT_DSN, connect_timeout=2)
+        conn.close()
+        _cache.dsn = _DEFAULT_DSN
+        return _cache.dsn
+    except Exception:
+        pass
+
+    # Fall back to testcontainers
+    from testcontainers.postgres import PostgresContainer
+
+    import atexit
+
+    log.info("No PostgreSQL found — starting testcontainer …")
+    container = PostgresContainer(
+        image="postgres:17",
+        username="zodb",
+        password="zodb",
+        dbname="zodb_test",
+    )
+    container.start()
+    atexit.register(container.stop)
+    _cache.container = container
+
+    host = container.get_container_host_ip()
+    port = container.get_exposed_port(5432)
+    _cache.dsn = f"dbname=zodb_test user=zodb password=zodb host={host} port={port}"
+    return _cache.dsn
+
+
+class _cache:
+    """Module-level cache for DSN and optional testcontainer."""
+
+    dsn = None
+    container = None
