@@ -409,3 +409,69 @@ class TestFinalizeHook:
 
         assert len(self.proc.finalize_calls) == 0
         conn.close()
+
+
+# ── Deferred DDL on read path (#105) ────────────────────────────────
+
+
+class DDLProcessor:
+    """Processor that provides DDL adding a column."""
+
+    def get_extra_columns(self):
+        return [ExtraColumn("ddl_test_col", "%(ddl_test_col)s")]
+
+    def get_schema_sql(self):
+        return "ALTER TABLE object_state ADD COLUMN IF NOT EXISTS ddl_test_col TEXT"
+
+    def process(self, zoid, class_mod, class_name, state):
+        return None
+
+
+class TestDeferredDDLOnReadPath:
+    """DDL deferred from startup must be applied on first read, not just write.
+
+    Regression test for #105: if the first request after startup is a
+    read-only GET, poll_invalidations() must apply pending DDL so that
+    queries referencing new columns don't crash with UndefinedColumn.
+    """
+
+    def test_poll_invalidations_applies_pending_ddl(self):
+        clean_db()
+        storage = PGJsonbStorage(DSN)
+        try:
+            # Register processor — DDL is deferred to _pending_ddl
+            storage.register_state_processor(DDLProcessor())
+            assert len(storage._pending_ddl) > 0, "DDL should be deferred"
+
+            # Column should NOT exist yet
+            pg = psycopg.connect(DSN, row_factory=dict_row)
+            with pg.cursor() as cur:
+                cur.execute(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_name = 'object_state' "
+                    "AND column_name = 'ddl_test_col'"
+                )
+                assert cur.fetchone() is None, "Column must not exist before poll"
+            pg.close()
+
+            # Create an instance and call poll_invalidations (read path)
+            instance = storage.new_instance()
+            try:
+                instance.poll_invalidations()
+
+                # DDL should have been applied — column now exists
+                pg = psycopg.connect(DSN, row_factory=dict_row)
+                with pg.cursor() as cur:
+                    cur.execute(
+                        "SELECT column_name FROM information_schema.columns "
+                        "WHERE table_name = 'object_state' "
+                        "AND column_name = 'ddl_test_col'"
+                    )
+                    row = cur.fetchone()
+                pg.close()
+                assert row is not None, "Column should exist after poll_invalidations"
+                assert len(storage._pending_ddl) == 0, "Pending DDL should be cleared"
+            finally:
+                instance.release()
+        finally:
+            storage.close()
