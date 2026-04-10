@@ -139,6 +139,14 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
         # End any previous read snapshot
         self._end_read_txn()
 
+        # Apply any DDL deferred from startup (e.g. ALTER TABLE ADD COLUMN)
+        # before starting the read snapshot.  At this point the startup
+        # REPEATABLE READ has been committed, so ACCESS SHARE is released
+        # and the DDL can acquire ACCESS EXCLUSIVE.  Without this, a
+        # read-only request that hits a column added by a state processor
+        # (e.g. 'meta') would crash with UndefinedColumn (#105).
+        self._main._apply_pending_ddl()
+
         # Start a new REPEATABLE READ snapshot immediately.
         # The first query anchors the snapshot — all subsequent queries
         # (invalidation lookups AND load() calls) see this same state.
