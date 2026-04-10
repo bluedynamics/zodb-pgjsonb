@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.10.4
+
+- Apply deferred processor DDL on first read, not just first write
+  (#105).  `poll_invalidations()` now calls `_apply_pending_ddl()`
+  before starting the REPEATABLE READ snapshot.  Fixes
+  `UndefinedColumn` crash when a read-only request hits a column
+  added by a state processor (e.g. `meta`) before any write
+  transaction has occurred.
+
 ## 1.10.3
 
 - Fix startup self-deadlock when processor DDL blocks against own
