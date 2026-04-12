@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- Serialize startup DDL across replicas via session-level PostgreSQL
+  advisory lock.  New `zodb_pgjsonb.startup_locks` module exposes
+  `startup_ddl_lock(dsn)` context manager.  `_apply_pending_ddl` wraps
+  its body in the lock and requeues pending work on timeout.  Lock wait
+  timeout is 15 minutes by default, overridable via
+  `ZODB_PGJSONB_DDL_LOCK_TIMEOUT`.  Closes
+  bluedynamics/plone-pgcatalog#108 (credit: @davisagli).
+
 ## 1.10.4
 
 - Apply deferred processor DDL on first read, not just first write
