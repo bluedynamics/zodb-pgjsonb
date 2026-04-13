@@ -23,6 +23,7 @@ from .schema import HISTORY_PRESERVING_ADDITIONS
 from .schema import install_schema
 from .serialization import _deserialize_extension
 from .serialization import _unsanitize_from_pg
+from .startup_locks import startup_ddl_lock
 from .stats import get_blob_histogram as _get_blob_histogram
 from .stats import get_blob_stats as _get_blob_stats
 from .undo import _compute_undo
@@ -532,27 +533,43 @@ class PGJsonbStorage(CopyTransactionsMixin, ConflictResolvingStorage, BaseStorag
 
         Each entry is either ``(sql_string, name)`` or
         ``(callable, name)``.  Callables receive ``self._dsn``.
+
+        Wraps the whole batch in a session-level PG advisory lock so
+        concurrent replicas serialize their DDL.  On lock timeout, the
+        pending entries are requeued for the next call.
         """
         if not self._pending_ddl:
             return
         pending = self._pending_ddl[:]
         self._pending_ddl.clear()
-        for action, name in pending:
-            try:
-                if callable(action):
-                    action(self._dsn)
-                else:
-                    with psycopg.connect(self._dsn, autocommit=True) as ddl_conn:
-                        ddl_conn.execute("SET lock_timeout = '30s'")
-                        ddl_conn.execute(action)
-                logger.info("Applied deferred DDL/action from %s", name)
-            except Exception:
-                logger.warning(
-                    "Failed to apply deferred DDL from %s "
-                    "(lock timeout or other error — will retry on next startup)",
-                    name,
-                    exc_info=True,
-                )
+        try:
+            with startup_ddl_lock(self._dsn):
+                for action, name in pending:
+                    try:
+                        if callable(action):
+                            action(self._dsn)
+                        else:
+                            with psycopg.connect(
+                                self._dsn, autocommit=True
+                            ) as ddl_conn:
+                                ddl_conn.execute("SET lock_timeout = '30s'")
+                                ddl_conn.execute(action)
+                        logger.info("Applied deferred DDL/action from %s", name)
+                    except Exception:
+                        logger.warning(
+                            "Failed to apply deferred DDL from %s "
+                            "(lock timeout or other error — will retry on next startup)",
+                            name,
+                            exc_info=True,
+                        )
+        except psycopg.errors.LockNotAvailable:
+            # Could not acquire the startup lock — requeue pending work
+            # so the next tpc_begin / poll_invalidations retries.
+            self._pending_ddl = pending + self._pending_ddl
+            logger.warning(
+                "Could not acquire startup DDL advisory lock within timeout — "
+                "will retry on next tpc_begin / poll_invalidations",
+            )
 
     def _process_state(self, zoid, class_mod, class_name, state):
         """Run all registered state processors, return merged extra data."""

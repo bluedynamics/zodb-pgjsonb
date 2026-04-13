@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+<<<<<<< fix/idle-in-xact
 - Implement `IStorage.afterCompletion()` on `PGJsonbStorageInstance`
   so the REPEATABLE READ read-snapshot transaction is committed at
   request end (after every `transaction.commit/abort` and on
@@ -18,6 +19,15 @@
   every connection from the instance pool.  Defense in depth for
   any future leak path that bypasses `afterCompletion` (e.g.
   `SIGKILL`-ed worker, buggy plugin).  Set to `0` to disable.
+=======
+- Serialize startup DDL across replicas via session-level PostgreSQL
+  advisory lock.  New `zodb_pgjsonb.startup_locks` module exposes
+  `startup_ddl_lock(dsn)` context manager.  `_apply_pending_ddl` wraps
+  its body in the lock and requeues pending work on timeout.  Lock wait
+  timeout is 15 minutes by default, overridable via
+  `ZODB_PGJSONB_DDL_LOCK_TIMEOUT`.  Closes
+  bluedynamics/plone-pgcatalog#108 (credit: @davisagli).
+>>>>>>> main
 
 ## 1.10.4
 
