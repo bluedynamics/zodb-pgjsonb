@@ -110,6 +110,27 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
         if os.path.exists(self._blob_temp_dir):
             shutil.rmtree(self._blob_temp_dir, ignore_errors=True)
 
+    def afterCompletion(self):
+        """ZODB hook: end any open REPEATABLE READ snapshot.
+
+        Called by ZODB after every transaction commit/abort and on
+        ``Connection.close()`` (see ``ZODB.Connection.close``).
+        Closing the read transaction at request end avoids holding a
+        ``virtualxid`` that blocks ``CREATE INDEX CONCURRENTLY`` and
+        similar maintenance operations (#118).
+
+        Idempotent: ``_end_read_txn`` short-circuits when no read tx
+        is open (e.g. right after a write transaction's ``tpc_begin``
+        already ended it).  Never raises — the connection may have
+        been killed by an external operator or by
+        ``idle_in_transaction_session_timeout``; in that case we just
+        log and let the next operation rebuild via the pool.
+        """
+        try:
+            self._end_read_txn()
+        except Exception:
+            logger.warning("afterCompletion: _end_read_txn failed", exc_info=True)
+
     def _end_read_txn(self):
         """End the current REPEATABLE READ snapshot transaction, if any."""
         if self._in_read_txn:

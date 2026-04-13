@@ -68,6 +68,27 @@ logger = logging.getLogger(__name__)
 _VALID_SQL_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 
 
+# ── Idle-in-transaction safety net (#118) ─────────────────────────────
+# Bound the worst-case duration of any leaked virtualxid so it doesn't
+# block CREATE INDEX CONCURRENTLY indefinitely.  Tunable via env var.
+DEFAULT_IDLE_IN_XACT_TIMEOUT_MS = 60_000
+ENV_IDLE_IN_XACT_TIMEOUT = "ZODB_PGJSONB_IDLE_IN_XACT_TIMEOUT_MS"
+
+
+def _configure_pool_conn(conn):
+    """psycopg_pool ``configure`` hook applied on every new pool conn.
+
+    Sets autocommit (required by the instance state machine) and the
+    idle_in_transaction_session_timeout safety net.  ``0`` disables
+    the timeout (matches PG default).
+    """
+    conn.autocommit = True
+    timeout_ms = int(
+        os.environ.get(ENV_IDLE_IN_XACT_TIMEOUT, DEFAULT_IDLE_IN_XACT_TIMEOUT_MS)
+    )
+    conn.execute(f"SET idle_in_transaction_session_timeout = {timeout_ms}")
+
+
 @dataclasses.dataclass
 class ExtraColumn:
     """Declares an extra column for object_state written by a state processor.
@@ -276,7 +297,7 @@ class PGJsonbStorage(CopyTransactionsMixin, ConflictResolvingStorage, BaseStorag
             max_size=pool_max_size,
             timeout=pool_timeout,
             kwargs={"row_factory": dict_row},
-            configure=lambda conn: setattr(conn, "autocommit", True),
+            configure=_configure_pool_conn,
             open=True,
         )
         logger.debug("Connection pool ready")
