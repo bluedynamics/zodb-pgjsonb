@@ -189,6 +189,24 @@ def test_zodb_connection_close_releases_virtualxid():
         storage.close()
 
 
+def _read_idle_timeout_ms(storage):
+    """Return idle_in_transaction_session_timeout as an int in ms.
+
+    PostgreSQL canonicalizes the value on read — `60000` may come back
+    as `'1min'`, `5000` as `'5s'`, etc.  Use pg_settings to get the
+    underlying numeric in the configured unit.
+    """
+    with storage._instance_pool.connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT setting::int AS v, unit FROM pg_settings "
+            "WHERE name = 'idle_in_transaction_session_timeout'"
+        )
+        row = cur.fetchone()
+    # unit is 'ms' for this setting per PG docs
+    assert row["unit"] == "ms"
+    return row["v"]
+
+
 def test_idle_timeout_set_on_pool_conn():
     """Every conn from the instance pool has idle_in_transaction_session_timeout set."""
     from zodb_pgjsonb.storage import PGJsonbStorage
@@ -196,13 +214,7 @@ def test_idle_timeout_set_on_pool_conn():
     clean_db()
     storage = PGJsonbStorage(DSN, cache_warm_pct=0)
     try:
-        with storage._instance_pool.connection() as conn, conn.cursor() as cur:
-            cur.execute(
-                "SELECT current_setting('idle_in_transaction_session_timeout') AS v"
-            )
-            row = cur.fetchone()
-        # Default 60_000 ms.  PG returns the numeric as-is when set numerically.
-        assert row["v"] in ("60000", "1min")
+        assert _read_idle_timeout_ms(storage) == 60_000
     finally:
         storage.close()
 
@@ -219,12 +231,7 @@ def test_idle_timeout_env_override():
     try:
         storage = PGJsonbStorage(DSN, cache_warm_pct=0)
         try:
-            with storage._instance_pool.connection() as conn, conn.cursor() as cur:
-                cur.execute(
-                    "SELECT current_setting('idle_in_transaction_session_timeout') AS v"
-                )
-                row = cur.fetchone()
-            assert row["v"] == "5000"
+            assert _read_idle_timeout_ms(storage) == 5000
         finally:
             storage.close()
     finally:
@@ -246,12 +253,7 @@ def test_idle_timeout_disabled_when_zero():
     try:
         storage = PGJsonbStorage(DSN, cache_warm_pct=0)
         try:
-            with storage._instance_pool.connection() as conn, conn.cursor() as cur:
-                cur.execute(
-                    "SELECT current_setting('idle_in_transaction_session_timeout') AS v"
-                )
-                row = cur.fetchone()
-            assert row["v"] == "0"
+            assert _read_idle_timeout_ms(storage) == 0
         finally:
             storage.close()
     finally:
