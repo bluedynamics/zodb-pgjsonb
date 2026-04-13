@@ -187,3 +187,75 @@ def test_zodb_connection_close_releases_virtualxid():
             db.close()
     finally:
         storage.close()
+
+
+def test_idle_timeout_set_on_pool_conn():
+    """Every conn from the instance pool has idle_in_transaction_session_timeout set."""
+    from zodb_pgjsonb.storage import PGJsonbStorage
+
+    clean_db()
+    storage = PGJsonbStorage(DSN, cache_warm_pct=0)
+    try:
+        with storage._instance_pool.connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT current_setting('idle_in_transaction_session_timeout') AS v"
+            )
+            row = cur.fetchone()
+        # Default 60_000 ms.  PG returns the numeric as-is when set numerically.
+        assert row["v"] in ("60000", "1min")
+    finally:
+        storage.close()
+
+
+def test_idle_timeout_env_override():
+    """ZODB_PGJSONB_IDLE_IN_XACT_TIMEOUT_MS env var overrides default."""
+    from zodb_pgjsonb.storage import PGJsonbStorage
+
+    import os
+
+    clean_db()
+    old = os.environ.get("ZODB_PGJSONB_IDLE_IN_XACT_TIMEOUT_MS")
+    os.environ["ZODB_PGJSONB_IDLE_IN_XACT_TIMEOUT_MS"] = "5000"
+    try:
+        storage = PGJsonbStorage(DSN, cache_warm_pct=0)
+        try:
+            with storage._instance_pool.connection() as conn, conn.cursor() as cur:
+                cur.execute(
+                    "SELECT current_setting('idle_in_transaction_session_timeout') AS v"
+                )
+                row = cur.fetchone()
+            assert row["v"] == "5000"
+        finally:
+            storage.close()
+    finally:
+        if old is None:
+            del os.environ["ZODB_PGJSONB_IDLE_IN_XACT_TIMEOUT_MS"]
+        else:
+            os.environ["ZODB_PGJSONB_IDLE_IN_XACT_TIMEOUT_MS"] = old
+
+
+def test_idle_timeout_disabled_when_zero():
+    """Setting the env var to 0 disables the timeout (PG default)."""
+    from zodb_pgjsonb.storage import PGJsonbStorage
+
+    import os
+
+    clean_db()
+    old = os.environ.get("ZODB_PGJSONB_IDLE_IN_XACT_TIMEOUT_MS")
+    os.environ["ZODB_PGJSONB_IDLE_IN_XACT_TIMEOUT_MS"] = "0"
+    try:
+        storage = PGJsonbStorage(DSN, cache_warm_pct=0)
+        try:
+            with storage._instance_pool.connection() as conn, conn.cursor() as cur:
+                cur.execute(
+                    "SELECT current_setting('idle_in_transaction_session_timeout') AS v"
+                )
+                row = cur.fetchone()
+            assert row["v"] == "0"
+        finally:
+            storage.close()
+    finally:
+        if old is None:
+            del os.environ["ZODB_PGJSONB_IDLE_IN_XACT_TIMEOUT_MS"]
+        else:
+            os.environ["ZODB_PGJSONB_IDLE_IN_XACT_TIMEOUT_MS"] = old
