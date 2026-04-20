@@ -84,8 +84,13 @@ class CacheWarmer:
 
         Wrapped in an explicit transaction so the decay UPDATE, score
         UPSERT, and low-score DELETE are atomic.
+
+        Zoids are sorted to give a deterministic row-lock acquisition
+        order across concurrent flushes. Without this, two workers with
+        overlapping pending sets deadlock on the PK index when they
+        upsert rows in opposing orders.
         """
-        zoids = list(self._pending)
+        zoids = sorted(self._pending)
         if not zoids:
             return
         self._pending.clear()

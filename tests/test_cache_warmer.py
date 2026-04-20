@@ -297,6 +297,34 @@ class TestCacheWarmerFlushEdge:
         assert "BEGIN" in calls
         assert "ROLLBACK" in calls
 
+    def test_flush_sorts_zoids_for_deterministic_locking(self):
+        """Prevent PK-index deadlock between concurrent workers.
+
+        The INSERT must receive zoids in sorted order so that two
+        workers with overlapping pending sets acquire row locks in the
+        same order and never deadlock.
+        """
+        from zodb_pgjsonb.cache_warmer import CacheWarmer
+
+        conn = mock.MagicMock()
+        cursor = conn.cursor.return_value.__enter__.return_value
+
+        w = CacheWarmer(conn=conn, target_count=100)
+        w._pending = {42, 7, 99, 3, 58}
+        w._flush(decay=False)
+
+        insert_calls = [
+            call
+            for call in cursor.execute.call_args_list
+            if "INSERT INTO cache_warm_stats" in call.args[0]
+        ]
+        assert len(insert_calls) == 1
+        zoids_param = insert_calls[0].args[1]["z"]
+        assert zoids_param == sorted(zoids_param), (
+            f"zoids must be sorted for deterministic lock order, got {zoids_param}"
+        )
+        assert zoids_param == [3, 7, 42, 58, 99]
+
 
 class TestWarmLoadMultiple:
     """Integration test for PGJsonbStorage._warm_load_multiple()."""
