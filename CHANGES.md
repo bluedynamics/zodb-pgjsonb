@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.11.1
+
+- Fix PK-index deadlock in `CacheWarmer._flush` between concurrent
+  Waitress workers.  Two workers with overlapping pending sets used to
+  deadlock on the `cache_warm_stats` primary-key index when their
+  `INSERT ... ON CONFLICT DO UPDATE` acquired row locks in opposing
+  orders (set iteration order is not stable across processes).  Zoids
+  are now sorted before the upsert, giving a deterministic lock
+  acquisition order.
+
 ## 1.11.0
 
 - Implement `IStorage.afterCompletion()` on `PGJsonbStorageInstance`
