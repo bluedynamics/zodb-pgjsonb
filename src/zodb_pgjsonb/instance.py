@@ -16,6 +16,7 @@ from .storage import _do_loadSerial
 from .storage import _load_blob_from_s3
 from .storage import _loadBefore_hf
 from .storage import _loadBefore_hp
+from .storage import _NoopSerialCache
 from .storage import LoadCache
 from .undo import _compute_undo
 from ZODB.ConflictResolution import ConflictResolvingStorage
@@ -67,8 +68,10 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
         self._blob_threshold = main_storage._blob_threshold
         # Load cache: zoid → (pickle_bytes, tid_bytes), bounded LRU
         self._load_cache = LoadCache(max_mb=main_storage._cache_local_mb)
-        # Cache for conflict resolution: (oid_bytes, tid_bytes) → pickle_bytes
-        self._serial_cache = {}
+        # Cache for conflict resolution: (oid_bytes, tid_bytes) → pickle_bytes.
+        # History-preserving mode can retrieve old revisions from
+        # object_history, so the cache is never needed there (#62).
+        self._serial_cache = _NoopSerialCache() if self._history_preserving else {}
         # Propagate conflict resolution transform hooks from main storage
         self._crs_transform_record_data = main_storage._crs_transform_record_data
         self._crs_untransform_record_data = main_storage._crs_untransform_record_data
@@ -130,6 +133,10 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
             self._end_read_txn()
         except Exception:
             logger.warning("afterCompletion: _end_read_txn failed", exc_info=True)
+        # Drop conflict-resolution cache entries; the base versions
+        # tryToResolveConflict needed are consumed by tpc_vote, and
+        # keeping them past the transaction leaks memory (#62).
+        self._serial_cache.clear()
 
     def _end_read_txn(self):
         """End the current REPEATABLE READ snapshot transaction, if any."""

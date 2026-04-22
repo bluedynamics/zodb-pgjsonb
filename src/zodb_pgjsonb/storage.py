@@ -127,6 +127,35 @@ class ExtraColumn:
 DEFAULT_CACHE_LOCAL_MB = 16
 
 
+class _NoopSerialCache:
+    """Drop-in dict substitute that never stores anything (#62).
+
+    Used in history-preserving mode where ``_do_loadSerial`` retrieves
+    old revisions from ``object_history`` and the serial cache is
+    redundant.  Avoids the unbounded-growth leak of a real dict.
+    """
+
+    __slots__ = ()
+
+    def get(self, key, default=None):
+        return default
+
+    def __setitem__(self, key, value):
+        pass
+
+    def __getitem__(self, key):
+        raise KeyError(key)
+
+    def __contains__(self, key):
+        return False
+
+    def __len__(self):
+        return 0
+
+    def clear(self):
+        pass
+
+
 class LoadCache:
     """Bounded LRU cache for load() results.
 
@@ -280,7 +309,9 @@ class PGJsonbStorage(CopyTransactionsMixin, ConflictResolvingStorage, BaseStorag
         # In history-free mode, loadSerial can't find old versions after they're
         # overwritten. Caching data from load() makes it available for
         # tryToResolveConflict's loadSerial(oid, oldSerial) calls.
-        self._serial_cache = {}
+        # In history-preserving mode object_history suffices, so skip the
+        # cache to avoid unbounded growth (#62).
+        self._serial_cache = _NoopSerialCache() if history_preserving else {}
 
         # Database connection (schema init + admin queries)
         logger.debug("Connecting to PostgreSQL: %s", _mask_dsn(dsn))
