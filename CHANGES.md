@@ -1,5 +1,31 @@
 # Changelog
 
+## 1.11.2
+
+- Fix unbounded growth of `_serial_cache` (#62).  The conflict-resolution
+  cache was a plain dict with no eviction or clearing, so it grew
+  monotonically for the life of the storage instance — on a long-running
+  pod with 5 threads and moderate traffic, estimated ~3.8 GB leaked
+  after 24 hours, directly driving memory pressure toward the pod
+  limit.
+
+  Two fixes:
+
+  - In history-preserving mode, `_do_loadSerial` retrieves old revisions
+    from `object_history` directly; the serial cache is redundant.
+    Swapped for a `_NoopSerialCache` that silently drops writes and
+    always misses on reads.  Zero memory cost in this mode.
+  - In history-free mode, the cache is only needed within a single
+    transaction (conflict resolution consumes its base versions during
+    `tpc_vote`).  `afterCompletion` now clears the cache, bounding its
+    lifetime to the enclosing transaction.
+
+  Applies to both `PGJsonbStorageInstance` and the main `PGJsonbStorage`.
+  No new config knob, no API change, no behavioral regression outside
+  an edge case that was already broken (cross-transaction conflict
+  resolution in history-free mode, where the base version is already
+  gone from PG).
+
 ## 1.11.1
 
 - Fix PK-index deadlock in `CacheWarmer._flush` between concurrent
