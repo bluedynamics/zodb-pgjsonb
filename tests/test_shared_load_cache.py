@@ -103,3 +103,47 @@ class TestConsensusTIDGating:
 
         assert cache._consensus_tid == 200
         assert cache.get(zoid=1, polled_tid=200) == (b"x", p64(200))
+
+
+class TestLRUEviction:
+    def test_accounts_bytes_on_set(self):
+        cache = SharedLoadCache(max_mb=4)
+        cache.poll_advance(new_tid=100, changed_zoids=[])
+        cache.set(zoid=1, data=b"x" * 100, tid_bytes=p64(100), polled_tid=100)
+        assert cache._current_bytes == 100
+
+    def test_accounts_bytes_on_replace(self):
+        cache = SharedLoadCache(max_mb=4)
+        cache.poll_advance(new_tid=200, changed_zoids=[])
+        cache.set(zoid=1, data=b"x" * 100, tid_bytes=p64(100), polled_tid=200)
+        cache.set(zoid=1, data=b"y" * 200, tid_bytes=p64(200), polled_tid=200)
+        assert cache._current_bytes == 200
+
+    def test_accounts_bytes_on_invalidate(self):
+        cache = SharedLoadCache(max_mb=4)
+        cache.poll_advance(new_tid=100, changed_zoids=[])
+        cache.set(zoid=1, data=b"x" * 100, tid_bytes=p64(100), polled_tid=100)
+        cache.poll_advance(new_tid=200, changed_zoids=[1])
+        assert cache._current_bytes == 0
+
+    def test_evicts_lru_when_over_budget(self):
+        cache = SharedLoadCache(max_mb=1)
+        cache.poll_advance(new_tid=100, changed_zoids=[])
+        # Fill with 10 entries of 200_000 bytes each (2 MB total, budget 1 MB)
+        for z in range(10):
+            cache.set(zoid=z, data=b"x" * 200_000, tid_bytes=p64(100), polled_tid=100)
+        # At most ~5 entries fit in 1 MB
+        assert len(cache._cache) <= 6
+        assert cache._current_bytes <= 1_000_000
+
+    def test_lru_order_promotes_on_get(self):
+        cache = SharedLoadCache(max_mb=1)
+        cache.poll_advance(new_tid=100, changed_zoids=[])
+        # Fill just under budget
+        for z in range(4):
+            cache.set(zoid=z, data=b"x" * 200_000, tid_bytes=p64(100), polled_tid=100)
+        # Touch zoid 0 — bumps it to most-recent
+        cache.get(zoid=0, polled_tid=100)
+        # Add one more — zoid 1 (oldest now) should be evicted, not zoid 0
+        cache.set(zoid=99, data=b"x" * 200_000, tid_bytes=p64(100), polled_tid=100)
+        assert cache.get(zoid=0, polled_tid=100) is not None
