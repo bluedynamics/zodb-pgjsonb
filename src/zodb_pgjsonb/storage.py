@@ -230,6 +230,16 @@ class SharedLoadCache:
     accounting, and ``_consensus_tid`` atomically.
     """
 
+    __slots__ = (
+        "_cache",
+        "_consensus_tid",
+        "_current_bytes",
+        "_lock",
+        "_max_bytes",
+        "hits",
+        "misses",
+    )
+
     def __init__(self, max_mb):
         self._cache = OrderedDict()  # zoid → (data_bytes, tid_bytes)
         self._consensus_tid = None  # int; advanced by poll_advance()
