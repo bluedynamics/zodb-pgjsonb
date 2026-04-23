@@ -223,3 +223,58 @@ class TestZConfig:
                 )
             finally:
                 storage.close()
+
+
+class TestCacheConfigMigration:
+    """#63: new cache knobs + cache-local-mb deprecation alias."""
+
+    pytestmark = pytest.mark.db
+
+    def test_cache_shared_mb_zconfig(self):
+        """cache-shared-mb threads through to storage._shared_cache size."""
+        from tests.conftest import DSN
+        from ZODB.config import storageFromString
+
+        zconf = f"""\
+%import zodb_pgjsonb
+<pgjsonb>
+  dsn {DSN}
+  cache-shared-mb 64
+  cache-per-connection-mb 4
+</pgjsonb>
+        """
+        storage = storageFromString(zconf)
+        try:
+            assert storage._shared_cache._max_bytes == 64 * 1_000_000
+            assert storage._load_cache._max_size == 4 * 1_000_000
+        finally:
+            storage.close()
+
+    def test_cache_local_mb_deprecation_alias(self):
+        """cache-local-mb still works, warns, maps to cache_shared_mb."""
+        from tests.conftest import DSN
+        from ZODB.config import storageFromString
+
+        import warnings
+
+        zconf = f"""\
+%import zodb_pgjsonb
+<pgjsonb>
+  dsn {DSN}
+  cache-local-mb 128
+</pgjsonb>
+        """
+        with warnings.catch_warnings(record=True) as wlist:
+            warnings.simplefilter("always")
+            storage = storageFromString(zconf)
+            try:
+                assert storage._shared_cache._max_bytes == 128 * 1_000_000
+                dep = [
+                    w
+                    for w in wlist
+                    if issubclass(w.category, DeprecationWarning)
+                    and "cache_local_mb" in str(w.message)
+                ]
+                assert dep, "expected DeprecationWarning for cache_local_mb"
+            finally:
+                storage.close()
