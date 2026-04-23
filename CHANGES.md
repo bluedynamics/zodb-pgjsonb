@@ -1,5 +1,31 @@
 # Changelog
 
+## 1.12.1
+
+- Harden the `CacheWarmer` lifecycle (#65).
+  - The `MAX(tid)` lookup was duplicated in three places with three
+    different error-handling policies.  Consolidated behind a single
+    `_read_max_tid(conn)` helper and a public
+    `PGJsonbStorage.current_max_tid()` method that logs a warning and
+    returns `None` on failure.  The warmer skips warmup when the
+    method returns `None` instead of installing a fabricated
+    consensus of 0.
+  - `SharedLoadCache.set()` now returns `True` on accept and `False`
+    on rejection.  `SharedLoadCache.consensus_tid` is exposed as a
+    read-only property.  Both are used by the warmer's race-recovery
+    path; existing `instance.load` / `load_multiple` callers ignore
+    the new return value and are unaffected.
+  - The warmer re-reads `shared_cache.consensus_tid` after its own
+    `poll_advance` and uses that value as `polled_tid` for the
+    subsequent `set()` loop — this fixes a startup race where a
+    concurrent instance poll could advance consensus past the
+    warmer's sampled TID and cause every warmup write to be silently
+    rejected.  A WARNING is now logged when the entire warmup was
+    rejected despite a non-empty result set.
+  - Added a regression test that pins `PGJsonbStorage._finish`
+    (direct-use write path) advancing shared consensus and
+    invalidating changed zoids.
+
 ## 1.12.0
 
 - Introduce a process-wide `SharedLoadCache` that replaces per-
