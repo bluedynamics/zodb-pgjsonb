@@ -188,3 +188,46 @@ class TestPGJsonbStorageIntegration:
                 inst.release()
         finally:
             s.close()
+
+
+class TestSharedLoadCacheAPIExtensions:
+    """#65: consensus_tid property + set() returns bool."""
+
+    def test_consensus_tid_initially_none(self):
+        cache = SharedLoadCache(max_mb=4)
+        assert cache.consensus_tid is None
+
+    def test_consensus_tid_reflects_poll_advance(self):
+        cache = SharedLoadCache(max_mb=4)
+        cache.poll_advance(new_tid=123, changed_zoids=[])
+        assert cache.consensus_tid == 123
+
+    def test_consensus_tid_does_not_rewind(self):
+        cache = SharedLoadCache(max_mb=4)
+        cache.poll_advance(new_tid=200, changed_zoids=[])
+        cache.poll_advance(new_tid=100, changed_zoids=[])  # older, ignored
+        assert cache.consensus_tid == 200
+
+    def test_set_returns_true_on_accept(self):
+        cache = SharedLoadCache(max_mb=4)
+        cache.poll_advance(new_tid=100, changed_zoids=[])
+        accepted = cache.set(zoid=1, data=b"xyz", tid_bytes=p64(100), polled_tid=100)
+        assert accepted is True
+
+    def test_set_returns_false_when_consensus_uninitialized(self):
+        cache = SharedLoadCache(max_mb=4)
+        accepted = cache.set(zoid=1, data=b"xyz", tid_bytes=p64(100), polled_tid=100)
+        assert accepted is False
+
+    def test_set_returns_false_for_stale_writer(self):
+        cache = SharedLoadCache(max_mb=4)
+        cache.poll_advance(new_tid=200, changed_zoids=[])
+        accepted = cache.set(zoid=1, data=b"xyz", tid_bytes=p64(100), polled_tid=100)
+        assert accepted is False
+
+    def test_set_returns_false_when_older_than_existing(self):
+        cache = SharedLoadCache(max_mb=4)
+        cache.poll_advance(new_tid=200, changed_zoids=[])
+        cache.set(zoid=1, data=b"new", tid_bytes=p64(200), polled_tid=200)
+        accepted = cache.set(zoid=1, data=b"older", tid_bytes=p64(100), polled_tid=200)
+        assert accepted is False

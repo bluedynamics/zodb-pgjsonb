@@ -261,6 +261,15 @@ class SharedLoadCache:
         self.hits = 0
         self.misses = 0
 
+    @property
+    def consensus_tid(self):
+        """The highest TID any instance has polled to (read-only).
+
+        Returns ``None`` before the first ``poll_advance`` call.
+        """
+        with self._lock:
+            return self._consensus_tid
+
     def get(self, zoid, polled_tid):
         """Return (data, tid) for zoid or None.
 
@@ -286,20 +295,19 @@ class SharedLoadCache:
     def set(self, zoid, data, tid_bytes, polled_tid):
         """Store (data, tid_bytes) for zoid if the caller is up to date.
 
-        Rejects writes from callers whose snapshot is older than the
-        current consensus (which could be carrying stale pre-
-        invalidation bytes), and never replaces a newer entry with an
-        older one.
+        Returns True when the entry was accepted (possibly replacing an
+        older entry), False when rejected by the consensus gate, the
+        monotonicity gate, or the stale-polled_tid gate.
         """
         with self._lock:
             if self._consensus_tid is None or polled_tid is None:
-                return
+                return False
             if polled_tid < self._consensus_tid:
-                return
+                return False
             tid_int = u64(tid_bytes)
             existing = self._cache.get(zoid)
             if existing is not None and u64(existing[1]) >= tid_int:
-                return
+                return False
             if existing is not None:
                 self._current_bytes -= len(existing[0])
             self._cache[zoid] = (data, tid_bytes)
@@ -308,6 +316,7 @@ class SharedLoadCache:
             while self._current_bytes > self._max_bytes and self._cache:
                 _, (evicted_data, _) = self._cache.popitem(last=False)
                 self._current_bytes -= len(evicted_data)
+            return True
 
     def poll_advance(self, new_tid, changed_zoids):
         """Advance consensus_tid and invalidate changed zoids atomically."""
