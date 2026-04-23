@@ -131,3 +131,53 @@ class TestLoadMultipleUsesSharedCache:
                 assert instance2._load_cache.get(u64(oid)) is not None
         finally:
             conn2.close()
+
+
+class TestPollInvalidatesShared:
+    def test_poll_invalidations_evicts_from_shared(self, db):
+        """A commit from another connection invalidates shared entries."""
+        _create_tree(db, 5)
+
+        # Reader populates shared
+        conn_reader = db.open()
+        try:
+            root = conn_reader.root()
+            _ = root["c0"]["i"]
+            zoid = root["c0"]._p_oid
+        finally:
+            conn_reader.close()
+
+        # Writer modifies c0
+        conn_writer = db.open()
+        try:
+            root = conn_writer.root()
+            root["c0"]["i"] = 999
+            txn.commit()
+        finally:
+            conn_writer.close()
+
+        # New reader — poll_invalidations must evict c0 from shared
+        conn2 = db.open()
+        try:
+            instance2 = conn2._storage
+            from ZODB.utils import u64
+
+            shared = instance2._main._shared_cache
+            # poll_invalidations fired on conn2.open() — c0 should be gone
+            assert shared.get(u64(zoid), instance2._polled_tid) is None
+        finally:
+            conn2.close()
+
+    def test_poll_invalidations_advances_consensus(self, db):
+        """poll_invalidations updates _consensus_tid on the shared cache."""
+        _create_tree(db, 2)
+
+        conn = db.open()
+        try:
+            instance = conn._storage
+            shared = instance._main._shared_cache
+            # After opening (which polls), consensus must be set
+            assert shared._consensus_tid is not None
+            assert shared._consensus_tid == instance._polled_tid
+        finally:
+            conn.close()
