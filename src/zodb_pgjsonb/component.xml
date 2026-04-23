@@ -26,12 +26,32 @@
       </description>
     </key>
 
-    <key name="cache-local-mb" datatype="integer" default="16">
+    <key name="cache-local-mb" datatype="integer">
       <description>
-        Size of the per-instance object cache in megabytes.
+        DEPRECATED since 1.12.0.  Alias for cache-shared-mb; emits a
+        DeprecationWarning when set.  Before 1.12.0 this was the
+        per-instance cache budget; it is now the process-wide shared
+        cache budget, so existing deployments automatically see the
+        same total memory footprint redistributed into a single cache.
+      </description>
+    </key>
+
+    <key name="cache-shared-mb" datatype="integer" default="256">
+      <description>
+        Size of the process-wide shared object cache in megabytes.
+        One cache per process, shared across all ZODB Connections.
         Caches load() results (pickle bytes) to avoid repeated
-        PostgreSQL round-trips and JSONB transcoding. Set to 0
-        to disable. Default: 16.
+        PostgreSQL round-trips and JSONB transcoding.  Set to 0 to
+        disable.  Default: 256.
+      </description>
+    </key>
+
+    <key name="cache-per-connection-mb" datatype="integer" default="16">
+      <description>
+        Size of the per-connection L1 object cache in megabytes.
+        A small lock-free cache ahead of the shared cache for
+        hot-path reads.  Set to 0 to rely entirely on the shared
+        cache.  Default: 16.
       </description>
     </key>
 

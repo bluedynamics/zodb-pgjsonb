@@ -57,6 +57,7 @@ import re
 import shutil
 import sys
 import tempfile
+import threading
 import time
 import zodb_json_codec
 import zope.interface
@@ -216,6 +217,97 @@ class LoadCache:
         return self._size / 1_000_000
 
 
+class SharedLoadCache:
+    """Process-wide LoadCache shared across all PGJsonbStorageInstance.
+
+    Stores ``(pickle_bytes, tid_bytes)`` keyed by ``zoid`` (int).  A
+    process-wide ``_consensus_tid`` gates reads and writes so that an
+    instance holding a stale snapshot cannot pollute the cache after
+    another instance's ``poll_advance`` has already invalidated a zoid
+    at a newer TID.  See #63 for the race analysis.
+
+    Thread-safe: a single ``RLock`` protects the OrderedDict, byte
+    accounting, and ``_consensus_tid`` atomically.
+    """
+
+    __slots__ = (
+        "_cache",
+        "_consensus_tid",
+        "_current_bytes",
+        "_lock",
+        "_max_bytes",
+        "hits",
+        "misses",
+    )
+
+    def __init__(self, max_mb):
+        self._cache = OrderedDict()  # zoid → (data_bytes, tid_bytes)
+        self._consensus_tid = None  # int; advanced by poll_advance()
+        self._max_bytes = int(max_mb * 1_000_000)
+        self._current_bytes = 0
+        self._lock = threading.RLock()
+        self.hits = 0
+        self.misses = 0
+
+    def get(self, zoid, polled_tid):
+        """Return (data, tid) for zoid or None.
+
+        Returns None when the cache has never been initialized, when
+        the caller's snapshot is older than the current consensus, or
+        when the zoid is not cached.
+        """
+        with self._lock:
+            if self._consensus_tid is None or polled_tid is None:
+                self.misses += 1
+                return None
+            if polled_tid < self._consensus_tid:
+                self.misses += 1
+                return None
+            entry = self._cache.get(zoid)
+            if entry is None:
+                self.misses += 1
+                return None
+            self._cache.move_to_end(zoid)
+            self.hits += 1
+            return entry
+
+    def set(self, zoid, data, tid_bytes, polled_tid):
+        """Store (data, tid_bytes) for zoid if the caller is up to date.
+
+        Rejects writes from callers whose snapshot is older than the
+        current consensus (which could be carrying stale pre-
+        invalidation bytes), and never replaces a newer entry with an
+        older one.
+        """
+        with self._lock:
+            if self._consensus_tid is None or polled_tid is None:
+                return
+            if polled_tid < self._consensus_tid:
+                return
+            tid_int = u64(tid_bytes)
+            existing = self._cache.get(zoid)
+            if existing is not None and u64(existing[1]) >= tid_int:
+                return
+            if existing is not None:
+                self._current_bytes -= len(existing[0])
+            self._cache[zoid] = (data, tid_bytes)
+            self._cache.move_to_end(zoid)
+            self._current_bytes += len(data)
+            while self._current_bytes > self._max_bytes and self._cache:
+                _, (evicted_data, _) = self._cache.popitem(last=False)
+                self._current_bytes -= len(evicted_data)
+
+    def poll_advance(self, new_tid, changed_zoids):
+        """Advance consensus_tid and invalidate changed zoids atomically."""
+        with self._lock:
+            if self._consensus_tid is None or new_tid >= self._consensus_tid:
+                for z in changed_zoids:
+                    entry = self._cache.pop(z, None)
+                    if entry is not None:
+                        self._current_bytes -= len(entry[0])
+                self._consensus_tid = new_tid
+
+
 class PGTransactionRecord(TransactionRecord):
     """Transaction record yielded by PGJsonbStorage.iterator()."""
 
@@ -241,6 +333,18 @@ class PGJsonbStorage(CopyTransactionsMixin, ConflictResolvingStorage, BaseStorag
     Implements IMVCCStorage: ZODB.DB uses new_instance() to create
     per-connection storage instances with independent snapshots.
 
+    Cache topology (after #63):
+
+    - Each ``PGJsonbStorageInstance`` owns a small L1 ``LoadCache``
+      sized by ``cache_per_connection_mb`` (default 16 MB).  Lock-
+      free, per-connection, fast-path reads.
+    - The main ``PGJsonbStorage`` owns a single process-wide
+      ``SharedLoadCache`` sized by ``cache_shared_mb`` (default
+      256 MB), visible to every instance.  Consensus-TID gated for
+      MVCC correctness.
+    - Read path: L1 → shared → PG.  A PG hit populates both.  A
+      shared hit promotes to L1.
+
     Extends BaseStorage which handles:
     - Lock management (_lock, _commit_lock)
     - TID generation (monotonic timestamps)
@@ -258,7 +362,9 @@ class PGJsonbStorage(CopyTransactionsMixin, ConflictResolvingStorage, BaseStorag
         name="pgjsonb",
         history_preserving=False,
         blob_temp_dir=None,
-        cache_local_mb=DEFAULT_CACHE_LOCAL_MB,
+        cache_local_mb=None,  # deprecated alias for cache_shared_mb
+        cache_shared_mb=256,
+        cache_per_connection_mb=16,
         pool_size=1,
         pool_max_size=10,
         pool_timeout=30.0,
@@ -271,7 +377,24 @@ class PGJsonbStorage(CopyTransactionsMixin, ConflictResolvingStorage, BaseStorag
         BaseStorage.__init__(self, name)
         self._dsn = dsn
         self._history_preserving = history_preserving
-        self._cache_local_mb = cache_local_mb
+
+        # Deprecation: cache_local_mb used to be per-instance; now it is
+        # an alias for cache_shared_mb (see #63).  Warn once per storage.
+        if cache_local_mb is not None:
+            import warnings
+
+            warnings.warn(
+                "cache_local_mb is deprecated since 1.12.0; use "
+                "cache_shared_mb for the process-wide cache and "
+                "cache_per_connection_mb for the per-instance L1. "
+                "cache_local_mb is being mapped to cache_shared_mb.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            cache_shared_mb = cache_local_mb
+
+        self._cache_shared_mb = cache_shared_mb
+        self._cache_per_connection_mb = cache_per_connection_mb
         self._ltid = z64
         self._pack_tid = None  # Integer TID of last pack time
 
@@ -302,8 +425,14 @@ class PGJsonbStorage(CopyTransactionsMixin, ConflictResolvingStorage, BaseStorag
         )
         os.makedirs(self._blob_temp_dir, exist_ok=True)
 
-        # Load cache: zoid → (pickle_bytes, tid_bytes), bounded LRU
-        self._load_cache = LoadCache(max_mb=cache_local_mb)
+        # Per-instance L1 load cache (small, fast path, no lock).
+        # Size from cache_per_connection_mb.  See instance.py.
+        self._load_cache = LoadCache(max_mb=cache_per_connection_mb)
+
+        # Process-wide shared load cache (L2).  One per PGJsonbStorage,
+        # visible to all PGJsonbStorageInstance objects on the same
+        # process.  Gated by consensus_tid for MVCC correctness (#63).
+        self._shared_cache = SharedLoadCache(max_mb=cache_shared_mb)
 
         # Cache for conflict resolution: (oid_bytes, tid_bytes) → pickle_bytes
         # In history-free mode, loadSerial can't find old versions after they're
@@ -371,10 +500,26 @@ class PGJsonbStorage(CopyTransactionsMixin, ConflictResolvingStorage, BaseStorag
                 row = cur.fetchone()
                 if row and row["avg"]:
                     avg_size = max(100, int(row["avg"]))
-            estimated_objects = int(cache_local_mb * 1_000_000 / avg_size)
+            estimated_objects = int(cache_per_connection_mb * 1_000_000 / avg_size)
             target = max(1, int(estimated_objects * cache_warm_pct / 100))
+
+            def _current_max_tid():
+                try:
+                    with self._conn.cursor() as cur:
+                        cur.execute(
+                            "SELECT COALESCE(MAX(tid), 0) AS t FROM transaction_log"
+                        )
+                        row = cur.fetchone()
+                        return row["t"] if row else 0
+                except Exception:
+                    return 0
+
             self._warmer = CacheWarmer(
-                self._conn, target_count=target, decay=cache_warm_decay
+                self._conn,
+                target_count=target,
+                shared_cache=self._shared_cache,
+                load_current_tid_fn=_current_max_tid,
+                decay=cache_warm_decay,
             )
             import threading
 
@@ -880,6 +1025,12 @@ class PGJsonbStorage(CopyTransactionsMixin, ConflictResolvingStorage, BaseStorag
         """Commit PG transaction and update _ltid."""
         self._conn.commit()
         self._ltid = tid
+        # Invalidate the shared cache for any zoid we wrote so that
+        # other instances don't serve stale state.  Required because
+        # some write paths (main-storage direct undo/restore) don't go
+        # through an instance whose poll_invalidations would do this.
+        changed_zoids = [obj["zoid"] for obj in self._tmp]
+        self._shared_cache.poll_advance(u64(tid), changed_zoids)
 
     def _abort(self):
         """Called by BaseStorage.tpc_abort — rollback PG transaction."""

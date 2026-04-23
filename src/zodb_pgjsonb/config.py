@@ -65,18 +65,24 @@ class PGJsonbStorageFactory(BaseConfig):
         except ImportError:
             pass  # Zope (App package) not available
 
-        return PGJsonbStorage(
-            dsn=config.dsn,
-            name=config.name,
-            history_preserving=config.history_preserving,
-            blob_temp_dir=config.blob_temp_dir,
-            cache_local_mb=config.cache_local_mb,
-            pool_size=config.pool_size,
-            pool_max_size=config.pool_max_size,
-            pool_timeout=config.pool_timeout,
-            s3_client=s3_client,
-            blob_cache=blob_cache,
-            blob_threshold=getattr(config, "blob_threshold", 100 * 1024),
-            cache_warm_pct=getattr(config, "cache_warm_pct", 10),
-            cache_warm_decay=getattr(config, "cache_warm_decay", 0.8),
-        )
+        kwargs = {
+            "dsn": config.dsn,
+            "name": config.name,
+            "history_preserving": config.history_preserving,
+            "blob_temp_dir": config.blob_temp_dir,
+            "cache_shared_mb": getattr(config, "cache_shared_mb", 256),
+            "cache_per_connection_mb": getattr(config, "cache_per_connection_mb", 16),
+            "pool_size": config.pool_size,
+            "pool_max_size": config.pool_max_size,
+            "pool_timeout": config.pool_timeout,
+            "s3_client": s3_client,
+            "blob_cache": blob_cache,
+            "blob_threshold": getattr(config, "blob_threshold", 100 * 1024),
+            "cache_warm_pct": getattr(config, "cache_warm_pct", 10),
+            "cache_warm_decay": getattr(config, "cache_warm_decay", 0.8),
+        }
+        # Deprecation alias — let PGJsonbStorage.__init__ emit the warning
+        if getattr(config, "cache_local_mb", None) is not None:
+            kwargs["cache_local_mb"] = config.cache_local_mb
+
+        return PGJsonbStorage(**kwargs)

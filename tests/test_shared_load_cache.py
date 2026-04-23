@@ -1,0 +1,190 @@
+"""Unit tests for SharedLoadCache (#63).
+
+Pure-Python tests — no PostgreSQL required. Focus on correctness
+invariants: consensus-TID gating, LRU eviction, byte accounting.
+"""
+
+from ZODB.utils import p64
+from zodb_pgjsonb.storage import SharedLoadCache
+
+import pytest
+
+
+class TestConstruction:
+    def test_empty_cache(self):
+        cache = SharedLoadCache(max_mb=4)
+        assert cache._consensus_tid is None
+        assert len(cache._cache) == 0
+        assert cache._current_bytes == 0
+
+    def test_max_bytes_from_mb(self):
+        cache = SharedLoadCache(max_mb=8)
+        assert cache._max_bytes == 8 * 1_000_000
+
+
+class TestGetSetBasic:
+    def test_set_rejected_when_consensus_uninitialized(self):
+        cache = SharedLoadCache(max_mb=4)
+        cache.set(zoid=1, data=b"x", tid_bytes=p64(100), polled_tid=100)
+        assert len(cache._cache) == 0
+
+    def test_get_returns_none_when_consensus_uninitialized(self):
+        cache = SharedLoadCache(max_mb=4)
+        assert cache.get(zoid=1, polled_tid=100) is None
+
+    def test_set_and_get_after_consensus_initialized(self):
+        cache = SharedLoadCache(max_mb=4)
+        cache.poll_advance(new_tid=100, changed_zoids=[])
+        cache.set(zoid=1, data=b"xyz", tid_bytes=p64(100), polled_tid=100)
+        assert cache.get(zoid=1, polled_tid=100) == (b"xyz", p64(100))
+
+
+class TestConsensusTIDGating:
+    def test_stale_reader_bypasses_cache(self):
+        """A reader with polled_tid < consensus_tid gets None."""
+        cache = SharedLoadCache(max_mb=4)
+        cache.poll_advance(new_tid=100, changed_zoids=[])
+        cache.set(zoid=1, data=b"at100", tid_bytes=p64(100), polled_tid=100)
+
+        # Consensus moves forward via another instance's poll
+        cache.poll_advance(new_tid=200, changed_zoids=[2])
+
+        # Reader with old snapshot is gated out
+        assert cache.get(zoid=1, polled_tid=150) is None
+
+    def test_current_reader_hits(self):
+        """A reader with polled_tid >= consensus_tid hits normally."""
+        cache = SharedLoadCache(max_mb=4)
+        cache.poll_advance(new_tid=100, changed_zoids=[])
+        cache.set(zoid=1, data=b"at100", tid_bytes=p64(100), polled_tid=100)
+
+        cache.poll_advance(new_tid=200, changed_zoids=[])  # no invalidations
+
+        assert cache.get(zoid=1, polled_tid=200) == (b"at100", p64(100))
+
+    def test_stale_writer_rejected(self):
+        """A writer with polled_tid < consensus_tid cannot set."""
+        cache = SharedLoadCache(max_mb=4)
+        cache.poll_advance(new_tid=100, changed_zoids=[])
+        cache.poll_advance(new_tid=200, changed_zoids=[])
+
+        # Stale writer tries to set
+        cache.set(zoid=1, data=b"stale", tid_bytes=p64(100), polled_tid=100)
+        assert cache.get(zoid=1, polled_tid=200) is None
+
+    def test_older_tid_never_replaces_newer(self):
+        """set() with a tid_bytes older than the existing entry is ignored."""
+        cache = SharedLoadCache(max_mb=4)
+        cache.poll_advance(new_tid=200, changed_zoids=[])
+        cache.set(zoid=1, data=b"newer", tid_bytes=p64(200), polled_tid=200)
+
+        # Another writer with an older tid_bytes (but same polled_tid)
+        cache.set(zoid=1, data=b"older", tid_bytes=p64(150), polled_tid=200)
+        assert cache.get(zoid=1, polled_tid=200) == (b"newer", p64(200))
+
+    def test_poll_advance_invalidates_changed_zoids(self):
+        """poll_advance removes entries for zoids in changed list."""
+        cache = SharedLoadCache(max_mb=4)
+        cache.poll_advance(new_tid=100, changed_zoids=[])
+        cache.set(zoid=1, data=b"a", tid_bytes=p64(100), polled_tid=100)
+        cache.set(zoid=2, data=b"b", tid_bytes=p64(100), polled_tid=100)
+
+        cache.poll_advance(new_tid=150, changed_zoids=[1])
+
+        assert cache.get(zoid=1, polled_tid=150) is None
+        assert cache.get(zoid=2, polled_tid=150) == (b"b", p64(100))
+
+    def test_poll_advance_with_older_tid_is_noop(self):
+        """poll_advance with new_tid < current consensus does nothing."""
+        cache = SharedLoadCache(max_mb=4)
+        cache.poll_advance(new_tid=200, changed_zoids=[])
+        cache.set(zoid=1, data=b"x", tid_bytes=p64(200), polled_tid=200)
+
+        # An instance pollling in from behind shouldn't do anything
+        cache.poll_advance(new_tid=100, changed_zoids=[1])
+
+        assert cache._consensus_tid == 200
+        assert cache.get(zoid=1, polled_tid=200) == (b"x", p64(200))
+
+
+class TestLRUEviction:
+    def test_accounts_bytes_on_set(self):
+        cache = SharedLoadCache(max_mb=4)
+        cache.poll_advance(new_tid=100, changed_zoids=[])
+        cache.set(zoid=1, data=b"x" * 100, tid_bytes=p64(100), polled_tid=100)
+        assert cache._current_bytes == 100
+
+    def test_accounts_bytes_on_replace(self):
+        cache = SharedLoadCache(max_mb=4)
+        cache.poll_advance(new_tid=200, changed_zoids=[])
+        cache.set(zoid=1, data=b"x" * 100, tid_bytes=p64(100), polled_tid=200)
+        cache.set(zoid=1, data=b"y" * 200, tid_bytes=p64(200), polled_tid=200)
+        assert cache._current_bytes == 200
+
+    def test_accounts_bytes_on_invalidate(self):
+        cache = SharedLoadCache(max_mb=4)
+        cache.poll_advance(new_tid=100, changed_zoids=[])
+        cache.set(zoid=1, data=b"x" * 100, tid_bytes=p64(100), polled_tid=100)
+        cache.poll_advance(new_tid=200, changed_zoids=[1])
+        assert cache._current_bytes == 0
+
+    def test_evicts_lru_when_over_budget(self):
+        cache = SharedLoadCache(max_mb=1)
+        cache.poll_advance(new_tid=100, changed_zoids=[])
+        # Fill with 10 entries of 200_000 bytes each (2 MB total, budget 1 MB)
+        for z in range(10):
+            cache.set(zoid=z, data=b"x" * 200_000, tid_bytes=p64(100), polled_tid=100)
+        # At most ~5 entries fit in 1 MB
+        assert len(cache._cache) <= 6
+        assert cache._current_bytes <= 1_000_000
+
+    def test_lru_order_promotes_on_get(self):
+        cache = SharedLoadCache(max_mb=1)
+        cache.poll_advance(new_tid=100, changed_zoids=[])
+        # Fill just under budget
+        for z in range(4):
+            cache.set(zoid=z, data=b"x" * 200_000, tid_bytes=p64(100), polled_tid=100)
+        # Touch zoid 0 — bumps it to most-recent
+        cache.get(zoid=0, polled_tid=100)
+        # Add one more — zoid 1 (oldest now) should be evicted, not zoid 0
+        cache.set(zoid=99, data=b"x" * 200_000, tid_bytes=p64(100), polled_tid=100)
+        assert cache.get(zoid=0, polled_tid=100) is not None
+
+
+class TestPGJsonbStorageIntegration:
+    """Storage exposes a _shared_cache and threads its config properly."""
+
+    pytestmark = pytest.mark.db
+
+    def test_storage_has_shared_cache(self, storage):
+        assert isinstance(storage._shared_cache, SharedLoadCache)
+
+    def test_shared_cache_size_from_cache_shared_mb(self):
+        """cache_shared_mb controls shared cache size independently."""
+        from tests.conftest import clean_db
+        from tests.conftest import DSN
+        from zodb_pgjsonb.storage import PGJsonbStorage
+
+        clean_db()
+        s = PGJsonbStorage(DSN, cache_shared_mb=32)
+        try:
+            assert s._shared_cache._max_bytes == 32 * 1_000_000
+        finally:
+            s.close()
+
+    def test_cache_per_connection_mb_controls_l1(self):
+        """cache_per_connection_mb controls per-instance L1 cache size."""
+        from tests.conftest import clean_db
+        from tests.conftest import DSN
+        from zodb_pgjsonb.storage import PGJsonbStorage
+
+        clean_db()
+        s = PGJsonbStorage(DSN, cache_per_connection_mb=8)
+        try:
+            inst = s.new_instance()
+            try:
+                assert inst._load_cache._max_size == 8 * 1_000_000
+            finally:
+                inst.release()
+        finally:
+            s.close()

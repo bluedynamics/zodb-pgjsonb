@@ -67,7 +67,7 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
         self._blob_cache = main_storage._blob_cache
         self._blob_threshold = main_storage._blob_threshold
         # Load cache: zoid → (pickle_bytes, tid_bytes), bounded LRU
-        self._load_cache = LoadCache(max_mb=main_storage._cache_local_mb)
+        self._load_cache = LoadCache(max_mb=main_storage._cache_per_connection_mb)
         # Cache for conflict resolution: (oid_bytes, tid_bytes) → pickle_bytes.
         # History-preserving mode can retrieve old revisions from
         # object_history, so the cache is never needed there (#62).
@@ -186,6 +186,7 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
             new_tid = row["max_tid"]
 
         result = []
+        changed_zoids = []
         if self._polled_tid is not None and new_tid != self._polled_tid:
             with self._conn.cursor() as cur:
                 cur.execute(
@@ -194,14 +195,16 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
                     (self._polled_tid, new_tid),
                 )
                 rows = cur.fetchall()
-            warmer = self._main._warmer
             for r in rows:
                 zoid = r["zoid"]
+                changed_zoids.append(zoid)
                 result.append(p64(zoid))
                 self._load_cache.invalidate(zoid)
-                if warmer:
-                    warmer.invalidate(zoid)
 
+        # Advance shared cache consensus TID atomically with its own
+        # invalidation.  This is what gates shared.set() writes, so
+        # load() must be able to populate shared after poll. (#63)
+        self._main._shared_cache.poll_advance(new_tid, changed_zoids)
         self._polled_tid = new_tid
         return result
 
@@ -215,22 +218,32 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
     # ── Read path ────────────────────────────────────────────────────
 
     def load(self, oid, version=""):
-        """Load current object state."""
+        """Load current object state.
+
+        Three-tier cascade: per-instance L1 (fast, no lock) → process-
+        wide shared cache (L2, consensus-TID gated) → PostgreSQL.
+        """
         zoid = u64(oid)
 
-        # L1: instance load cache
+        # L1: instance load cache (fast path, no lock)
         cached = self._load_cache.get(zoid)
         if cached is not None:
             return cached
 
-        # L2: shared warm cache (populated at startup, #48)
-        warmer = self._main._warmer
-        if warmer:
-            warm_hit = warmer.get(zoid)
-            if warm_hit is not None:
-                self._load_cache.set(zoid, *warm_hit)
-                return warm_hit
+        # L2: process-wide shared cache
+        shared = self._main._shared_cache
+        shared_hit = shared.get(zoid, self._polled_tid)
+        if shared_hit is not None:
+            data, tid = shared_hit
+            self._load_cache.set(zoid, data, tid)
+            # Also populate per-instance serial cache so that
+            # conflict resolution can retrieve this revision without
+            # re-hitting PG (history-free mode only — HP uses the
+            # NoopSerialCache and pulls from object_history).
+            self._serial_cache[(oid, tid)] = data
+            return shared_hit
 
+        # Miss — go to PG
         with self._conn.cursor() as cur:
             cur.execute(
                 self._load_sql,
@@ -250,6 +263,7 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
         tid = p64(row["tid"])
         self._serial_cache[(oid, tid)] = data
         self._load_cache.set(zoid, data, tid)
+        shared.set(zoid, data, tid, self._polled_tid)
 
         # Prefetch refs if the expression yielded a non-NULL array
         refs = row.get("refs") if isinstance(row, dict) else None
@@ -263,6 +277,7 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
                 self.load_multiple(ref_oids)
 
         # Record for cache warmer (#48)
+        warmer = self._main._warmer
         if warmer and warmer.recording:
             warmer.record(zoid)
 
@@ -270,6 +285,8 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
 
     def load_multiple(self, oids):
         """Load multiple objects in a single query.
+
+        Consults L1 and the shared cache before going to PG.
 
         Args:
             oids: iterable of oid bytes
@@ -279,15 +296,24 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
             Only includes oids that exist; missing oids are silently omitted.
         """
         result = {}
-        miss_oids = []  # list of (oid_bytes, zoid_int) for cache misses
+        miss_oids = []  # list of (oid_bytes, zoid_int) for L1+shared misses
+        shared = self._main._shared_cache
 
         for oid in oids:
             zoid = u64(oid)
             cached = self._load_cache.get(zoid)
             if cached is not None:
                 result[oid] = cached
-            else:
-                miss_oids.append((oid, zoid))
+                continue
+            shared_hit = shared.get(zoid, self._polled_tid)
+            if shared_hit is not None:
+                self._load_cache.set(zoid, *shared_hit)
+                # Populate serial cache for HF conflict resolution (same as
+                # load()'s shared-hit branch — see instance.load).
+                self._serial_cache[(oid, shared_hit[1])] = shared_hit[0]
+                result[oid] = shared_hit
+                continue
+            miss_oids.append((oid, zoid))
 
         if not miss_oids:
             return result
@@ -314,6 +340,7 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
             oid = zoid_to_oid[row["zoid"]]
             self._serial_cache[(oid, tid)] = data
             self._load_cache.set(row["zoid"], data, tid)
+            shared.set(row["zoid"], data, tid, self._polled_tid)
             result[oid] = (data, tid)
 
         return result
@@ -468,6 +495,10 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
         self._conn.execute("COMMIT")
         tid = self._tid
         self._main._ltid = tid
+        # Invalidate shared cache for any zoid we just wrote so that
+        # other instances see the new state on next read.
+        changed_zoids = [obj["zoid"] for obj in self._tmp]
+        self._main._shared_cache.poll_advance(u64(tid), changed_zoids)
         if f is not None:
             f(tid)
         self._tmp.clear()
