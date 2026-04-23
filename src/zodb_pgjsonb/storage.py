@@ -333,6 +333,18 @@ class PGJsonbStorage(CopyTransactionsMixin, ConflictResolvingStorage, BaseStorag
     Implements IMVCCStorage: ZODB.DB uses new_instance() to create
     per-connection storage instances with independent snapshots.
 
+    Cache topology (after #63):
+
+    - Each ``PGJsonbStorageInstance`` owns a small L1 ``LoadCache``
+      sized by ``cache_per_connection_mb`` (default 16 MB).  Lock-
+      free, per-connection, fast-path reads.
+    - The main ``PGJsonbStorage`` owns a single process-wide
+      ``SharedLoadCache`` sized by ``cache_shared_mb`` (default
+      256 MB), visible to every instance.  Consensus-TID gated for
+      MVCC correctness.
+    - Read path: L1 → shared → PG.  A PG hit populates both.  A
+      shared hit promotes to L1.
+
     Extends BaseStorage which handles:
     - Lock management (_lock, _commit_lock)
     - TID generation (monotonic timestamps)

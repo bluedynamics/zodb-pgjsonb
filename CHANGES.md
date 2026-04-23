@@ -1,5 +1,37 @@
 # Changelog
 
+## 1.12.0
+
+- Introduce a process-wide `SharedLoadCache` that replaces per-
+  connection duplication of the pickle-bytes cache (#63).  Each
+  ZODB Connection still keeps a small L1 cache for lock-free hot
+  reads, but shares a single L2 cache across all connections in
+  the process.  On typical Plone deployments this frees ~1 GB per
+  pod (5 threads × 256 MB per-instance → 1 × 256 MB shared).
+
+- Correctness is protected by a process-wide `_consensus_tid` that
+  gates cache reads and writes: an instance holding a snapshot
+  older than another instance's last-polled TID is not allowed to
+  read or write the cache.  Any `poll_invalidations` atomically
+  advances the consensus and invalidates the changed zoids.
+
+- Config migration:
+
+  - New `cache-shared-mb` (default 256): size of the process-wide
+    shared cache.
+  - New `cache-per-connection-mb` (default 16): size of the per-
+    connection L1 cache.
+  - `cache-local-mb` becomes a deprecation alias for
+    `cache-shared-mb`.  Existing deployments that set e.g.
+    `cache-local-mb=256` automatically get a single 256 MB shared
+    cache instead of 256 MB per connection — no action required
+    beyond the deprecation warning.
+
+- The learning cache warmer (`CacheWarmer`) now populates the
+  shared cache directly.  Its private `_warm_cache` dict, `get()`
+  and `invalidate()` are removed; the only surviving public API is
+  `record()` and `warm()`.
+
 ## 1.11.2
 
 - Fix unbounded growth of `_serial_cache` (#62).  The conflict-resolution
