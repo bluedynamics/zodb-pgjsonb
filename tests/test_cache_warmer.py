@@ -11,6 +11,40 @@ def _mk_shared_cache():
     return SharedLoadCache(max_mb=4)
 
 
+class _FakeCursor:
+    def __init__(self, top_oids):
+        self._top_oids = top_oids
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def execute(self, *a, **kw):
+        return None
+
+    def fetchall(self):
+        return [{"zoid": z} for z in self._top_oids]
+
+
+class _FakeConn:
+    """Minimal stand-in for a psycopg connection used by CacheWarmer tests.
+
+    Supports the subset used by ``_read_top_oids``: ``cursor()`` context
+    manager returning rows with a ``"zoid"`` key.
+    """
+
+    def __init__(self, top_oids):
+        self._top_oids = list(top_oids)
+
+    def cursor(self):
+        return _FakeCursor(self._top_oids)
+
+    def execute(self, *a, **kw):
+        return None
+
+
 class TestCacheWarmerRecord:
     """Test recording phase."""
 
@@ -129,90 +163,64 @@ class TestCacheWarmerRecord:
         assert 3 not in w._recorded
 
 
-class TestCacheWarmerL2:
-    """Test L2 warm cache get/invalidate."""
-
-    def test_get_returns_none_before_warming_done(self):
-        from zodb_pgjsonb.cache_warmer import CacheWarmer
-
-        w = CacheWarmer(conn=mock.Mock(), target_count=10)
-        w._warm_cache = {1: (b"data", b"tid")}
-        w._warming_done.clear()
-        assert w.get(1) is None
-
-    def test_get_returns_data_after_warming_done(self):
-        from zodb_pgjsonb.cache_warmer import CacheWarmer
-
-        w = CacheWarmer(conn=mock.Mock(), target_count=10)
-        w._warm_cache = {1: (b"data", b"tid")}
-        w._warming_done.set()
-        assert w.get(1) == (b"data", b"tid")
-
-    def test_get_returns_none_for_missing(self):
-        from zodb_pgjsonb.cache_warmer import CacheWarmer
-
-        w = CacheWarmer(conn=mock.Mock(), target_count=10)
-        w._warming_done.set()
-        assert w.get(999) is None
-
-    def test_invalidate_removes_entry(self):
-        from zodb_pgjsonb.cache_warmer import CacheWarmer
-
-        w = CacheWarmer(conn=mock.Mock(), target_count=10)
-        w._warm_cache = {1: (b"data", b"tid"), 2: (b"d2", b"t2")}
-        w._warming_done.set()
-        w.invalidate(1)
-        assert w.get(1) is None
-        assert w.get(2) == (b"d2", b"t2")
-
-    def test_invalidate_nonexistent_is_noop(self):
-        from zodb_pgjsonb.cache_warmer import CacheWarmer
-
-        w = CacheWarmer(conn=mock.Mock(), target_count=10)
-        w._warm_cache = {}
-        w._warming_done.set()
-        w.invalidate(999)  # should not raise
-
-
 class TestCacheWarmerWarm:
     """Test warming phase."""
 
     def test_warm_populates_cache(self):
+        from ZODB.utils import p64
         from zodb_pgjsonb.cache_warmer import CacheWarmer
+        from zodb_pgjsonb.storage import SharedLoadCache
 
-        w = CacheWarmer(conn=mock.Mock(), target_count=10)
-        w._read_top_oids = mock.Mock(return_value=[1, 2, 3])
+        shared = SharedLoadCache(max_mb=4)
+        w = CacheWarmer(
+            conn=_FakeConn(top_oids=[1, 2, 3]),
+            target_count=10,
+            shared_cache=shared,
+            load_current_tid_fn=lambda: 100,
+        )
 
-        def fake_load(oids):
-            from ZODB.utils import p64
+        def loader(oids):
+            return {oid: (b"data-" + oid, p64(50)) for oid in oids}
 
-            return {p64(z): (f"data{z}".encode(), p64(100)) for z in [1, 2, 3]}
-
-        w.warm(fake_load)
-        assert w._warming_done.is_set()
-        assert len(w._warm_cache) == 3
+        w.warm(loader)
+        assert shared.get(zoid=1, polled_tid=100) == (b"data-" + p64(1), p64(50))
+        assert shared.get(zoid=2, polled_tid=100) == (b"data-" + p64(2), p64(50))
+        assert shared.get(zoid=3, polled_tid=100) == (b"data-" + p64(3), p64(50))
 
     def test_warm_empty_stats(self):
         from zodb_pgjsonb.cache_warmer import CacheWarmer
+        from zodb_pgjsonb.storage import SharedLoadCache
 
-        w = CacheWarmer(conn=mock.Mock(), target_count=10)
-        w._read_top_oids = mock.Mock(return_value=[])
-        w.warm(mock.Mock())
-        assert w._warming_done.is_set()
-        assert len(w._warm_cache) == 0
+        shared = SharedLoadCache(max_mb=4)
+        w = CacheWarmer(
+            conn=_FakeConn(top_oids=[]),
+            target_count=10,
+            shared_cache=shared,
+            load_current_tid_fn=lambda: 100,
+        )
+        w.warm(lambda oids: {})
+        # No stats → nothing written
+        assert shared._consensus_tid is None
+        assert len(shared._cache) == 0
 
     def test_warm_handles_load_multiple_exception(self):
         from zodb_pgjsonb.cache_warmer import CacheWarmer
+        from zodb_pgjsonb.storage import SharedLoadCache
 
-        w = CacheWarmer(conn=mock.Mock(), target_count=10)
-        w._read_top_oids = mock.Mock(return_value=[1, 2])
+        shared = SharedLoadCache(max_mb=4)
+        w = CacheWarmer(
+            conn=_FakeConn(top_oids=[1, 2, 3]),
+            target_count=10,
+            shared_cache=shared,
+            load_current_tid_fn=lambda: 100,
+        )
 
-        def failing_load(oids):
-            raise RuntimeError("pool exhausted")
+        def raising_loader(oids):
+            raise RuntimeError("simulated failure")
 
-        w.warm(failing_load)
-        assert w._warming_done.is_set()
-        assert len(w._warm_cache) == 0
+        # warm must swallow the exception and leave the cache empty
+        w.warm(raising_loader)
+        assert len(shared._cache) == 0
 
 
 @pytest.mark.db
