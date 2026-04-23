@@ -289,6 +289,8 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
     def load_multiple(self, oids):
         """Load multiple objects in a single query.
 
+        Consults L1 and the shared cache before going to PG.
+
         Args:
             oids: iterable of oid bytes
 
@@ -297,15 +299,24 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
             Only includes oids that exist; missing oids are silently omitted.
         """
         result = {}
-        miss_oids = []  # list of (oid_bytes, zoid_int) for cache misses
+        miss_oids = []  # list of (oid_bytes, zoid_int) for L1+shared misses
+        shared = self._main._shared_cache
 
         for oid in oids:
             zoid = u64(oid)
             cached = self._load_cache.get(zoid)
             if cached is not None:
                 result[oid] = cached
-            else:
-                miss_oids.append((oid, zoid))
+                continue
+            shared_hit = shared.get(zoid, self._polled_tid)
+            if shared_hit is not None:
+                self._load_cache.set(zoid, *shared_hit)
+                # Populate serial cache for HF conflict resolution (same as
+                # load()'s shared-hit branch — see instance.load).
+                self._serial_cache[(oid, shared_hit[1])] = shared_hit[0]
+                result[oid] = shared_hit
+                continue
+            miss_oids.append((oid, zoid))
 
         if not miss_oids:
             return result
@@ -332,6 +343,7 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
             oid = zoid_to_oid[row["zoid"]]
             self._serial_cache[(oid, tid)] = data
             self._load_cache.set(row["zoid"], data, tid)
+            shared.set(row["zoid"], data, tid, self._polled_tid)
             result[oid] = (data, tid)
 
         return result

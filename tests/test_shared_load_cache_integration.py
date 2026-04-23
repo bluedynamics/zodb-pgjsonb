@@ -75,3 +75,59 @@ class TestSharedCachePopulatedByLoad:
             assert instance._load_cache.get(u64(zoid)) is not None
         finally:
             conn2.close()
+
+
+class TestLoadMultipleUsesSharedCache:
+    def test_load_multiple_populates_shared(self, db):
+        _create_tree(db, 10)
+
+        conn = db.open()
+        try:
+            instance = conn._storage
+            instance._load_cache.clear()
+            conn.cacheMinimize()
+            # Trigger load_multiple by loading several OIDs at once
+            root = conn.root()
+            oids = [root[f"c{i}"]._p_oid for i in range(5)]
+            result = instance.load_multiple(oids)
+            assert len(result) == 5
+
+            from ZODB.utils import u64
+
+            shared = instance._main._shared_cache
+            for oid in oids:
+                assert shared.get(u64(oid), instance._polled_tid) is not None
+        finally:
+            conn.close()
+
+    def test_load_multiple_hits_shared_before_pg(self, db):
+        _create_tree(db, 10)
+
+        # Warm shared cache via another connection
+        conn1 = db.open()
+        try:
+            instance1 = conn1._storage
+            root = conn1.root()
+            oids = [root[f"c{i}"]._p_oid for i in range(5)]
+            instance1.load_multiple(oids)
+        finally:
+            conn1.close()
+
+        # Second connection: clear L1, load_multiple should hit shared
+        conn2 = db.open()
+        try:
+            instance2 = conn2._storage
+            instance2._load_cache.clear()
+            conn2.cacheMinimize()
+            # Get oids again from root in this connection
+            root = conn2.root()
+            oids = [root[f"c{i}"]._p_oid for i in range(5)]
+            result = instance2.load_multiple(oids)
+            assert len(result) == 5
+            # All 5 should now be in L1 (promoted from shared)
+            from ZODB.utils import u64
+
+            for oid in oids:
+                assert instance2._load_cache.get(u64(oid)) is not None
+        finally:
+            conn2.close()
