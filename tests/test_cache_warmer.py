@@ -5,13 +5,25 @@ from unittest import mock
 import pytest
 
 
+def _mk_shared_cache():
+    from zodb_pgjsonb.storage import SharedLoadCache
+
+    return SharedLoadCache(max_mb=4)
+
+
 class TestCacheWarmerRecord:
     """Test recording phase."""
 
     def test_records_unique_zoids(self):
         from zodb_pgjsonb.cache_warmer import CacheWarmer
 
-        w = CacheWarmer(conn=mock.Mock(), target_count=100, flush_interval=50)
+        w = CacheWarmer(
+            conn=mock.Mock(),
+            target_count=100,
+            shared_cache=_mk_shared_cache(),
+            load_current_tid_fn=lambda: 100,
+            flush_interval=50,
+        )
         w.record(1)
         w.record(2)
         w.record(1)  # duplicate
@@ -20,7 +32,13 @@ class TestCacheWarmerRecord:
     def test_stops_recording_at_target(self):
         from zodb_pgjsonb.cache_warmer import CacheWarmer
 
-        w = CacheWarmer(conn=mock.Mock(), target_count=3, flush_interval=100)
+        w = CacheWarmer(
+            conn=mock.Mock(),
+            target_count=3,
+            shared_cache=_mk_shared_cache(),
+            load_current_tid_fn=lambda: 100,
+            flush_interval=100,
+        )
         w._flush = mock.Mock()  # stub out DB writes
         w.record(1)
         w.record(2)
@@ -31,7 +49,13 @@ class TestCacheWarmerRecord:
     def test_flushes_at_interval(self):
         from zodb_pgjsonb.cache_warmer import CacheWarmer
 
-        w = CacheWarmer(conn=mock.Mock(), target_count=100, flush_interval=3)
+        w = CacheWarmer(
+            conn=mock.Mock(),
+            target_count=100,
+            shared_cache=_mk_shared_cache(),
+            load_current_tid_fn=lambda: 100,
+            flush_interval=3,
+        )
         w._flush = mock.Mock()
         w.record(1)
         w.record(2)
@@ -42,7 +66,13 @@ class TestCacheWarmerRecord:
     def test_first_flush_applies_decay(self):
         from zodb_pgjsonb.cache_warmer import CacheWarmer
 
-        w = CacheWarmer(conn=mock.Mock(), target_count=100, flush_interval=2)
+        w = CacheWarmer(
+            conn=mock.Mock(),
+            target_count=100,
+            shared_cache=_mk_shared_cache(),
+            load_current_tid_fn=lambda: 100,
+            flush_interval=2,
+        )
         w._flush = mock.Mock()
         w.record(1)
         w.record(2)
@@ -54,7 +84,13 @@ class TestCacheWarmerRecord:
     def test_final_flush_on_target_reached(self):
         from zodb_pgjsonb.cache_warmer import CacheWarmer
 
-        w = CacheWarmer(conn=mock.Mock(), target_count=3, flush_interval=100)
+        w = CacheWarmer(
+            conn=mock.Mock(),
+            target_count=3,
+            shared_cache=_mk_shared_cache(),
+            load_current_tid_fn=lambda: 100,
+            flush_interval=100,
+        )
         w._flush = mock.Mock()
         w.record(1)
         w.record(2)
@@ -65,13 +101,24 @@ class TestCacheWarmerRecord:
     def test_no_recording_when_disabled(self):
         from zodb_pgjsonb.cache_warmer import CacheWarmer
 
-        w = CacheWarmer(conn=mock.Mock(), target_count=0)
+        w = CacheWarmer(
+            conn=mock.Mock(),
+            target_count=0,
+            shared_cache=_mk_shared_cache(),
+            load_current_tid_fn=lambda: 100,
+        )
         assert w.recording is False
 
     def test_record_noop_after_recording_stops(self):
         from zodb_pgjsonb.cache_warmer import CacheWarmer
 
-        w = CacheWarmer(conn=mock.Mock(), target_count=2, flush_interval=100)
+        w = CacheWarmer(
+            conn=mock.Mock(),
+            target_count=2,
+            shared_cache=_mk_shared_cache(),
+            load_current_tid_fn=lambda: 100,
+            flush_interval=100,
+        )
         w._flush = mock.Mock()
         w.record(1)
         w.record(2)
@@ -199,7 +246,13 @@ class TestCacheWarmerDB:
     def test_flush_writes_scores(self):
         from zodb_pgjsonb.cache_warmer import CacheWarmer
 
-        w = CacheWarmer(conn=self.conn, target_count=100, flush_interval=50)
+        w = CacheWarmer(
+            conn=self.conn,
+            target_count=100,
+            shared_cache=_mk_shared_cache(),
+            load_current_tid_fn=lambda: 100,
+            flush_interval=50,
+        )
         w._pending = {10, 20, 30}
         w._flush(decay=False)
 
@@ -216,7 +269,13 @@ class TestCacheWarmerDB:
         # Pre-populate
         self.conn.execute("INSERT INTO cache_warm_stats (zoid, score) VALUES (10, 5.0)")
 
-        w = CacheWarmer(conn=self.conn, target_count=100, decay=0.5)
+        w = CacheWarmer(
+            conn=self.conn,
+            target_count=100,
+            shared_cache=_mk_shared_cache(),
+            load_current_tid_fn=lambda: 100,
+            decay=0.5,
+        )
         w._pending = {20}
         w._flush(decay=True)
 
@@ -233,7 +292,13 @@ class TestCacheWarmerDB:
             "INSERT INTO cache_warm_stats (zoid, score) VALUES (10, 0.001)"
         )
 
-        w = CacheWarmer(conn=self.conn, target_count=100, decay=0.5)
+        w = CacheWarmer(
+            conn=self.conn,
+            target_count=100,
+            shared_cache=_mk_shared_cache(),
+            load_current_tid_fn=lambda: 100,
+            decay=0.5,
+        )
         w._pending = {20}
         w._flush(decay=True)
 
@@ -249,7 +314,12 @@ class TestCacheWarmerDB:
             "(1, 10.0), (2, 5.0), (3, 20.0), (4, 1.0)"
         )
 
-        w = CacheWarmer(conn=self.conn, target_count=2)
+        w = CacheWarmer(
+            conn=self.conn,
+            target_count=2,
+            shared_cache=_mk_shared_cache(),
+            load_current_tid_fn=lambda: 100,
+        )
         oids = w._read_top_oids()
         # Top 2 by score: 3 (20.0), 1 (10.0)
         assert oids == [3, 1]
@@ -258,14 +328,26 @@ class TestCacheWarmerDB:
         """End-to-end: record OIDs → flush → read back top."""
         from zodb_pgjsonb.cache_warmer import CacheWarmer
 
-        w = CacheWarmer(conn=self.conn, target_count=5, flush_interval=100, decay=0.8)
+        w = CacheWarmer(
+            conn=self.conn,
+            target_count=5,
+            shared_cache=_mk_shared_cache(),
+            load_current_tid_fn=lambda: 100,
+            flush_interval=100,
+            decay=0.8,
+        )
         for zoid in [100, 200, 300, 400, 500]:
             w.record(zoid)
 
         assert w.recording is False
 
         # Read back
-        w2 = CacheWarmer(conn=self.conn, target_count=3)
+        w2 = CacheWarmer(
+            conn=self.conn,
+            target_count=3,
+            shared_cache=_mk_shared_cache(),
+            load_current_tid_fn=lambda: 100,
+        )
         oids = w2._read_top_oids()
         assert len(oids) == 3
         assert set(oids).issubset({100, 200, 300, 400, 500})
@@ -278,7 +360,12 @@ class TestCacheWarmerFlushEdge:
         from zodb_pgjsonb.cache_warmer import CacheWarmer
 
         conn = mock.Mock()
-        w = CacheWarmer(conn=conn, target_count=100)
+        w = CacheWarmer(
+            conn=conn,
+            target_count=100,
+            shared_cache=_mk_shared_cache(),
+            load_current_tid_fn=lambda: 100,
+        )
         w._pending = set()  # already empty
         w._flush(decay=False)
         conn.execute.assert_not_called()
@@ -288,7 +375,12 @@ class TestCacheWarmerFlushEdge:
 
         conn = mock.Mock()
         conn.execute.side_effect = RuntimeError("connection lost")
-        w = CacheWarmer(conn=conn, target_count=100)
+        w = CacheWarmer(
+            conn=conn,
+            target_count=100,
+            shared_cache=_mk_shared_cache(),
+            load_current_tid_fn=lambda: 100,
+        )
         w._pending = {10, 20}
         # Must not propagate the exception
         w._flush(decay=False)
@@ -309,7 +401,12 @@ class TestCacheWarmerFlushEdge:
         conn = mock.MagicMock()
         cursor = conn.cursor.return_value.__enter__.return_value
 
-        w = CacheWarmer(conn=conn, target_count=100)
+        w = CacheWarmer(
+            conn=conn,
+            target_count=100,
+            shared_cache=_mk_shared_cache(),
+            load_current_tid_fn=lambda: 100,
+        )
         w._pending = {42, 7, 99, 3, 58}
         w._flush(decay=False)
 
@@ -358,3 +455,40 @@ class TestWarmLoadMultiple:
             record = zodb_json_codec.decode_zodb_record(data)
             assert "@cls" in record
             assert "@s" in record
+
+
+@pytest.mark.db
+class TestWarmerPopulatesSharedCache:
+    """After #63: warmer writes go into the shared cache, not a private dict."""
+
+    def test_warm_populates_shared_cache(self, storage):
+        """CacheWarmer.warm loads into PGJsonbStorage._shared_cache."""
+        from ZODB.utils import p64
+        from zodb_pgjsonb.cache_warmer import CacheWarmer
+
+        # Seed the stats table
+        with storage._conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO cache_warm_stats (zoid, score) "
+                "VALUES (1, 10.0), (2, 9.0), (3, 8.0)"
+            )
+        storage._conn.commit()
+
+        # Manually trigger a warm cycle
+        warmer = CacheWarmer(
+            conn=storage._conn,
+            target_count=10,
+            shared_cache=storage._shared_cache,
+            load_current_tid_fn=lambda: 100,
+        )
+
+        def load_multiple_fn(oids):
+            return {oid: (b"data-" + oid, p64(50)) for oid in oids}
+
+        # Prime consensus so set() is accepted
+        storage._shared_cache.poll_advance(new_tid=100, changed_zoids=[])
+        warmer.warm(load_multiple_fn)
+
+        shared = storage._shared_cache
+        assert shared.get(zoid=1, polled_tid=100) == (b"data-" + p64(1), p64(50))
+        assert shared.get(zoid=2, polled_tid=100) == (b"data-" + p64(2), p64(50))

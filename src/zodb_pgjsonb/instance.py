@@ -195,14 +195,11 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
                     (self._polled_tid, new_tid),
                 )
                 rows = cur.fetchall()
-            warmer = self._main._warmer
             for r in rows:
                 zoid = r["zoid"]
                 changed_zoids.append(zoid)
                 result.append(p64(zoid))
                 self._load_cache.invalidate(zoid)
-                if warmer:
-                    warmer.invalidate(zoid)
 
         # Advance shared cache consensus TID atomically with its own
         # invalidation.  This is what gates shared.set() writes, so

@@ -1,15 +1,16 @@
 """Learning cache warmer for zodb-pgjsonb.
 
 Records which ZOIDs are loaded after each startup, persists scores
-to PostgreSQL with exponential decay, and pre-loads the highest-scored
-objects into a shared L2 warm cache on the next startup.
+to PostgreSQL with exponential decay, and pre-loads the highest-
+scored objects into the process-wide SharedLoadCache on the next
+startup.
 
-See docs/plans/2026-04-03-learning-cache-warmer-design.md for details.
+See docs/plans/2026-04-03-learning-cache-warmer-design.md and #63 for
+the shared-cache migration.
 """
 
 import contextlib
 import logging
-import threading
 
 
 log = logging.getLogger(__name__)
@@ -24,19 +25,26 @@ CREATE TABLE IF NOT EXISTS cache_warm_stats (
 
 
 class CacheWarmer:
-    """Learning cache warmer with L2 warm cache.
+    """Learning cache warmer.
 
-    Three phases:
+    Two phases:
     1. **Warm** (startup, background thread): load top-scored ZOIDs
-       from ``cache_warm_stats`` into ``_warm_cache``.
+       from ``cache_warm_stats`` directly into the process-wide
+       ``SharedLoadCache``.
     2. **Record** (after startup): track the first N unique ZOIDs
-       loaded via ``load()``, flush to PG every ``flush_interval``.
-    3. **Serve** (ongoing): Instance ``load()`` checks L2 after L1
-       miss; ``poll_invalidations()`` invalidates L2 entries.
+       loaded via ``Instance.load()``, flush to PG every
+       ``flush_interval``.
     """
 
-    def __init__(self, conn, target_count, decay=0.8, flush_interval=1000):
-        # Recording state
+    def __init__(
+        self,
+        conn,
+        target_count,
+        shared_cache,
+        load_current_tid_fn,
+        decay=0.8,
+        flush_interval=1000,
+    ):
         self.recording = target_count > 0
         self._recorded = set()
         self._pending = set()
@@ -45,22 +53,15 @@ class CacheWarmer:
         self._decayed = False
         self._decay = decay
 
-        # L2 warm cache
-        self._warm_cache = {}
-        self._warming_done = threading.Event()
+        # Shared cache to populate at warm time (#63)
+        self._shared_cache = shared_cache
+        self._load_current_tid_fn = load_current_tid_fn
 
-        # DB connection (main storage's conn, autocommit=True)
         self._conn = conn
 
     # ── Recording phase ──────────────────────────────────────────────
 
     def record(self, zoid):
-        """Record a loaded ZOID.  Called from Instance.load().
-
-        Flushes to PG every ``_flush_interval`` OIDs to limit data
-        loss if the pod is killed.  Decay is applied only on the
-        first flush.
-        """
         if not self.recording:
             return
         if zoid in self._recorded:
@@ -80,16 +81,6 @@ class CacheWarmer:
             )
 
     def _flush(self, decay=False):
-        """Write pending OIDs to cache_warm_stats.
-
-        Wrapped in an explicit transaction so the decay UPDATE, score
-        UPSERT, and low-score DELETE are atomic.
-
-        Zoids are sorted to give a deterministic row-lock acquisition
-        order across concurrent flushes. Without this, two workers with
-        overlapping pending sets deadlock on the PK index when they
-        upsert rows in opposing orders.
-        """
         zoids = sorted(self._pending)
         if not zoids:
             return
@@ -120,7 +111,6 @@ class CacheWarmer:
     # ── Warming phase ────────────────────────────────────────────────
 
     def _read_top_oids(self):
-        """Read top-scored ZOIDs from cache_warm_stats."""
         try:
             with self._conn.cursor() as cur:
                 cur.execute(
@@ -133,21 +123,17 @@ class CacheWarmer:
             return []
 
     def warm(self, load_multiple_fn):
-        """Load top-N ZOIDs into L2 warm cache.
+        """Load top-N ZOIDs into the shared cache.
 
-        Runs in a background daemon thread.  Builds a temporary dict,
-        then swaps atomically to prevent race conditions with
-        ``poll_invalidations()`` during loading.
-
-        Args:
-            load_multiple_fn: callable that takes a list of OID bytes
-                and returns dict {oid_bytes: (pickle_bytes, tid_bytes)}.
+        Runs in a background daemon thread.  Primes the consensus TID
+        on the shared cache to the current PG max_tid so that
+        subsequent ``shared.set`` calls are accepted.
         """
         from ZODB.utils import p64
+        from ZODB.utils import u64
 
         top_zoids = self._read_top_oids()
         if not top_zoids:
-            self._warming_done.set()
             log.info("Cache warmer: no stats yet, skipping warmup")
             return
 
@@ -156,33 +142,18 @@ class CacheWarmer:
             results = load_multiple_fn(oids)
         except Exception:
             log.warning("Cache warmer: load_multiple failed", exc_info=True)
-            self._warming_done.set()
             return
 
-        from ZODB.utils import u64
-
-        tmp = {}
-        for oid, (data, tid) in results.items():
-            tmp[u64(oid)] = (data, tid)
-
-        self._warm_cache = tmp  # atomic swap
-        self._warming_done.set()
-        log.info("Cache warmer: loaded %d objects into L2", len(tmp))
-
-    # ── L2 cache access ──────────────────────────────────────────────
-
-    def get(self, zoid):
-        """L2 lookup.  Returns (data, tid) or None.
-
-        Returns None while warming is still in progress.
-        """
-        if not self._warming_done.is_set():
-            return None
-        return self._warm_cache.get(zoid)
-
-    def invalidate(self, zoid):
-        """Remove a ZOID from the warm cache.
-
-        Called by ``poll_invalidations()`` for changed objects.
-        """
-        self._warm_cache.pop(zoid, None)
+        # Prime consensus so set() accepts our writes, then populate.
+        current_tid = self._load_current_tid_fn()
+        self._shared_cache.poll_advance(new_tid=current_tid, changed_zoids=[])
+        written = 0
+        for oid, (data, tid_bytes) in results.items():
+            self._shared_cache.set(
+                zoid=u64(oid),
+                data=data,
+                tid_bytes=tid_bytes,
+                polled_tid=current_tid,
+            )
+            written += 1
+        log.info("Cache warmer: loaded %d objects into shared cache", written)

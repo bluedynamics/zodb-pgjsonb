@@ -490,8 +490,24 @@ class PGJsonbStorage(CopyTransactionsMixin, ConflictResolvingStorage, BaseStorag
                     avg_size = max(100, int(row["avg"]))
             estimated_objects = int(cache_per_connection_mb * 1_000_000 / avg_size)
             target = max(1, int(estimated_objects * cache_warm_pct / 100))
+
+            def _current_max_tid():
+                try:
+                    with self._conn.cursor() as cur:
+                        cur.execute(
+                            "SELECT COALESCE(MAX(tid), 0) AS t FROM transaction_log"
+                        )
+                        row = cur.fetchone()
+                        return row["t"] if row else 0
+                except Exception:
+                    return 0
+
             self._warmer = CacheWarmer(
-                self._conn, target_count=target, decay=cache_warm_decay
+                self._conn,
+                target_count=target,
+                shared_cache=self._shared_cache,
+                load_current_tid_fn=_current_max_tid,
+                decay=cache_warm_decay,
             )
             import threading
 
