@@ -127,7 +127,16 @@ class CacheWarmer:
 
         Runs in a background daemon thread.  Primes the consensus TID
         on the shared cache to the current PG max_tid so that
-        subsequent ``shared.set`` calls are accepted.
+        subsequent ``shared.set`` calls are accepted.  Re-reads
+        consensus after ``poll_advance`` and uses that as the
+        ``polled_tid`` for set calls — this is the mitigation for the
+        startup race where an instance's poll advances consensus past
+        the warmer's sampled TID before the set loop begins.
+
+        Skips warmup when the TID is unavailable.  Logs a WARNING when
+        every set() was rejected despite a non-empty result set (a
+        likely sign of the race being wider than this mitigation
+        covers).
         """
         from ZODB.utils import p64
         from ZODB.utils import u64
@@ -137,6 +146,11 @@ class CacheWarmer:
             log.info("Cache warmer: no stats yet, skipping warmup")
             return
 
+        current_tid = self._load_current_tid_fn()
+        if current_tid is None:
+            log.warning("Cache warmer: could not read current TID, skipping warmup")
+            return
+
         oids = [p64(z) for z in top_zoids]
         try:
             results = load_multiple_fn(oids)
@@ -144,16 +158,46 @@ class CacheWarmer:
             log.warning("Cache warmer: load_multiple failed", exc_info=True)
             return
 
-        # Prime consensus so set() accepts our writes, then populate.
-        current_tid = self._load_current_tid_fn()
+        if not results:
+            log.info("Cache warmer: load_multiple returned no objects")
+            return
+
+        # Prime consensus so set() accepts our writes.  Another instance
+        # may have advanced consensus beyond our sampled current_tid
+        # already — in that case poll_advance is a no-op, and the actual
+        # consensus is higher than current_tid.  Re-read it so our
+        # subsequent set() calls use the effective consensus as their
+        # polled_tid and pass the gate.
         self._shared_cache.poll_advance(new_tid=current_tid, changed_zoids=[])
+        effective_tid = self._shared_cache.consensus_tid
+        if effective_tid is None:  # guarded for paranoia; should not happen
+            log.warning("Cache warmer: consensus still None after poll_advance")
+            return
+
         written = 0
+        attempted = 0
         for oid, (data, tid_bytes) in results.items():
-            self._shared_cache.set(
+            attempted += 1
+            if self._shared_cache.set(
                 zoid=u64(oid),
                 data=data,
                 tid_bytes=tid_bytes,
-                polled_tid=current_tid,
+                polled_tid=effective_tid,
+            ):
+                written += 1
+
+        if written == 0:
+            log.warning(
+                "Cache warmer: all %d set() calls rejected by shared cache "
+                "(consensus=%d, sampled_tid=%d) — likely raced with a "
+                "concurrent instance poll",
+                attempted,
+                effective_tid,
+                current_tid,
             )
-            written += 1
-        log.info("Cache warmer: loaded %d objects into shared cache", written)
+        else:
+            log.info(
+                "Cache warmer: loaded %d of %d objects into shared cache",
+                written,
+                attempted,
+            )

@@ -1,6 +1,7 @@
 """Tests for CacheWarmer — unit + integration tests."""
 
 from unittest import mock
+from zodb_pgjsonb.cache_warmer import CacheWarmer
 
 import pytest
 
@@ -500,3 +501,107 @@ class TestWarmerPopulatesSharedCache:
         shared = storage._shared_cache
         assert shared.get(zoid=1, polled_tid=100) == (b"data-" + p64(1), p64(50))
         assert shared.get(zoid=2, polled_tid=100) == (b"data-" + p64(2), p64(50))
+
+
+class TestWarmerRaceRecovery:
+    """#65 I3: warmer tolerates a consensus race and logs silent failures."""
+
+    def test_warm_uses_effective_consensus_when_race_advances_it(self):
+        """If consensus is already ahead, warmer's writes still land."""
+        from ZODB.utils import p64
+        from zodb_pgjsonb.storage import SharedLoadCache
+
+        shared = SharedLoadCache(max_mb=4)
+        # Simulate another instance's poll_advance racing ahead
+        shared.poll_advance(new_tid=1000, changed_zoids=[])
+
+        w = CacheWarmer(
+            conn=_FakeConn(top_oids=[1, 2]),
+            target_count=10,
+            shared_cache=shared,
+            load_current_tid_fn=lambda: 500,  # stale — before the race
+        )
+
+        def loader(oids):
+            return {oid: (b"data-" + oid, p64(500)) for oid in oids}
+
+        w.warm(loader)
+
+        # Entries must be present: the warmer re-read consensus and
+        # used 1000 (the actual value) as polled_tid instead of 500.
+        assert shared.get(zoid=1, polled_tid=1000) == (b"data-" + p64(1), p64(500))
+        assert shared.get(zoid=2, polled_tid=1000) == (b"data-" + p64(2), p64(500))
+
+    def test_warm_logs_warning_when_all_writes_rejected(self, caplog):
+        """If consensus advances past the warmer's effective polled_tid
+        mid-loop, every set() is rejected and the warmer flags it."""
+        from ZODB.utils import p64
+        from zodb_pgjsonb.storage import SharedLoadCache
+
+        import logging
+
+        # A cache subclass whose set() always returns False (simulating
+        # a mid-loop consensus advance that we can't actually time).
+        class _RejectingCache(SharedLoadCache):
+            def set(self, *a, **kw):
+                super().set(*a, **kw)
+                return False
+
+        shared = _RejectingCache(max_mb=4)
+        w = CacheWarmer(
+            conn=_FakeConn(top_oids=[1, 2, 3]),
+            target_count=10,
+            shared_cache=shared,
+            load_current_tid_fn=lambda: 100,
+        )
+
+        def loader(oids):
+            return {oid: (b"x", p64(50)) for oid in oids}
+
+        with caplog.at_level(logging.WARNING, logger="zodb_pgjsonb.cache_warmer"):
+            w.warm(loader)
+
+        warnings = [
+            r
+            for r in caplog.records
+            if r.levelno == logging.WARNING and "rejected" in r.getMessage().lower()
+        ]
+        assert warnings, (
+            f"expected a WARNING about rejected writes, got: "
+            f"{[r.getMessage() for r in caplog.records]}"
+        )
+
+    def test_warm_info_log_on_normal_writes(self, caplog):
+        """Happy path logs at INFO, not WARNING."""
+        from ZODB.utils import p64
+        from zodb_pgjsonb.storage import SharedLoadCache
+
+        import logging
+
+        shared = SharedLoadCache(max_mb=4)
+        w = CacheWarmer(
+            conn=_FakeConn(top_oids=[1, 2]),
+            target_count=10,
+            shared_cache=shared,
+            load_current_tid_fn=lambda: 100,
+        )
+
+        def loader(oids):
+            return {oid: (b"x", p64(50)) for oid in oids}
+
+        with caplog.at_level(logging.INFO, logger="zodb_pgjsonb.cache_warmer"):
+            w.warm(loader)
+
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert not warnings, (
+            f"expected no warnings, got: {[r.getMessage() for r in warnings]}"
+        )
+        infos = [
+            r
+            for r in caplog.records
+            if r.levelno == logging.INFO and "loaded 2 of 2 objects" in r.getMessage()
+        ]
+        assert infos, (
+            f"expected INFO with loaded count, got: "
+            f"{[r.getMessage() for r in caplog.records]}"
+        )

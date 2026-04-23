@@ -17,6 +17,7 @@ from .storage import _load_blob_from_s3
 from .storage import _loadBefore_hf
 from .storage import _loadBefore_hp
 from .storage import _NoopSerialCache
+from .storage import _read_max_tid
 from .storage import LoadCache
 from .undo import _compute_undo
 from ZODB.ConflictResolution import ConflictResolvingStorage
@@ -180,10 +181,7 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
         # (invalidation lookups AND load() calls) see this same state.
         self._begin_read_txn()
 
-        with self._conn.cursor() as cur:
-            cur.execute("SELECT COALESCE(MAX(tid), 0) AS max_tid FROM transaction_log")
-            row = cur.fetchone()
-            new_tid = row["max_tid"]
+        new_tid = _read_max_tid(self._conn)
 
         result = []
         changed_zoids = []
