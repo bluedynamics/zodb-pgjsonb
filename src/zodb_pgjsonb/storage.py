@@ -57,6 +57,7 @@ import re
 import shutil
 import sys
 import tempfile
+import threading
 import time
 import zodb_json_codec
 import zope.interface
@@ -214,6 +215,87 @@ class LoadCache:
     @property
     def size_mb(self):
         return self._size / 1_000_000
+
+
+class SharedLoadCache:
+    """Process-wide LoadCache shared across all PGJsonbStorageInstance.
+
+    Stores ``(pickle_bytes, tid_bytes)`` keyed by ``zoid`` (int).  A
+    process-wide ``_consensus_tid`` gates reads and writes so that an
+    instance holding a stale snapshot cannot pollute the cache after
+    another instance's ``poll_advance`` has already invalidated a zoid
+    at a newer TID.  See #63 for the race analysis.
+
+    Thread-safe: a single ``RLock`` protects the OrderedDict, byte
+    accounting, and ``_consensus_tid`` atomically.
+    """
+
+    def __init__(self, max_mb):
+        self._cache = OrderedDict()  # zoid → (data_bytes, tid_bytes)
+        self._consensus_tid = None  # int; advanced by poll_advance()
+        self._max_bytes = int(max_mb * 1_000_000)
+        self._current_bytes = 0
+        self._lock = threading.RLock()
+        self.hits = 0
+        self.misses = 0
+
+    def get(self, zoid, polled_tid):
+        """Return (data, tid) for zoid or None.
+
+        Returns None when the cache has never been initialized, when
+        the caller's snapshot is older than the current consensus, or
+        when the zoid is not cached.
+        """
+        with self._lock:
+            if self._consensus_tid is None or polled_tid is None:
+                self.misses += 1
+                return None
+            if polled_tid < self._consensus_tid:
+                self.misses += 1
+                return None
+            entry = self._cache.get(zoid)
+            if entry is None:
+                self.misses += 1
+                return None
+            self._cache.move_to_end(zoid)
+            self.hits += 1
+            return entry
+
+    def set(self, zoid, data, tid_bytes, polled_tid):
+        """Store (data, tid_bytes) for zoid if the caller is up to date.
+
+        Rejects writes from callers whose snapshot is older than the
+        current consensus (which could be carrying stale pre-
+        invalidation bytes), and never replaces a newer entry with an
+        older one.
+        """
+        with self._lock:
+            if self._consensus_tid is None or polled_tid is None:
+                return
+            if polled_tid < self._consensus_tid:
+                return
+            tid_int = u64(tid_bytes)
+            existing = self._cache.get(zoid)
+            if existing is not None and u64(existing[1]) >= tid_int:
+                return
+            if existing is not None:
+                self._current_bytes -= len(existing[0])
+            self._cache[zoid] = (data, tid_bytes)
+            self._cache.move_to_end(zoid)
+            self._current_bytes += len(data)
+            while self._current_bytes > self._max_bytes and self._cache:
+                _, (evicted_data, _) = self._cache.popitem(last=False)
+                self._current_bytes -= len(evicted_data)
+
+    def poll_advance(self, new_tid, changed_zoids):
+        """Advance consensus_tid and invalidate changed zoids atomically."""
+        with self._lock:
+            if self._consensus_tid is None or new_tid >= self._consensus_tid:
+                for z in changed_zoids:
+                    entry = self._cache.pop(z, None)
+                    if entry is not None:
+                        self._current_bytes -= len(entry[0])
+                self._consensus_tid = new_tid
 
 
 class PGTransactionRecord(TransactionRecord):
