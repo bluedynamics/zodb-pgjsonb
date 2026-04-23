@@ -7,6 +7,8 @@ invariants: consensus-TID gating, LRU eviction, byte accounting.
 from ZODB.utils import p64
 from zodb_pgjsonb.storage import SharedLoadCache
 
+import pytest
+
 
 class TestConstruction:
     def test_empty_cache(self):
@@ -147,3 +149,42 @@ class TestLRUEviction:
         # Add one more — zoid 1 (oldest now) should be evicted, not zoid 0
         cache.set(zoid=99, data=b"x" * 200_000, tid_bytes=p64(100), polled_tid=100)
         assert cache.get(zoid=0, polled_tid=100) is not None
+
+
+class TestPGJsonbStorageIntegration:
+    """Storage exposes a _shared_cache and threads its config properly."""
+
+    pytestmark = pytest.mark.db
+
+    def test_storage_has_shared_cache(self, storage):
+        assert isinstance(storage._shared_cache, SharedLoadCache)
+
+    def test_shared_cache_size_from_cache_shared_mb(self):
+        """cache_shared_mb controls shared cache size independently."""
+        from tests.conftest import clean_db
+        from tests.conftest import DSN
+        from zodb_pgjsonb.storage import PGJsonbStorage
+
+        clean_db()
+        s = PGJsonbStorage(DSN, cache_shared_mb=32)
+        try:
+            assert s._shared_cache._max_bytes == 32 * 1_000_000
+        finally:
+            s.close()
+
+    def test_cache_per_connection_mb_controls_l1(self):
+        """cache_per_connection_mb controls per-instance L1 cache size."""
+        from tests.conftest import clean_db
+        from tests.conftest import DSN
+        from zodb_pgjsonb.storage import PGJsonbStorage
+
+        clean_db()
+        s = PGJsonbStorage(DSN, cache_per_connection_mb=8)
+        try:
+            inst = s.new_instance()
+            try:
+                assert inst._load_cache._max_size == 8 * 1_000_000
+            finally:
+                inst.release()
+        finally:
+            s.close()

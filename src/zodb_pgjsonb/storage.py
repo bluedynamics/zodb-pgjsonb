@@ -350,7 +350,9 @@ class PGJsonbStorage(CopyTransactionsMixin, ConflictResolvingStorage, BaseStorag
         name="pgjsonb",
         history_preserving=False,
         blob_temp_dir=None,
-        cache_local_mb=DEFAULT_CACHE_LOCAL_MB,
+        cache_local_mb=None,  # deprecated alias for cache_shared_mb
+        cache_shared_mb=256,
+        cache_per_connection_mb=16,
         pool_size=1,
         pool_max_size=10,
         pool_timeout=30.0,
@@ -363,7 +365,27 @@ class PGJsonbStorage(CopyTransactionsMixin, ConflictResolvingStorage, BaseStorag
         BaseStorage.__init__(self, name)
         self._dsn = dsn
         self._history_preserving = history_preserving
-        self._cache_local_mb = cache_local_mb
+
+        # Deprecation: cache_local_mb used to be per-instance; now it is
+        # an alias for cache_shared_mb (see #63).  Warn once per storage.
+        if cache_local_mb is not None:
+            import warnings
+
+            warnings.warn(
+                "cache_local_mb is deprecated since 1.12.0; use "
+                "cache_shared_mb for the process-wide cache and "
+                "cache_per_connection_mb for the per-instance L1. "
+                "cache_local_mb is being mapped to cache_shared_mb.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            cache_shared_mb = cache_local_mb
+
+        self._cache_shared_mb = cache_shared_mb
+        self._cache_per_connection_mb = cache_per_connection_mb
+        # Keep the old attribute name for backward compat with any
+        # code that reads it (tests, instance.py).
+        self._cache_local_mb = cache_per_connection_mb
         self._ltid = z64
         self._pack_tid = None  # Integer TID of last pack time
 
@@ -394,8 +416,14 @@ class PGJsonbStorage(CopyTransactionsMixin, ConflictResolvingStorage, BaseStorag
         )
         os.makedirs(self._blob_temp_dir, exist_ok=True)
 
-        # Load cache: zoid → (pickle_bytes, tid_bytes), bounded LRU
-        self._load_cache = LoadCache(max_mb=cache_local_mb)
+        # Per-instance L1 load cache (small, fast path, no lock).
+        # Size from cache_per_connection_mb.  See instance.py.
+        self._load_cache = LoadCache(max_mb=cache_per_connection_mb)
+
+        # Process-wide shared load cache (L2).  One per PGJsonbStorage,
+        # visible to all PGJsonbStorageInstance objects on the same
+        # process.  Gated by consensus_tid for MVCC correctness (#63).
+        self._shared_cache = SharedLoadCache(max_mb=cache_shared_mb)
 
         # Cache for conflict resolution: (oid_bytes, tid_bytes) → pickle_bytes
         # In history-free mode, loadSerial can't find old versions after they're
@@ -463,7 +491,7 @@ class PGJsonbStorage(CopyTransactionsMixin, ConflictResolvingStorage, BaseStorag
                 row = cur.fetchone()
                 if row and row["avg"]:
                     avg_size = max(100, int(row["avg"]))
-            estimated_objects = int(cache_local_mb * 1_000_000 / avg_size)
+            estimated_objects = int(cache_per_connection_mb * 1_000_000 / avg_size)
             target = max(1, int(estimated_objects * cache_warm_pct / 100))
             self._warmer = CacheWarmer(
                 self._conn, target_count=target, decay=cache_warm_decay
