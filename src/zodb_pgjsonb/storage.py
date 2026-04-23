@@ -128,6 +128,18 @@ class ExtraColumn:
 DEFAULT_CACHE_LOCAL_MB = 16
 
 
+def _read_max_tid(conn):
+    """Return the current MAX(tid) from transaction_log, or 0 when empty.
+
+    Raises whatever psycopg raises on a broken connection or closed
+    database.  Callers decide whether to catch.
+    """
+    with conn.cursor() as cur:
+        cur.execute("SELECT COALESCE(MAX(tid), 0) AS max_tid FROM transaction_log")
+        row = cur.fetchone()
+        return row["max_tid"] if row else 0
+
+
 class _NoopSerialCache:
     """Drop-in dict substitute that never stores anything (#62).
 
@@ -503,22 +515,11 @@ class PGJsonbStorage(CopyTransactionsMixin, ConflictResolvingStorage, BaseStorag
             estimated_objects = int(cache_per_connection_mb * 1_000_000 / avg_size)
             target = max(1, int(estimated_objects * cache_warm_pct / 100))
 
-            def _current_max_tid():
-                try:
-                    with self._conn.cursor() as cur:
-                        cur.execute(
-                            "SELECT COALESCE(MAX(tid), 0) AS t FROM transaction_log"
-                        )
-                        row = cur.fetchone()
-                        return row["t"] if row else 0
-                except Exception:
-                    return 0
-
             self._warmer = CacheWarmer(
                 self._conn,
                 target_count=target,
                 shared_cache=self._shared_cache,
-                load_current_tid_fn=_current_max_tid,
+                load_current_tid_fn=self.current_max_tid,
                 decay=cache_warm_decay,
             )
             import threading
@@ -579,14 +580,12 @@ class PGJsonbStorage(CopyTransactionsMixin, ConflictResolvingStorage, BaseStorag
             if max_oid > 0:
                 self._oid = p64(max_oid)
 
-            cur.execute("SELECT COALESCE(MAX(tid), 0) AS max_tid FROM transaction_log")
-            row = cur.fetchone()
-            max_tid = row["max_tid"]
-            if max_tid > 0:
-                self._ltid = p64(max_tid)
-                # Ensure _ts is at least as recent as the last committed TID
-                # so _new_tid() generates monotonically increasing TIDs.
-                self._ts = TimeStamp(self._ltid)
+        max_tid = _read_max_tid(self._conn)
+        if max_tid > 0:
+            self._ltid = p64(max_tid)
+            # Ensure _ts is at least as recent as the last committed TID
+            # so _new_tid() generates monotonically increasing TIDs.
+            self._ts = TimeStamp(self._ltid)
 
     def new_oid(self):
         """Allocate a new OID via PostgreSQL sequence (cross-process safe).
@@ -1054,6 +1053,23 @@ class PGJsonbStorage(CopyTransactionsMixin, ConflictResolvingStorage, BaseStorag
     def lastTransaction(self):
         """Return TID of the last committed transaction."""
         return self._ltid
+
+    def current_max_tid(self):
+        """Return the current MAX(tid) in transaction_log, or ``None``.
+
+        On any psycopg / DB error the failure is logged at WARNING and
+        ``None`` is returned.  ``None`` signals callers to skip any
+        work that depends on a fresh TID (e.g. the cache warmer
+        gracefully skips warmup rather than installing a fabricated
+        consensus of 0).
+        """
+        try:
+            return _read_max_tid(self._conn)
+        except Exception:
+            logger.warning(
+                "PGJsonbStorage.current_max_tid: query failed", exc_info=True
+            )
+            return None
 
     def __len__(self):
         """Return approximate number of objects."""

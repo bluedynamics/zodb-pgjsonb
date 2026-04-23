@@ -694,3 +694,45 @@ class TestInstanceLoadPaths:
         with pytest.raises(POSKeyError):
             inst.loadSerial(p64(9999), p64(1))
         inst.release()
+
+
+class TestCurrentMaxTid:
+    """PGJsonbStorage.current_max_tid — canonical MAX(tid) accessor (#65)."""
+
+    pytestmark = pytest.mark.db
+
+    def test_returns_zero_on_empty_db(self, storage):
+        assert storage.current_max_tid() == 0
+
+    def test_returns_max_tid_after_commit(self, db):
+        from persistent.mapping import PersistentMapping
+
+        import transaction as txn
+
+        conn = db.open()
+        try:
+            conn.root()["x"] = PersistentMapping()
+            txn.commit()
+        finally:
+            conn.close()
+
+        # MAX(tid) should match the last committed TID.
+        from ZODB.utils import u64
+
+        assert db.storage.current_max_tid() == u64(db.storage.lastTransaction())
+
+    def test_returns_none_on_query_failure(self, storage, caplog):
+        """Closed or broken connection → log.warning + return None."""
+        import logging
+
+        # Close the underlying connection out from under the storage
+        # to simulate a broken/terminated session.
+        storage._conn.close()
+
+        with caplog.at_level(logging.WARNING, logger="zodb_pgjsonb.storage"):
+            assert storage.current_max_tid() is None
+        assert any(
+            "current_max_tid" in rec.getMessage().lower()
+            or "max tid" in rec.getMessage().lower()
+            for rec in caplog.records
+        ), f"expected warning log, got: {[r.getMessage() for r in caplog.records]}"

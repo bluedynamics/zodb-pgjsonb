@@ -127,7 +127,8 @@ class CacheWarmer:
 
         Runs in a background daemon thread.  Primes the consensus TID
         on the shared cache to the current PG max_tid so that
-        subsequent ``shared.set`` calls are accepted.
+        subsequent ``shared.set`` calls are accepted.  Skips warmup
+        entirely when the TID is unavailable.
         """
         from ZODB.utils import p64
         from ZODB.utils import u64
@@ -135,6 +136,11 @@ class CacheWarmer:
         top_zoids = self._read_top_oids()
         if not top_zoids:
             log.info("Cache warmer: no stats yet, skipping warmup")
+            return
+
+        current_tid = self._load_current_tid_fn()
+        if current_tid is None:
+            log.warning("Cache warmer: could not read current TID, skipping warmup")
             return
 
         oids = [p64(z) for z in top_zoids]
@@ -145,7 +151,6 @@ class CacheWarmer:
             return
 
         # Prime consensus so set() accepts our writes, then populate.
-        current_tid = self._load_current_tid_fn()
         self._shared_cache.poll_advance(new_tid=current_tid, changed_zoids=[])
         written = 0
         for oid, (data, tid_bytes) in results.items():

@@ -180,10 +180,9 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
         # (invalidation lookups AND load() calls) see this same state.
         self._begin_read_txn()
 
-        with self._conn.cursor() as cur:
-            cur.execute("SELECT COALESCE(MAX(tid), 0) AS max_tid FROM transaction_log")
-            row = cur.fetchone()
-            new_tid = row["max_tid"]
+        from .storage import _read_max_tid
+
+        new_tid = _read_max_tid(self._conn)
 
         result = []
         changed_zoids = []
