@@ -17,6 +17,7 @@ from .storage import _load_blob_from_s3
 from .storage import _loadBefore_hf
 from .storage import _loadBefore_hp
 from .storage import _NoopSerialCache
+from .storage import _read_max_tid
 from .storage import LoadCache
 from .undo import _compute_undo
 from ZODB.ConflictResolution import ConflictResolvingStorage
@@ -179,8 +180,6 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
         # The first query anchors the snapshot — all subsequent queries
         # (invalidation lookups AND load() calls) see this same state.
         self._begin_read_txn()
-
-        from .storage import _read_max_tid
 
         new_tid = _read_max_tid(self._conn)
 
