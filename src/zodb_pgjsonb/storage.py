@@ -383,9 +383,6 @@ class PGJsonbStorage(CopyTransactionsMixin, ConflictResolvingStorage, BaseStorag
 
         self._cache_shared_mb = cache_shared_mb
         self._cache_per_connection_mb = cache_per_connection_mb
-        # Keep the old attribute name for backward compat with any
-        # code that reads it (tests, instance.py).
-        self._cache_local_mb = cache_per_connection_mb
         self._ltid = z64
         self._pack_tid = None  # Integer TID of last pack time
 
@@ -1000,6 +997,12 @@ class PGJsonbStorage(CopyTransactionsMixin, ConflictResolvingStorage, BaseStorag
         """Commit PG transaction and update _ltid."""
         self._conn.commit()
         self._ltid = tid
+        # Invalidate the shared cache for any zoid we wrote so that
+        # other instances don't serve stale state.  Required because
+        # some write paths (main-storage direct undo/restore) don't go
+        # through an instance whose poll_invalidations would do this.
+        changed_zoids = [obj["zoid"] for obj in self._tmp]
+        self._shared_cache.poll_advance(u64(tid), changed_zoids)
 
     def _abort(self):
         """Called by BaseStorage.tpc_abort — rollback PG transaction."""
