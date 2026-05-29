@@ -14,6 +14,8 @@ import logging
 import random
 import time
 
+import psycopg
+
 
 log = logging.getLogger(__name__)
 
@@ -161,6 +163,69 @@ class CacheWarmer:
             if row and row[0]:
                 return slot
         return None
+
+    def _acquire_slot(self):
+        """Acquire one of ``concurrency`` cluster-wide slots.
+
+        Opens a dedicated autocommit psycopg connection and tries each
+        slot via ``_try_acquire_slot_once`` in a retry loop.  Returns
+        ``(lock_conn, slot)`` on success or ``None`` on timeout / open
+        failure.
+
+        Caller is responsible for releasing the slot and closing the
+        connection (see ``_release_slot``).  Session-level advisory
+        locks auto-release on connection close, so a pod crash mid-warm
+        safely frees the slot.
+        """
+        if self._dsn is None or self._concurrency < 1:
+            return None
+        try:
+            lock_conn = psycopg.connect(self._dsn, autocommit=True)
+        except Exception:
+            log.warning(
+                "Cache warmer: failed to open lock connection, skipping warmup",
+                exc_info=True,
+            )
+            return None
+
+        started = time.monotonic()
+        attempt = 0
+        try:
+            while True:
+                attempt += 1
+                slot = self._try_acquire_slot_once(lock_conn)
+                if slot is not None:
+                    waited = time.monotonic() - started
+                    log.info(
+                        "Cache warmer: acquired slot %d after %.1fs wait "
+                        "(attempt %d)",
+                        slot, waited, attempt,
+                    )
+                    return lock_conn, slot
+
+                waited = time.monotonic() - started
+                if waited >= self._wait_max:
+                    log.warning(
+                        "Cache warmer: gave up after %.1fs waiting for slot "
+                        "(%d attempts), skipping warmup",
+                        waited, attempt,
+                    )
+                    return None
+
+                log.info(
+                    "Cache warmer: all %d slots taken, retrying "
+                    "(waited %.1fs so far)",
+                    self._concurrency, waited,
+                )
+                time.sleep(random.uniform(2.0, 5.0))
+        except Exception:
+            log.warning(
+                "Cache warmer: unexpected error in slot acquisition",
+                exc_info=True,
+            )
+            with contextlib.suppress(Exception):
+                lock_conn.close()
+            return None
 
     # ── Warming phase ────────────────────────────────────────────────
 

@@ -466,6 +466,97 @@ class TestCacheWarmerSlot:
         slot = w._try_acquire_slot_once(lock_conn)
         assert slot is None
 
+    def test_acquire_slot_succeeds_after_retries(self):
+        from zodb_pgjsonb.cache_warmer import CacheWarmer
+
+        # First two attempts: all slots taken.  Third attempt: slot 1 free.
+        # With concurrency=2 that's 2 + 2 + 1 = 5 try-lock calls before success.
+        slot_results = [False, False] + [False, False] + [True]
+        lock_conn = self._make_lock_conn(slot_results=slot_results)
+
+        w = CacheWarmer(
+            conn=mock.Mock(),
+            target_count=10,
+            shared_cache=_mk_shared_cache(),
+            load_current_tid_fn=lambda: 100,
+            dsn="dbname=ignored",
+            concurrency=2,
+            wait_max=30,
+        )
+
+        # Patch psycopg.connect to return our pre-built lock_conn, and
+        # patch sleep so the test doesn't actually wait.
+        with mock.patch(
+            "zodb_pgjsonb.cache_warmer.psycopg.connect",
+            return_value=lock_conn,
+        ), mock.patch(
+            "zodb_pgjsonb.cache_warmer.time.sleep"
+        ), mock.patch(
+            "zodb_pgjsonb.cache_warmer.random.uniform",
+            return_value=3.0,
+        ), mock.patch(
+            "zodb_pgjsonb.cache_warmer.time.monotonic",
+            side_effect=[0, 3, 6, 9],
+        ):
+            conn, slot = w._acquire_slot()
+
+        assert conn is lock_conn
+        assert slot == 1
+
+    def test_acquire_slot_times_out(self):
+        from zodb_pgjsonb.cache_warmer import CacheWarmer
+
+        # All slots permanently taken.
+        lock_conn = self._make_lock_conn(slot_results=[False] * 100)
+
+        w = CacheWarmer(
+            conn=mock.Mock(),
+            target_count=10,
+            shared_cache=_mk_shared_cache(),
+            load_current_tid_fn=lambda: 100,
+            dsn="dbname=ignored",
+            concurrency=2,
+            wait_max=10,
+        )
+
+        # monotonic side_effect: simulate 0s, 3s, 6s, 9s, 12s — wait_max hit.
+        with mock.patch(
+            "zodb_pgjsonb.cache_warmer.psycopg.connect",
+            return_value=lock_conn,
+        ), mock.patch(
+            "zodb_pgjsonb.cache_warmer.time.sleep"
+        ), mock.patch(
+            "zodb_pgjsonb.cache_warmer.random.uniform",
+            return_value=3.0,
+        ), mock.patch(
+            "zodb_pgjsonb.cache_warmer.time.monotonic",
+            side_effect=[0, 3, 6, 9, 12],
+        ):
+            result = w._acquire_slot()
+
+        assert result is None
+
+    def test_acquire_slot_handles_connect_failure(self):
+        from zodb_pgjsonb.cache_warmer import CacheWarmer
+
+        w = CacheWarmer(
+            conn=mock.Mock(),
+            target_count=10,
+            shared_cache=_mk_shared_cache(),
+            load_current_tid_fn=lambda: 100,
+            dsn="dbname=ignored",
+            concurrency=2,
+            wait_max=30,
+        )
+
+        with mock.patch(
+            "zodb_pgjsonb.cache_warmer.psycopg.connect",
+            side_effect=RuntimeError("connect refused"),
+        ):
+            result = w._acquire_slot()
+
+        assert result is None
+
 
 @pytest.mark.db
 class TestCacheWarmerDB:
