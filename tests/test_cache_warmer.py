@@ -361,6 +361,97 @@ class TestCacheWarmerWarm:
         assert shared._consensus_tid is None
         assert len(shared._cache) == 0
 
+    def test_warm_acquires_and_releases_slot(self):
+        from ZODB.utils import p64
+        from zodb_pgjsonb.cache_warmer import CacheWarmer
+        from zodb_pgjsonb.storage import SharedLoadCache
+
+        shared = SharedLoadCache(max_mb=4)
+        w = CacheWarmer(
+            conn=_FakeConn(top_oids=[1, 2]),
+            target_count=10,
+            shared_cache=shared,
+            load_current_tid_fn=lambda: 100,
+            dsn="dbname=ignored",
+            concurrency=2,
+        )
+        # Pretend slot acquisition succeeds without touching PG.
+        acquire_calls = []
+        release_calls = []
+
+        def fake_acquire():
+            sentinel = object()
+            acquire_calls.append(sentinel)
+            return (sentinel, 1)
+
+        def fake_release(lock_conn, slot):
+            release_calls.append((lock_conn, slot))
+
+        w._acquire_slot = fake_acquire
+        w._release_slot = fake_release
+
+        def loader(oids):
+            return {oid: (b"x", p64(50)) for oid in oids}
+
+        w.warm(loader)
+        assert len(acquire_calls) == 1
+        assert len(release_calls) == 1
+        assert release_calls[0][1] == 1  # slot number
+        assert release_calls[0][0] is acquire_calls[0]  # same conn
+
+    def test_warm_skips_on_acquire_failure(self):
+        from zodb_pgjsonb.cache_warmer import CacheWarmer
+        from zodb_pgjsonb.storage import SharedLoadCache
+
+        shared = SharedLoadCache(max_mb=4)
+        w = CacheWarmer(
+            conn=_FakeConn(top_oids=[1, 2]),
+            target_count=10,
+            shared_cache=shared,
+            load_current_tid_fn=lambda: 100,
+            dsn="dbname=ignored",
+            concurrency=2,
+        )
+        w._acquire_slot = lambda: None
+
+        load_called = []
+
+        def loader(oids):
+            load_called.append(oids)
+            return {}
+
+        w.warm(loader)
+        # No load when acquire fails.
+        assert load_called == []
+        assert len(shared._cache) == 0
+
+    def test_warm_no_slot_when_concurrency_zero(self):
+        """When concurrency=0, the slot path is bypassed entirely
+        (preserves backward-compat for direct test instantiation)."""
+        from ZODB.utils import p64
+        from zodb_pgjsonb.cache_warmer import CacheWarmer
+        from zodb_pgjsonb.storage import SharedLoadCache
+
+        shared = SharedLoadCache(max_mb=4)
+        w = CacheWarmer(
+            conn=_FakeConn(top_oids=[1, 2]),
+            target_count=10,
+            shared_cache=shared,
+            load_current_tid_fn=lambda: 100,
+            concurrency=0,
+        )
+        acquired = []
+        w._acquire_slot = lambda: acquired.append(True) or None
+
+        def loader(oids):
+            return {oid: (b"x", p64(50)) for oid in oids}
+
+        w.warm(loader)
+        # _acquire_slot must not be called when concurrency=0.
+        assert acquired == []
+        # Warming still happens.
+        assert len(shared._cache) == 2
+
     def test_warm_handles_load_multiple_exception(self):
         from zodb_pgjsonb.cache_warmer import CacheWarmer
         from zodb_pgjsonb.storage import SharedLoadCache

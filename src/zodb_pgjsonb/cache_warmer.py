@@ -265,25 +265,47 @@ class CacheWarmer:
     def warm(self, load_multiple_fn):
         """Load top-N ZOIDs into the shared cache.
 
-        Runs in a background daemon thread.  Primes the consensus TID
-        on the shared cache to the current PG max_tid so that
-        subsequent ``shared.set`` calls are accepted.  Re-reads
-        consensus after ``poll_advance`` and uses that as the
-        ``polled_tid`` for set calls — this is the mitigation for the
-        startup race where an instance's poll advances consensus past
-        the warmer's sampled TID before the set loop begins.
-
-        Skips warmup when the TID is unavailable.  Logs a WARNING when
-        every set() was rejected despite a non-empty result set (a
-        likely sign of the race being wider than this mitigation
-        covers).
+        Runs in a background daemon thread.  Orchestrates the four
+        herd-mitigation phases (#59): startup delay + jitter (A2+A1),
+        cluster-wide slot acquisition (B2b), paced batched warmup (A3),
+        slot release.
         """
-        # A2 + A1 (#59): get out of the pod's own cold-start window and
+        # A2 + A1: get out of the pod's own cold-start window and
         # smear lock-arrival times across pods so the cluster doesn't
         # stampede the primary on rolling deploys.
         if self._delay > 0 or self._jitter > 0:
             time.sleep(self._delay + random.uniform(0, self._jitter))
 
+        # B2b: try to claim one of N cluster-wide slots.  When
+        # concurrency is 0 the semaphore is disabled.
+        lock_conn = None
+        slot = None
+        if self._concurrency >= 1:
+            acquired = self._acquire_slot()
+            if acquired is None:
+                # Already logged inside _acquire_slot (timeout or open failure).
+                return
+            lock_conn, slot = acquired
+
+        try:
+            self._warm_body(load_multiple_fn)
+        finally:
+            if lock_conn is not None:
+                self._release_slot(lock_conn, slot)
+
+    def _warm_body(self, load_multiple_fn):
+        """Top-OID read + prime-consensus + paced batched load+set.
+
+        Primes the consensus TID on the shared cache to the current PG
+        max_tid so that subsequent ``shared.set`` calls are accepted.
+        Re-reads consensus after ``poll_advance`` and uses that as the
+        ``polled_tid`` for set calls — this is the mitigation for the
+        startup race where an instance's poll advances consensus past
+        the warmer's sampled TID before the set loop begins.
+
+        Skips warmup when the TID is unavailable.  Logs a WARNING when
+        every set() was rejected despite a non-empty result set.
+        """
         from ZODB.utils import p64
         from ZODB.utils import u64
 
