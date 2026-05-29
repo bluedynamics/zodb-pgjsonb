@@ -394,6 +394,12 @@ class PGJsonbStorage(CopyTransactionsMixin, ConflictResolvingStorage, BaseStorag
         blob_threshold=102_400,
         cache_warm_pct=10,
         cache_warm_decay=0.8,
+        cache_warm_delay=15,
+        cache_warm_jitter=30,
+        cache_warm_concurrency=2,
+        cache_warm_wait_max=300,
+        cache_warm_batch_size=500,
+        cache_warm_batch_pause=0.5,
     ):
         BaseStorage.__init__(self, name)
         self._dsn = dsn
@@ -529,7 +535,14 @@ class PGJsonbStorage(CopyTransactionsMixin, ConflictResolvingStorage, BaseStorag
                 target_count=target,
                 shared_cache=self._shared_cache,
                 load_current_tid_fn=self.current_max_tid,
+                dsn=self._dsn,
                 decay=cache_warm_decay,
+                delay=cache_warm_delay,
+                jitter=cache_warm_jitter,
+                concurrency=cache_warm_concurrency,
+                wait_max=cache_warm_wait_max,
+                batch_size=cache_warm_batch_size,
+                batch_pause=cache_warm_batch_pause,
             )
             import threading
 
@@ -540,9 +553,15 @@ class PGJsonbStorage(CopyTransactionsMixin, ConflictResolvingStorage, BaseStorag
                 name="zodb-cache-warmer",
             ).start()
             logger.info(
-                "Cache warmer started (target=%d, decay=%.1f)",
+                "Cache warmer started (target=%d, decay=%.1f, delay=%ds, "
+                "jitter=%ds, concurrency=%d, batch_size=%d, batch_pause=%.2fs)",
                 target,
                 cache_warm_decay,
+                cache_warm_delay,
+                cache_warm_jitter,
+                cache_warm_concurrency,
+                cache_warm_batch_size,
+                cache_warm_batch_pause,
             )
 
         logger.debug("Storage initialized (max_oid=%s, ltid=%s)", self._oid, self._ltid)

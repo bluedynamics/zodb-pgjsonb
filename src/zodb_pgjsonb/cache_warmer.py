@@ -11,6 +11,9 @@ the shared-cache migration.
 
 import contextlib
 import logging
+import psycopg
+import random
+import time
 
 
 log = logging.getLogger(__name__)
@@ -22,6 +25,11 @@ CREATE TABLE IF NOT EXISTS cache_warm_stats (
     score  FLOAT NOT NULL DEFAULT 1.0
 );
 """
+
+# Advisory-lock keyspace for B2b inter-pod warmer semaphore (#59).
+# Same namespace as startup_locks.py (separate keys).
+WARMER_LOCK_NS = 0x5A4442  # "ZDB"
+WARMER_SLOT_BASE = 100  # slot keys are WARMER_SLOT_BASE + i for i in 1..N
 
 
 class CacheWarmer:
@@ -42,8 +50,15 @@ class CacheWarmer:
         target_count,
         shared_cache,
         load_current_tid_fn,
+        dsn=None,
         decay=0.8,
         flush_interval=1000,
+        delay=0,
+        jitter=0,
+        concurrency=0,
+        wait_max=300,
+        batch_size=500,
+        batch_pause=0.0,
     ):
         self.recording = target_count > 0
         self._recorded = set()
@@ -58,6 +73,17 @@ class CacheWarmer:
         self._load_current_tid_fn = load_current_tid_fn
 
         self._conn = conn
+
+        # Herd-mitigation knobs (#59).  CacheWarmer defaults are off
+        # so direct instantiation in tests preserves prior behavior;
+        # PGJsonbStorage / ZConfig set the production defaults.
+        self._dsn = dsn
+        self._delay = delay
+        self._jitter = jitter
+        self._concurrency = concurrency
+        self._wait_max = wait_max
+        self._batch_size = batch_size
+        self._batch_pause = batch_pause
 
     # ── Recording phase ──────────────────────────────────────────────
 
@@ -108,6 +134,126 @@ class CacheWarmer:
                 self._conn.execute("ROLLBACK")
             log.warning("Cache warmer: flush failed", exc_info=True)
 
+    # ── B2b slot acquisition (#59) ───────────────────────────────────
+
+    def _try_acquire_slot_once(self, lock_conn):
+        """Try each slot 1..concurrency once.  Returns the acquired
+        slot number, or None if all slots are taken.
+
+        ``lock_conn`` must be an autocommit psycopg connection
+        dedicated to holding the session-level advisory lock.
+        """
+        for slot in range(1, self._concurrency + 1):
+            key = WARMER_SLOT_BASE + slot
+            try:
+                with lock_conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT pg_try_advisory_lock(%s, %s)",
+                        (WARMER_LOCK_NS, key),
+                    )
+                    row = cur.fetchone()
+            except Exception:
+                # Per-slot transient error: log and treat as miss.  The
+                # outer retry loop in _acquire_slot will reopen the
+                # connection if it's truly dead.
+                log.warning(
+                    "Cache warmer: pg_try_advisory_lock raised for slot %d",
+                    slot,
+                    exc_info=True,
+                )
+                continue
+            if row and row[0]:
+                return slot
+        return None
+
+    def _acquire_slot(self):
+        """Acquire one of ``concurrency`` cluster-wide slots.
+
+        Opens a dedicated autocommit psycopg connection and tries each
+        slot via ``_try_acquire_slot_once`` in a retry loop.  Returns
+        ``(lock_conn, slot)`` on success or ``None`` on timeout / open
+        failure.
+
+        Caller is responsible for releasing the slot and closing the
+        connection (see ``_release_slot``).  Session-level advisory
+        locks auto-release on connection close, so a pod crash mid-warm
+        safely frees the slot.
+        """
+        if self._dsn is None or self._concurrency < 1:
+            return None
+        try:
+            lock_conn = psycopg.connect(self._dsn, autocommit=True)
+        except Exception:
+            log.warning(
+                "Cache warmer: failed to open lock connection, skipping warmup",
+                exc_info=True,
+            )
+            return None
+
+        started = time.monotonic()
+        attempt = 0
+        try:
+            while True:
+                attempt += 1
+                slot = self._try_acquire_slot_once(lock_conn)
+                if slot is not None:
+                    waited = time.monotonic() - started
+                    log.info(
+                        "Cache warmer: acquired slot %d after %.1fs wait (attempt %d)",
+                        slot,
+                        waited,
+                        attempt,
+                    )
+                    return lock_conn, slot
+
+                waited = time.monotonic() - started
+                if waited >= self._wait_max:
+                    log.warning(
+                        "Cache warmer: gave up after %.1fs waiting for slot "
+                        "(%d attempts), skipping warmup",
+                        waited,
+                        attempt,
+                    )
+                    with contextlib.suppress(Exception):
+                        lock_conn.close()
+                    return None
+
+                log.info(
+                    "Cache warmer: all %d slots taken, retrying (waited %.1fs so far)",
+                    self._concurrency,
+                    waited,
+                )
+                time.sleep(random.uniform(2.0, 5.0))
+        except Exception:
+            log.warning(
+                "Cache warmer: unexpected error in slot acquisition",
+                exc_info=True,
+            )
+            with contextlib.suppress(Exception):
+                lock_conn.close()
+            return None
+
+    def _release_slot(self, lock_conn, slot):
+        """Release the advisory lock and close the dedicated connection.
+
+        Errors are logged and suppressed — PG auto-releases session
+        locks on connection close, so a failed unlock is recoverable.
+        """
+        key = WARMER_SLOT_BASE + slot
+        try:
+            lock_conn.execute(
+                "SELECT pg_advisory_unlock(%s, %s)",
+                (WARMER_LOCK_NS, key),
+            )
+        except Exception:
+            log.warning(
+                "Cache warmer: pg_advisory_unlock failed for slot %d",
+                slot,
+                exc_info=True,
+            )
+        with contextlib.suppress(Exception):
+            lock_conn.close()
+
     # ── Warming phase ────────────────────────────────────────────────
 
     def _read_top_oids(self):
@@ -125,18 +271,46 @@ class CacheWarmer:
     def warm(self, load_multiple_fn):
         """Load top-N ZOIDs into the shared cache.
 
-        Runs in a background daemon thread.  Primes the consensus TID
-        on the shared cache to the current PG max_tid so that
-        subsequent ``shared.set`` calls are accepted.  Re-reads
-        consensus after ``poll_advance`` and uses that as the
+        Runs in a background daemon thread.  Orchestrates the four
+        herd-mitigation phases (#59): startup delay + jitter (A2+A1),
+        cluster-wide slot acquisition (B2b), paced batched warmup (A3),
+        slot release.
+        """
+        # A2 + A1: get out of the pod's own cold-start window and
+        # smear lock-arrival times across pods so the cluster doesn't
+        # stampede the primary on rolling deploys.
+        if self._delay > 0 or self._jitter > 0:
+            time.sleep(self._delay + random.uniform(0, self._jitter))
+
+        # B2b: try to claim one of N cluster-wide slots.  When
+        # concurrency is 0 the semaphore is disabled.
+        lock_conn = None
+        slot = None
+        if self._concurrency >= 1:
+            acquired = self._acquire_slot()
+            if acquired is None:
+                # Already logged inside _acquire_slot (timeout or open failure).
+                return
+            lock_conn, slot = acquired
+
+        try:
+            self._warm_body(load_multiple_fn)
+        finally:
+            if lock_conn is not None:
+                self._release_slot(lock_conn, slot)
+
+    def _warm_body(self, load_multiple_fn):
+        """Top-OID read + prime-consensus + paced batched load+set.
+
+        Primes the consensus TID on the shared cache to the current PG
+        max_tid so that subsequent ``shared.set`` calls are accepted.
+        Re-reads consensus after ``poll_advance`` and uses that as the
         ``polled_tid`` for set calls — this is the mitigation for the
         startup race where an instance's poll advances consensus past
         the warmer's sampled TID before the set loop begins.
 
         Skips warmup when the TID is unavailable.  Logs a WARNING when
-        every set() was rejected despite a non-empty result set (a
-        likely sign of the race being wider than this mitigation
-        covers).
+        every set() was rejected despite a non-empty result set.
         """
         from ZODB.utils import p64
         from ZODB.utils import u64
@@ -151,17 +325,6 @@ class CacheWarmer:
             log.warning("Cache warmer: could not read current TID, skipping warmup")
             return
 
-        oids = [p64(z) for z in top_zoids]
-        try:
-            results = load_multiple_fn(oids)
-        except Exception:
-            log.warning("Cache warmer: load_multiple failed", exc_info=True)
-            return
-
-        if not results:
-            log.info("Cache warmer: load_multiple returned no objects")
-            return
-
         # Prime consensus so set() accepts our writes.  Another instance
         # may have advanced consensus beyond our sampled current_tid
         # already — in that case poll_advance is a no-op, and the actual
@@ -174,17 +337,42 @@ class CacheWarmer:
             log.warning("Cache warmer: consensus still None after poll_advance")
             return
 
+        # A3 (#59): batch the fetches and pause between them so a single
+        # pod's warmup doesn't burst the connection pool / DB CPU.
+        batch_size = max(1, self._batch_size)
+        batches = [
+            top_zoids[i : i + batch_size] for i in range(0, len(top_zoids), batch_size)
+        ]
         written = 0
         attempted = 0
-        for oid, (data, tid_bytes) in results.items():
-            attempted += 1
-            if self._shared_cache.set(
-                zoid=u64(oid),
-                data=data,
-                tid_bytes=tid_bytes,
-                polled_tid=effective_tid,
-            ):
-                written += 1
+        for batch_idx, batch in enumerate(batches):
+            oids = [p64(z) for z in batch]
+            try:
+                results = load_multiple_fn(oids)
+            except Exception:
+                log.warning(
+                    "Cache warmer: load_multiple failed at batch %d/%d",
+                    batch_idx + 1,
+                    len(batches),
+                    exc_info=True,
+                )
+                return
+            for oid, (data, tid_bytes) in results.items():
+                attempted += 1
+                if self._shared_cache.set(
+                    zoid=u64(oid),
+                    data=data,
+                    tid_bytes=tid_bytes,
+                    polled_tid=effective_tid,
+                ):
+                    written += 1
+            # Pause only between batches, never after the last.
+            if batch_idx < len(batches) - 1 and self._batch_pause > 0:
+                time.sleep(self._batch_pause)
+
+        if attempted == 0:
+            log.info("Cache warmer: load_multiple returned no objects")
+            return
 
         if written == 0:
             log.warning(
@@ -197,7 +385,8 @@ class CacheWarmer:
             )
         else:
             log.info(
-                "Cache warmer: loaded %d of %d objects into shared cache",
+                "Cache warmer: loaded %d of %d objects into shared cache (%d batches)",
                 written,
                 attempted,
+                len(batches),
             )

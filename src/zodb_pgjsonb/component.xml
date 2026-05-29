@@ -95,6 +95,57 @@
       </description>
     </key>
 
+    <key name="cache-warm-delay" datatype="integer" default="15">
+      <description>
+        Baseline sleep (seconds) before the cache warmer starts work.
+        Moves the warmer out of the pod's own cold-start window so it
+        does not compete with Plone import + plone.pgcatalog schema
+        checks + ANALYZE chatter.  Set to 0 to disable.  Default: 15.
+        See issue #59.
+      </description>
+    </key>
+
+    <key name="cache-warm-jitter" datatype="integer" default="30">
+      <description>
+        Additional uniform-random sleep (0..jitter seconds) on top of
+        cache-warm-delay.  Spreads warmer arrival times across pods so
+        a rolling deploy does not produce a synchronous DB burst.  Set
+        to 0 to disable.  Default: 30.  See issue #59.
+      </description>
+    </key>
+
+    <key name="cache-warm-concurrency" datatype="integer" default="2">
+      <description>
+        Maximum number of pods warming concurrently in the cluster,
+        enforced via PostgreSQL advisory locks.  Set to a very large
+        value (e.g. 9999) to effectively disable the cap.  Default: 2.
+        See issue #59.
+      </description>
+    </key>
+
+    <key name="cache-warm-wait-max" datatype="integer" default="300">
+      <description>
+        Maximum time (seconds) to wait for a free slot before giving
+        up and skipping warmup (logs a WARNING).  Default: 300.  See
+        issue #59.
+      </description>
+    </key>
+
+    <key name="cache-warm-batch-size" datatype="integer" default="500">
+      <description>
+        Number of ZOIDs fetched per SELECT batch during warmup.  Lower
+        values reduce peak qps at the cost of longer warmup duration.
+        Default: 500.  See issue #59.
+      </description>
+    </key>
+
+    <key name="cache-warm-batch-pause" datatype="float" default="0.5">
+      <description>
+        Sleep (seconds) between warmup batches.  Lowers per-pod peak
+        qps.  Set to 0 to disable.  Default: 0.5.  See issue #59.
+      </description>
+    </key>
+
     <!-- S3 tiered blob storage (optional, requires zodb-pgjsonb[s3]) -->
 
     <key name="blob-threshold" datatype="byte-size" default="100KB">
