@@ -381,6 +381,92 @@ class TestCacheWarmerWarm:
         assert len(shared._cache) == 0
 
 
+class TestCacheWarmerSlot:
+    """Unit tests for the B2b advisory-lock slot helpers."""
+
+    def _make_lock_conn(self, slot_results):
+        """Return a mock connection whose execute('SELECT pg_try_advisory_lock(...)')
+        returns ``slot_results[i]`` on the i-th call (one row, one column).
+        """
+        call_count = [0]
+
+        class _LockCursor:
+            def __init__(self):
+                self._row = None
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def execute(self, sql, params=None):
+                if "pg_try_advisory_lock" in sql:
+                    i = call_count[0]
+                    call_count[0] += 1
+                    self._row = (slot_results[i],) if i < len(slot_results) else (False,)
+                else:
+                    self._row = None
+                return self
+
+            def fetchone(self):
+                return self._row
+
+        class _LockConn:
+            def cursor(self):
+                return _LockCursor()
+
+            def execute(self, *a, **kw):
+                return None
+
+            def close(self):
+                pass
+
+        return _LockConn()
+
+    def test_try_acquire_slot_returns_slot_when_first_free(self):
+        from zodb_pgjsonb.cache_warmer import CacheWarmer
+
+        w = CacheWarmer(
+            conn=mock.Mock(),
+            target_count=10,
+            shared_cache=_mk_shared_cache(),
+            load_current_tid_fn=lambda: 100,
+            concurrency=3,
+        )
+        lock_conn = self._make_lock_conn(slot_results=[True])
+        slot = w._try_acquire_slot_once(lock_conn)
+        assert slot == 1
+
+    def test_try_acquire_slot_returns_higher_slot_when_first_taken(self):
+        from zodb_pgjsonb.cache_warmer import CacheWarmer
+
+        w = CacheWarmer(
+            conn=mock.Mock(),
+            target_count=10,
+            shared_cache=_mk_shared_cache(),
+            load_current_tid_fn=lambda: 100,
+            concurrency=3,
+        )
+        lock_conn = self._make_lock_conn(slot_results=[False, False, True])
+        slot = w._try_acquire_slot_once(lock_conn)
+        assert slot == 3
+
+    def test_try_acquire_slot_returns_none_when_all_taken(self):
+        from zodb_pgjsonb.cache_warmer import CacheWarmer
+
+        w = CacheWarmer(
+            conn=mock.Mock(),
+            target_count=10,
+            shared_cache=_mk_shared_cache(),
+            load_current_tid_fn=lambda: 100,
+            concurrency=3,
+        )
+        lock_conn = self._make_lock_conn(slot_results=[False, False, False])
+        slot = w._try_acquire_slot_once(lock_conn)
+        assert slot is None
+
+
 @pytest.mark.db
 class TestCacheWarmerDB:
     """Integration tests for DB-dependent methods (require PostgreSQL)."""

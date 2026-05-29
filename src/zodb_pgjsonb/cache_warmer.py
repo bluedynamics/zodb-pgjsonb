@@ -25,6 +25,11 @@ CREATE TABLE IF NOT EXISTS cache_warm_stats (
 );
 """
 
+# Advisory-lock keyspace for B2b inter-pod warmer semaphore (#59).
+# Same namespace as startup_locks.py (separate keys).
+WARMER_LOCK_NS = 0x5A4442    # "ZDB"
+WARMER_SLOT_BASE = 100       # slot keys are WARMER_SLOT_BASE + i for i in 1..N
+
 
 class CacheWarmer:
     """Learning cache warmer.
@@ -127,6 +132,35 @@ class CacheWarmer:
             with contextlib.suppress(Exception):
                 self._conn.execute("ROLLBACK")
             log.warning("Cache warmer: flush failed", exc_info=True)
+
+    # ── B2b slot acquisition (#59) ───────────────────────────────────
+
+    def _try_acquire_slot_once(self, lock_conn):
+        """Try each slot 1..concurrency once.  Returns the acquired
+        slot number, or None if all slots are taken.
+
+        ``lock_conn`` must be an autocommit psycopg connection
+        dedicated to holding the session-level advisory lock.
+        """
+        for slot in range(1, self._concurrency + 1):
+            key = WARMER_SLOT_BASE + slot
+            try:
+                with lock_conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT pg_try_advisory_lock(%s, %s)",
+                        (WARMER_LOCK_NS, key),
+                    )
+                    row = cur.fetchone()
+            except Exception:
+                log.warning(
+                    "Cache warmer: pg_try_advisory_lock raised for slot %d",
+                    slot,
+                    exc_info=True,
+                )
+                return None
+            if row and row[0]:
+                return slot
+        return None
 
     # ── Warming phase ────────────────────────────────────────────────
 
