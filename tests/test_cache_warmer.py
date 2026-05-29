@@ -837,6 +837,175 @@ class TestCacheWarmerDB:
         assert len(oids) == 3
         assert set(oids).issubset({100, 200, 300, 400, 500})
 
+    def test_concurrency_1_serializes_two_warmers(self):
+        """Two warmers with concurrency=1 must not warm in parallel."""
+        from ZODB.utils import p64
+        from tests.conftest import DSN
+        from zodb_pgjsonb.cache_warmer import CacheWarmer
+        from zodb_pgjsonb.storage import SharedLoadCache
+
+        import threading
+        import time
+
+        # Seed warm stats so the warmers have something to do.
+        self.conn.execute(
+            "INSERT INTO cache_warm_stats (zoid, score) "
+            "VALUES (1, 5.0), (2, 4.0), (3, 3.0)"
+        )
+
+        shared = SharedLoadCache(max_mb=4)
+        load_times = []
+        load_times_lock = threading.Lock()
+
+        def slow_loader(oids):
+            with load_times_lock:
+                load_times.append(("enter", time.monotonic()))
+            time.sleep(0.5)  # simulate slow load
+            with load_times_lock:
+                load_times.append(("exit", time.monotonic()))
+            return {oid: (b"x", p64(50)) for oid in oids}
+
+        def run_warmer():
+            w = CacheWarmer(
+                conn=self.conn,
+                target_count=10,
+                shared_cache=shared,
+                load_current_tid_fn=lambda: 100,
+                dsn=DSN,
+                concurrency=1,
+                wait_max=30,
+                batch_size=500,
+                batch_pause=0,
+            )
+            w.warm(slow_loader)
+
+        t1 = threading.Thread(target=run_warmer)
+        t2 = threading.Thread(target=run_warmer)
+        t1.start(); t2.start()
+        t1.join(); t2.join()
+
+        # Two enter/exit pairs, non-overlapping.
+        enters = sorted(t for k, t in load_times if k == "enter")
+        exits = sorted(t for k, t in load_times if k == "exit")
+        assert len(enters) == 2 and len(exits) == 2
+        # Strict serialization by the advisory lock: first exit before second enter.
+        assert exits[0] <= enters[1] + 0.05  # 50ms slack for thread sched
+
+    def test_concurrency_2_allows_two_parallel_one_waits(self):
+        """Three warmers, concurrency=2 — two warm in parallel, third waits."""
+        from ZODB.utils import p64
+        from tests.conftest import DSN
+        from zodb_pgjsonb.cache_warmer import CacheWarmer
+        from zodb_pgjsonb.storage import SharedLoadCache
+
+        import threading
+        import time
+
+        self.conn.execute(
+            "INSERT INTO cache_warm_stats (zoid, score) "
+            "VALUES (1, 5.0), (2, 4.0), (3, 3.0)"
+        )
+
+        shared = SharedLoadCache(max_mb=4)
+        load_events = []
+        load_events_lock = threading.Lock()
+
+        def slow_loader(oids):
+            with load_events_lock:
+                load_events.append(("enter", time.monotonic()))
+            time.sleep(0.5)
+            with load_events_lock:
+                load_events.append(("exit", time.monotonic()))
+            return {oid: (b"x", p64(50)) for oid in oids}
+
+        def run_warmer():
+            w = CacheWarmer(
+                conn=self.conn,
+                target_count=10,
+                shared_cache=shared,
+                load_current_tid_fn=lambda: 100,
+                dsn=DSN,
+                concurrency=2,
+                wait_max=30,
+                batch_size=500,
+                batch_pause=0,
+            )
+            w.warm(slow_loader)
+
+        threads = [threading.Thread(target=run_warmer) for _ in range(3)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        enters = sorted(t for k, t in load_events if k == "enter")
+        exits = sorted(t for k, t in load_events if k == "exit")
+        assert len(enters) == 3 and len(exits) == 3
+        # First two enters within a small window (parallel), third
+        # enter must be after at least one exit.
+        assert enters[1] - enters[0] < 0.3
+        assert enters[2] >= exits[0] - 0.05  # 50ms slack
+
+    def test_lock_released_on_connection_close(self):
+        """If the warmer's lock connection closes (e.g. pod crash),
+        PG auto-releases the session-level lock so another warmer can
+        proceed."""
+        from tests.conftest import DSN
+        from zodb_pgjsonb.cache_warmer import (
+            CacheWarmer,
+            WARMER_LOCK_NS,
+            WARMER_SLOT_BASE,
+        )
+
+        import psycopg
+
+        # Pod 1: open a connection, acquire slot 1 manually.
+        conn1 = psycopg.connect(DSN, autocommit=True)
+        with conn1.cursor() as cur:
+            cur.execute(
+                "SELECT pg_try_advisory_lock(%s, %s)",
+                (WARMER_LOCK_NS, WARMER_SLOT_BASE + 1),
+            )
+            assert cur.fetchone()[0] is True
+
+        class _StubShared:
+            consensus_tid = 1
+            def poll_advance(self, *a, **k): return None
+            def set(self, *a, **k): return True
+
+        # Pod 2: a fresh warmer with concurrency=1 must time out quickly
+        # because slot 1 is held.
+        w = CacheWarmer(
+            conn=self.conn,
+            target_count=10,
+            shared_cache=_StubShared(),
+            load_current_tid_fn=lambda: 100,
+            dsn=DSN,
+            concurrency=1,
+            wait_max=3,
+        )
+        assert w._acquire_slot() is None
+
+        # Now close pod 1's connection — auto-releases the lock.
+        conn1.close()
+
+        # Pod 3: a new warmer should now acquire slot 1.
+        w2 = CacheWarmer(
+            conn=self.conn,
+            target_count=10,
+            shared_cache=_StubShared(),
+            load_current_tid_fn=lambda: 100,
+            dsn=DSN,
+            concurrency=1,
+            wait_max=10,
+        )
+        result = w2._acquire_slot()
+        assert result is not None
+        lock_conn, slot = result
+        assert slot == 1
+        # Clean up.
+        w2._release_slot(lock_conn, slot)
+
 
 class TestCacheWarmerFlushEdge:
     """Edge-case tests for _flush() — no DB required."""
