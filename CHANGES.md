@@ -1,5 +1,43 @@
 # Changelog
 
+## 1.13.0 (unreleased)
+
+### Features
+
+- **Cache warmer herd mitigation** (#59).  Rolling Kubernetes deploys
+  used to multiply DB primary CPU by the replica count for the warmer
+  startup window, because every pod independently fired its full set
+  of warmup `SELECT`s simultaneously.  Four composable behaviors fix
+  this, all wired through six new ZConfig keys:
+
+  - `cache-warm-delay` (default 15s): baseline sleep before warmer
+    starts. Moves the warmer out of the pod's own cold-start window
+    (Plone import, plone.pgcatalog schema check, ANALYZE chatter).
+  - `cache-warm-jitter` (default 30s): additional `random(0, jitter)`
+    sleep on top.  Spreads arrival times across pods.
+  - `cache-warm-concurrency` (default 2): maximum number of pods
+    warming in parallel, cluster-wide.  Enforced via a session-level
+    PostgreSQL advisory lock semaphore (same pattern as the existing
+    startup-DDL lock).  Pods that miss a slot retry with jittered
+    backoff until `cache-warm-wait-max` expires.
+  - `cache-warm-wait-max` (default 300s): retry cap before giving up
+    and skipping warmup (logged as WARNING).
+  - `cache-warm-batch-size` (default 500): zoids per `SELECT` batch.
+  - `cache-warm-batch-pause` (default 0.5s): sleep between batches.
+    Lowers per-pod peak qps.
+
+  **Observable behavior change:** warmer queries are now delayed by
+  ~15–45s post-startup (delay + jitter), not immediate.  To restore
+  pre-1.13 behavior, set `cache-warm-delay=0`, `cache-warm-jitter=0`,
+  `cache-warm-batch-pause=0`, `cache-warm-concurrency=9999`.
+
+  **Last-pod latency:** for a 6-pod fleet with default settings, the
+  last pod has a warm L2 cache approximately 45s after the deploy
+  window.  All pods serve traffic from T+0; this is the time-to-warm,
+  not the time-to-ready.
+
+  Design: [docs/superpowers/specs/2026-05-29-cache-warmer-herd-mitigation-design.md](docs/superpowers/specs/2026-05-29-cache-warmer-herd-mitigation-design.md).
+
 ## 1.12.0
 
 ### Features
