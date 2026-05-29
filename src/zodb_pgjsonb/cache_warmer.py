@@ -11,6 +11,8 @@ the shared-cache migration.
 
 import contextlib
 import logging
+import random
+import time
 
 
 log = logging.getLogger(__name__)
@@ -156,6 +158,12 @@ class CacheWarmer:
         likely sign of the race being wider than this mitigation
         covers).
         """
+        # A2 + A1 (#59): get out of the pod's own cold-start window and
+        # smear lock-arrival times across pods so the cluster doesn't
+        # stampede the primary on rolling deploys.
+        if self._delay > 0 or self._jitter > 0:
+            time.sleep(self._delay + random.uniform(0, self._jitter))
+
         from ZODB.utils import p64
         from ZODB.utils import u64
 

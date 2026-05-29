@@ -234,6 +234,59 @@ class TestCacheWarmerWarm:
         assert shared.get(zoid=2, polled_tid=100) == (b"data-" + p64(2), p64(50))
         assert shared.get(zoid=3, polled_tid=100) == (b"data-" + p64(3), p64(50))
 
+    def test_warm_sleeps_delay_plus_jitter(self):
+        from ZODB.utils import p64
+        from zodb_pgjsonb.cache_warmer import CacheWarmer
+        from zodb_pgjsonb.storage import SharedLoadCache
+
+        shared = SharedLoadCache(max_mb=4)
+        w = CacheWarmer(
+            conn=_FakeConn(top_oids=[1, 2]),
+            target_count=10,
+            shared_cache=shared,
+            load_current_tid_fn=lambda: 100,
+            delay=15,
+            jitter=30,
+        )
+
+        def loader(oids):
+            return {oid: (b"data-" + oid, p64(50)) for oid in oids}
+
+        with mock.patch("zodb_pgjsonb.cache_warmer.time.sleep") as mock_sleep, \
+             mock.patch(
+                 "zodb_pgjsonb.cache_warmer.random.uniform",
+                 return_value=7.0,
+             ):
+            w.warm(loader)
+
+        # First sleep call should be delay + uniform(0, jitter) = 15 + 7 = 22
+        assert mock_sleep.call_args_list[0] == mock.call(22.0)
+
+    def test_warm_no_sleep_when_disabled(self):
+        from ZODB.utils import p64
+        from zodb_pgjsonb.cache_warmer import CacheWarmer
+        from zodb_pgjsonb.storage import SharedLoadCache
+
+        shared = SharedLoadCache(max_mb=4)
+        w = CacheWarmer(
+            conn=_FakeConn(top_oids=[1, 2]),
+            target_count=10,
+            shared_cache=shared,
+            load_current_tid_fn=lambda: 100,
+            delay=0,
+            jitter=0,
+        )
+
+        def loader(oids):
+            return {oid: (b"data-" + oid, p64(50)) for oid in oids}
+
+        with mock.patch("zodb_pgjsonb.cache_warmer.time.sleep") as mock_sleep:
+            w.warm(loader)
+
+        # When both delay and jitter are zero, no initial sleep call.
+        for c in mock_sleep.call_args_list:
+            assert c.args[0] == 0 or c.args == ()
+
     def test_warm_empty_stats(self):
         from zodb_pgjsonb.cache_warmer import CacheWarmer
         from zodb_pgjsonb.storage import SharedLoadCache
