@@ -606,6 +606,9 @@ class TestCacheWarmerSlot:
 
         # All slots permanently taken.
         lock_conn = self._make_lock_conn(slot_results=[False] * 100)
+        # Track that the lock connection is closed when timeout fires.
+        close_calls = []
+        lock_conn.close = lambda: close_calls.append(True)
 
         w = CacheWarmer(
             conn=mock.Mock(),
@@ -636,6 +639,8 @@ class TestCacheWarmerSlot:
             result = w._acquire_slot()
 
         assert result is None
+        # Connection must be closed on the timeout path (no leak).
+        assert close_calls == [True]
 
     def test_acquire_slot_handles_connect_failure(self):
         from zodb_pgjsonb.cache_warmer import CacheWarmer
@@ -876,18 +881,28 @@ class TestCacheWarmerDB:
             return {oid: (b"x", p64(50)) for oid in oids}
 
         def run_warmer():
-            w = CacheWarmer(
-                conn=self.conn,
-                target_count=10,
-                shared_cache=shared,
-                load_current_tid_fn=lambda: 100,
-                dsn=DSN,
-                concurrency=1,
-                wait_max=30,
-                batch_size=500,
-                batch_pause=0,
-            )
-            w.warm(slow_loader)
+            # Fresh connection per thread; psycopg connections are not
+            # thread-safe, and self.conn would otherwise be shared.
+            from psycopg.rows import dict_row
+
+            import psycopg
+
+            own_conn = psycopg.connect(DSN, autocommit=True, row_factory=dict_row)
+            try:
+                w = CacheWarmer(
+                    conn=own_conn,
+                    target_count=10,
+                    shared_cache=shared,
+                    load_current_tid_fn=lambda: 100,
+                    dsn=DSN,
+                    concurrency=1,
+                    wait_max=30,
+                    batch_size=500,
+                    batch_pause=0,
+                )
+                w.warm(slow_loader)
+            finally:
+                own_conn.close()
 
         t1 = threading.Thread(target=run_warmer)
         t2 = threading.Thread(target=run_warmer)
@@ -931,18 +946,28 @@ class TestCacheWarmerDB:
             return {oid: (b"x", p64(50)) for oid in oids}
 
         def run_warmer():
-            w = CacheWarmer(
-                conn=self.conn,
-                target_count=10,
-                shared_cache=shared,
-                load_current_tid_fn=lambda: 100,
-                dsn=DSN,
-                concurrency=2,
-                wait_max=30,
-                batch_size=500,
-                batch_pause=0,
-            )
-            w.warm(slow_loader)
+            # Fresh connection per thread (psycopg connections are not
+            # thread-safe).
+            from psycopg.rows import dict_row
+
+            import psycopg
+
+            own_conn = psycopg.connect(DSN, autocommit=True, row_factory=dict_row)
+            try:
+                w = CacheWarmer(
+                    conn=own_conn,
+                    target_count=10,
+                    shared_cache=shared,
+                    load_current_tid_fn=lambda: 100,
+                    dsn=DSN,
+                    concurrency=2,
+                    wait_max=30,
+                    batch_size=500,
+                    batch_pause=0,
+                )
+                w.warm(slow_loader)
+            finally:
+                own_conn.close()
 
         threads = [threading.Thread(target=run_warmer) for _ in range(3)]
         for t in threads:

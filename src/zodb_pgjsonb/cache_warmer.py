@@ -153,12 +153,15 @@ class CacheWarmer:
                     )
                     row = cur.fetchone()
             except Exception:
+                # Per-slot transient error: log and treat as miss.  The
+                # outer retry loop in _acquire_slot will reopen the
+                # connection if it's truly dead.
                 log.warning(
                     "Cache warmer: pg_try_advisory_lock raised for slot %d",
                     slot,
                     exc_info=True,
                 )
-                return None
+                continue
             if row and row[0]:
                 return slot
         return None
@@ -211,6 +214,8 @@ class CacheWarmer:
                         waited,
                         attempt,
                     )
+                    with contextlib.suppress(Exception):
+                        lock_conn.close()
                     return None
 
                 log.info(
