@@ -262,6 +262,64 @@ class TestCacheWarmerWarm:
         # First sleep call should be delay + uniform(0, jitter) = 15 + 7 = 22
         assert mock_sleep.call_args_list[0] == mock.call(22.0)
 
+    def test_warm_batches_with_pause(self):
+        from ZODB.utils import p64
+        from zodb_pgjsonb.cache_warmer import CacheWarmer
+        from zodb_pgjsonb.storage import SharedLoadCache
+
+        # 1100 OIDs at batch_size=500 → 3 batches (500+500+100),
+        # 2 inter-batch sleeps (after batches 1 and 2, not after 3).
+        top = list(range(1, 1101))
+        shared = SharedLoadCache(max_mb=64)
+        w = CacheWarmer(
+            conn=_FakeConn(top_oids=top),
+            target_count=1100,
+            shared_cache=shared,
+            load_current_tid_fn=lambda: 100,
+            batch_size=500,
+            batch_pause=0.25,
+        )
+
+        call_chunks = []
+
+        def loader(oids):
+            call_chunks.append(len(oids))
+            return {oid: (b"x", p64(50)) for oid in oids}
+
+        with mock.patch("zodb_pgjsonb.cache_warmer.time.sleep") as mock_sleep:
+            w.warm(loader)
+
+        # Three loader calls, sizes 500, 500, 100.
+        assert call_chunks == [500, 500, 100]
+        # Exactly two batch_pause sleeps of 0.25 (no trailing).
+        pause_calls = [c for c in mock_sleep.call_args_list if c.args == (0.25,)]
+        assert len(pause_calls) == 2
+
+    def test_warm_single_batch_no_pause(self):
+        from ZODB.utils import p64
+        from zodb_pgjsonb.cache_warmer import CacheWarmer
+        from zodb_pgjsonb.storage import SharedLoadCache
+
+        shared = SharedLoadCache(max_mb=4)
+        w = CacheWarmer(
+            conn=_FakeConn(top_oids=[1, 2, 3]),
+            target_count=10,
+            shared_cache=shared,
+            load_current_tid_fn=lambda: 100,
+            batch_size=500,
+            batch_pause=0.5,
+        )
+
+        def loader(oids):
+            return {oid: (b"x", p64(50)) for oid in oids}
+
+        with mock.patch("zodb_pgjsonb.cache_warmer.time.sleep") as mock_sleep:
+            w.warm(loader)
+
+        # Single batch → zero batch_pause sleeps.
+        pause_calls = [c for c in mock_sleep.call_args_list if c.args == (0.5,)]
+        assert pause_calls == []
+
     def test_warm_no_sleep_when_disabled(self):
         from ZODB.utils import p64
         from zodb_pgjsonb.cache_warmer import CacheWarmer

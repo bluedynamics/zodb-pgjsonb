@@ -177,17 +177,6 @@ class CacheWarmer:
             log.warning("Cache warmer: could not read current TID, skipping warmup")
             return
 
-        oids = [p64(z) for z in top_zoids]
-        try:
-            results = load_multiple_fn(oids)
-        except Exception:
-            log.warning("Cache warmer: load_multiple failed", exc_info=True)
-            return
-
-        if not results:
-            log.info("Cache warmer: load_multiple returned no objects")
-            return
-
         # Prime consensus so set() accepts our writes.  Another instance
         # may have advanced consensus beyond our sampled current_tid
         # already — in that case poll_advance is a no-op, and the actual
@@ -200,17 +189,42 @@ class CacheWarmer:
             log.warning("Cache warmer: consensus still None after poll_advance")
             return
 
+        # A3 (#59): batch the fetches and pause between them so a single
+        # pod's warmup doesn't burst the connection pool / DB CPU.
+        batch_size = max(1, self._batch_size)
+        batches = [
+            top_zoids[i:i + batch_size]
+            for i in range(0, len(top_zoids), batch_size)
+        ]
         written = 0
         attempted = 0
-        for oid, (data, tid_bytes) in results.items():
-            attempted += 1
-            if self._shared_cache.set(
-                zoid=u64(oid),
-                data=data,
-                tid_bytes=tid_bytes,
-                polled_tid=effective_tid,
-            ):
-                written += 1
+        for batch_idx, batch in enumerate(batches):
+            oids = [p64(z) for z in batch]
+            try:
+                results = load_multiple_fn(oids)
+            except Exception:
+                log.warning(
+                    "Cache warmer: load_multiple failed at batch %d/%d",
+                    batch_idx + 1, len(batches),
+                    exc_info=True,
+                )
+                return
+            for oid, (data, tid_bytes) in results.items():
+                attempted += 1
+                if self._shared_cache.set(
+                    zoid=u64(oid),
+                    data=data,
+                    tid_bytes=tid_bytes,
+                    polled_tid=effective_tid,
+                ):
+                    written += 1
+            # Pause only between batches, never after the last.
+            if batch_idx < len(batches) - 1 and self._batch_pause > 0:
+                time.sleep(self._batch_pause)
+
+        if attempted == 0:
+            log.info("Cache warmer: load_multiple returned no objects")
+            return
 
         if written == 0:
             log.warning(
@@ -223,7 +237,9 @@ class CacheWarmer:
             )
         else:
             log.info(
-                "Cache warmer: loaded %d of %d objects into shared cache",
+                "Cache warmer: loaded %d of %d objects into shared cache "
+                "(%d batches)",
                 written,
                 attempted,
+                len(batches),
             )
