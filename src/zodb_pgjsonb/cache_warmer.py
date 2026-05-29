@@ -11,10 +11,9 @@ the shared-cache migration.
 
 import contextlib
 import logging
+import psycopg
 import random
 import time
-
-import psycopg
 
 
 log = logging.getLogger(__name__)
@@ -29,8 +28,8 @@ CREATE TABLE IF NOT EXISTS cache_warm_stats (
 
 # Advisory-lock keyspace for B2b inter-pod warmer semaphore (#59).
 # Same namespace as startup_locks.py (separate keys).
-WARMER_LOCK_NS = 0x5A4442    # "ZDB"
-WARMER_SLOT_BASE = 100       # slot keys are WARMER_SLOT_BASE + i for i in 1..N
+WARMER_LOCK_NS = 0x5A4442  # "ZDB"
+WARMER_SLOT_BASE = 100  # slot keys are WARMER_SLOT_BASE + i for i in 1..N
 
 
 class CacheWarmer:
@@ -197,9 +196,10 @@ class CacheWarmer:
                 if slot is not None:
                     waited = time.monotonic() - started
                     log.info(
-                        "Cache warmer: acquired slot %d after %.1fs wait "
-                        "(attempt %d)",
-                        slot, waited, attempt,
+                        "Cache warmer: acquired slot %d after %.1fs wait (attempt %d)",
+                        slot,
+                        waited,
+                        attempt,
                     )
                     return lock_conn, slot
 
@@ -208,14 +208,15 @@ class CacheWarmer:
                     log.warning(
                         "Cache warmer: gave up after %.1fs waiting for slot "
                         "(%d attempts), skipping warmup",
-                        waited, attempt,
+                        waited,
+                        attempt,
                     )
                     return None
 
                 log.info(
-                    "Cache warmer: all %d slots taken, retrying "
-                    "(waited %.1fs so far)",
-                    self._concurrency, waited,
+                    "Cache warmer: all %d slots taken, retrying (waited %.1fs so far)",
+                    self._concurrency,
+                    waited,
                 )
                 time.sleep(random.uniform(2.0, 5.0))
         except Exception:
@@ -335,8 +336,7 @@ class CacheWarmer:
         # pod's warmup doesn't burst the connection pool / DB CPU.
         batch_size = max(1, self._batch_size)
         batches = [
-            top_zoids[i:i + batch_size]
-            for i in range(0, len(top_zoids), batch_size)
+            top_zoids[i : i + batch_size] for i in range(0, len(top_zoids), batch_size)
         ]
         written = 0
         attempted = 0
@@ -347,7 +347,8 @@ class CacheWarmer:
             except Exception:
                 log.warning(
                     "Cache warmer: load_multiple failed at batch %d/%d",
-                    batch_idx + 1, len(batches),
+                    batch_idx + 1,
+                    len(batches),
                     exc_info=True,
                 )
                 return
@@ -379,8 +380,7 @@ class CacheWarmer:
             )
         else:
             log.info(
-                "Cache warmer: loaded %d of %d objects into shared cache "
-                "(%d batches)",
+                "Cache warmer: loaded %d of %d objects into shared cache (%d batches)",
                 written,
                 attempted,
                 len(batches),

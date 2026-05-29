@@ -252,11 +252,13 @@ class TestCacheWarmerWarm:
         def loader(oids):
             return {oid: (b"data-" + oid, p64(50)) for oid in oids}
 
-        with mock.patch("zodb_pgjsonb.cache_warmer.time.sleep") as mock_sleep, \
-             mock.patch(
-                 "zodb_pgjsonb.cache_warmer.random.uniform",
-                 return_value=7.0,
-             ):
+        with (
+            mock.patch("zodb_pgjsonb.cache_warmer.time.sleep") as mock_sleep,
+            mock.patch(
+                "zodb_pgjsonb.cache_warmer.random.uniform",
+                return_value=7.0,
+            ),
+        ):
             w.warm(loader)
 
         # First sleep call should be delay + uniform(0, jitter) = 15 + 7 = 22
@@ -495,7 +497,9 @@ class TestCacheWarmerSlot:
                 if "pg_try_advisory_lock" in sql:
                     i = call_count[0]
                     call_count[0] += 1
-                    self._row = (slot_results[i],) if i < len(slot_results) else (False,)
+                    self._row = (
+                        (slot_results[i],) if i < len(slot_results) else (False,)
+                    )
                 else:
                     self._row = None
                 return self
@@ -562,7 +566,7 @@ class TestCacheWarmerSlot:
 
         # First two attempts: all slots taken.  Third attempt: slot 1 free.
         # With concurrency=2 that's 2 + 2 + 1 = 5 try-lock calls before success.
-        slot_results = [False, False] + [False, False] + [True]
+        slot_results = [False, False, False, False, True]
         lock_conn = self._make_lock_conn(slot_results=slot_results)
 
         w = CacheWarmer(
@@ -577,17 +581,20 @@ class TestCacheWarmerSlot:
 
         # Patch psycopg.connect to return our pre-built lock_conn, and
         # patch sleep so the test doesn't actually wait.
-        with mock.patch(
-            "zodb_pgjsonb.cache_warmer.psycopg.connect",
-            return_value=lock_conn,
-        ), mock.patch(
-            "zodb_pgjsonb.cache_warmer.time.sleep"
-        ), mock.patch(
-            "zodb_pgjsonb.cache_warmer.random.uniform",
-            return_value=3.0,
-        ), mock.patch(
-            "zodb_pgjsonb.cache_warmer.time.monotonic",
-            side_effect=[0, 3, 6, 9],
+        with (
+            mock.patch(
+                "zodb_pgjsonb.cache_warmer.psycopg.connect",
+                return_value=lock_conn,
+            ),
+            mock.patch("zodb_pgjsonb.cache_warmer.time.sleep"),
+            mock.patch(
+                "zodb_pgjsonb.cache_warmer.random.uniform",
+                return_value=3.0,
+            ),
+            mock.patch(
+                "zodb_pgjsonb.cache_warmer.time.monotonic",
+                side_effect=[0, 3, 6, 9],
+            ),
         ):
             conn, slot = w._acquire_slot()
 
@@ -611,17 +618,20 @@ class TestCacheWarmerSlot:
         )
 
         # monotonic side_effect: simulate 0s, 3s, 6s, 9s, 12s — wait_max hit.
-        with mock.patch(
-            "zodb_pgjsonb.cache_warmer.psycopg.connect",
-            return_value=lock_conn,
-        ), mock.patch(
-            "zodb_pgjsonb.cache_warmer.time.sleep"
-        ), mock.patch(
-            "zodb_pgjsonb.cache_warmer.random.uniform",
-            return_value=3.0,
-        ), mock.patch(
-            "zodb_pgjsonb.cache_warmer.time.monotonic",
-            side_effect=[0, 3, 6, 9, 12],
+        with (
+            mock.patch(
+                "zodb_pgjsonb.cache_warmer.psycopg.connect",
+                return_value=lock_conn,
+            ),
+            mock.patch("zodb_pgjsonb.cache_warmer.time.sleep"),
+            mock.patch(
+                "zodb_pgjsonb.cache_warmer.random.uniform",
+                return_value=3.0,
+            ),
+            mock.patch(
+                "zodb_pgjsonb.cache_warmer.time.monotonic",
+                side_effect=[0, 3, 6, 9, 12],
+            ),
         ):
             result = w._acquire_slot()
 
@@ -839,8 +849,8 @@ class TestCacheWarmerDB:
 
     def test_concurrency_1_serializes_two_warmers(self):
         """Two warmers with concurrency=1 must not warm in parallel."""
-        from ZODB.utils import p64
         from tests.conftest import DSN
+        from ZODB.utils import p64
         from zodb_pgjsonb.cache_warmer import CacheWarmer
         from zodb_pgjsonb.storage import SharedLoadCache
 
@@ -881,8 +891,10 @@ class TestCacheWarmerDB:
 
         t1 = threading.Thread(target=run_warmer)
         t2 = threading.Thread(target=run_warmer)
-        t1.start(); t2.start()
-        t1.join(); t2.join()
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
 
         # Two enter/exit pairs, non-overlapping.
         enters = sorted(t for k, t in load_times if k == "enter")
@@ -893,8 +905,8 @@ class TestCacheWarmerDB:
 
     def test_concurrency_2_allows_two_parallel_one_waits(self):
         """Three warmers, concurrency=2 — two warm in parallel, third waits."""
-        from ZODB.utils import p64
         from tests.conftest import DSN
+        from ZODB.utils import p64
         from zodb_pgjsonb.cache_warmer import CacheWarmer
         from zodb_pgjsonb.storage import SharedLoadCache
 
@@ -951,11 +963,9 @@ class TestCacheWarmerDB:
         PG auto-releases the session-level lock so another warmer can
         proceed."""
         from tests.conftest import DSN
-        from zodb_pgjsonb.cache_warmer import (
-            CacheWarmer,
-            WARMER_LOCK_NS,
-            WARMER_SLOT_BASE,
-        )
+        from zodb_pgjsonb.cache_warmer import CacheWarmer
+        from zodb_pgjsonb.cache_warmer import WARMER_LOCK_NS
+        from zodb_pgjsonb.cache_warmer import WARMER_SLOT_BASE
 
         import psycopg
 
@@ -970,8 +980,12 @@ class TestCacheWarmerDB:
 
         class _StubShared:
             consensus_tid = 1
-            def poll_advance(self, *a, **k): return None
-            def set(self, *a, **k): return True
+
+            def poll_advance(self, *a, **k):
+                return None
+
+            def set(self, *a, **k):
+                return True
 
         # Pod 2: a fresh warmer with concurrency=1 must time out quickly
         # because slot 1 is held.

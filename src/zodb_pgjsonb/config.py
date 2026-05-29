@@ -82,16 +82,10 @@ class PGJsonbStorageFactory(BaseConfig):
             "cache_warm_decay": getattr(config, "cache_warm_decay", 0.8),
             "cache_warm_delay": getattr(config, "cache_warm_delay", 15),
             "cache_warm_jitter": getattr(config, "cache_warm_jitter", 30),
-            "cache_warm_concurrency": getattr(
-                config, "cache_warm_concurrency", 2
-            ),
+            "cache_warm_concurrency": getattr(config, "cache_warm_concurrency", 2),
             "cache_warm_wait_max": getattr(config, "cache_warm_wait_max", 300),
-            "cache_warm_batch_size": getattr(
-                config, "cache_warm_batch_size", 500
-            ),
-            "cache_warm_batch_pause": getattr(
-                config, "cache_warm_batch_pause", 0.5
-            ),
+            "cache_warm_batch_size": getattr(config, "cache_warm_batch_size", 500),
+            "cache_warm_batch_pause": getattr(config, "cache_warm_batch_pause", 0.5),
         }
         # Deprecation alias — let PGJsonbStorage.__init__ emit the warning
         if getattr(config, "cache_local_mb", None) is not None:

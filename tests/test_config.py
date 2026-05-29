@@ -286,7 +286,7 @@ class TestCacheWarmHerdConfig:
     pytestmark = pytest.mark.db
 
     def test_warm_knob_defaults(self):
-        """Omitted knobs use the documented production defaults."""
+        """Omitting all six knobs uses the documented production defaults."""
         from tests.conftest import DSN
         from ZODB.config import storageFromString
 
@@ -295,27 +295,19 @@ class TestCacheWarmHerdConfig:
 %import zodb_pgjsonb
 <pgjsonb>
   dsn {DSN}
-  cache-warm-pct 0
 </pgjsonb>
         """
         storage = storageFromString(zconf)
         try:
-            # Warmer disabled (pct=0) but the config defaults still flow
-            # through PGJsonbStorage.__init__.  Verify the stored kwargs.
-            # Direct introspection of the constructor defaults via a
-            # second instantiation is not practical, so verify via the
-            # ZConfig section attributes that the factory reads:
-            import ZODB.config
-
-            schema_text = """\
-<schema>
-    <import package="zodb_pgjsonb" />
-    <section type="pgjsonb" name="*" attribute="storage" />
-</schema>
-            """
-            # Just confirm the storage was constructed; the defaults
-            # are exercised by the override test below.
-            assert storage is not None
+            w = storage._warmer
+            assert w is not None
+            assert w._delay == 15
+            assert w._jitter == 30
+            assert w._concurrency == 2
+            assert w._wait_max == 300
+            assert w._batch_size == 500
+            assert w._batch_pause == 0.5
+            assert w._dsn == DSN
         finally:
             storage.close()
 
