@@ -42,8 +42,15 @@ class CacheWarmer:
         target_count,
         shared_cache,
         load_current_tid_fn,
+        dsn=None,
         decay=0.8,
         flush_interval=1000,
+        delay=0,
+        jitter=0,
+        concurrency=0,
+        wait_max=300,
+        batch_size=500,
+        batch_pause=0.0,
     ):
         self.recording = target_count > 0
         self._recorded = set()
@@ -58,6 +65,17 @@ class CacheWarmer:
         self._load_current_tid_fn = load_current_tid_fn
 
         self._conn = conn
+
+        # Herd-mitigation knobs (#59).  CacheWarmer defaults are off
+        # so direct instantiation in tests preserves prior behavior;
+        # PGJsonbStorage / ZConfig set the production defaults.
+        self._dsn = dsn
+        self._delay = delay
+        self._jitter = jitter
+        self._concurrency = concurrency
+        self._wait_max = wait_max
+        self._batch_size = batch_size
+        self._batch_pause = batch_pause
 
     # ── Recording phase ──────────────────────────────────────────────
 

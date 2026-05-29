@@ -164,6 +164,52 @@ class TestCacheWarmerRecord:
         assert 3 not in w._recorded
 
 
+class TestCacheWarmerNewKwargs:
+    """Confirms the six herd-mitigation kwargs are accepted and stored
+    on the instance with their defaults (off)."""
+
+    def test_defaults_are_off(self):
+        from zodb_pgjsonb.cache_warmer import CacheWarmer
+
+        w = CacheWarmer(
+            conn=mock.Mock(),
+            target_count=10,
+            shared_cache=_mk_shared_cache(),
+            load_current_tid_fn=lambda: 100,
+        )
+        assert w._delay == 0
+        assert w._jitter == 0
+        assert w._concurrency == 0
+        assert w._wait_max == 300
+        assert w._batch_size == 500
+        assert w._batch_pause == 0.0
+        assert w._dsn is None
+
+    def test_kwargs_override(self):
+        from zodb_pgjsonb.cache_warmer import CacheWarmer
+
+        w = CacheWarmer(
+            conn=mock.Mock(),
+            target_count=10,
+            shared_cache=_mk_shared_cache(),
+            load_current_tid_fn=lambda: 100,
+            dsn="dbname=foo",
+            delay=15,
+            jitter=30,
+            concurrency=2,
+            wait_max=120,
+            batch_size=250,
+            batch_pause=0.25,
+        )
+        assert w._delay == 15
+        assert w._jitter == 30
+        assert w._concurrency == 2
+        assert w._wait_max == 120
+        assert w._batch_size == 250
+        assert w._batch_pause == 0.25
+        assert w._dsn == "dbname=foo"
+
+
 class TestCacheWarmerWarm:
     """Test warming phase."""
 
