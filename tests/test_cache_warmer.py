@@ -557,6 +557,57 @@ class TestCacheWarmerSlot:
 
         assert result is None
 
+    def test_release_slot_unlocks_and_closes(self):
+        from zodb_pgjsonb.cache_warmer import CacheWarmer
+        from zodb_pgjsonb.cache_warmer import WARMER_LOCK_NS
+        from zodb_pgjsonb.cache_warmer import WARMER_SLOT_BASE
+
+        executed = []
+        closed = []
+
+        class _ReleaseConn:
+            def execute(self, sql, params=None):
+                executed.append((sql, params))
+
+            def close(self):
+                closed.append(True)
+
+        w = CacheWarmer(
+            conn=mock.Mock(),
+            target_count=10,
+            shared_cache=_mk_shared_cache(),
+            load_current_tid_fn=lambda: 100,
+            concurrency=2,
+        )
+        lock_conn = _ReleaseConn()
+        w._release_slot(lock_conn, slot=2)
+
+        assert len(executed) == 1
+        sql, params = executed[0]
+        assert "pg_advisory_unlock" in sql
+        assert params == (WARMER_LOCK_NS, WARMER_SLOT_BASE + 2)
+        assert closed == [True]
+
+    def test_release_slot_swallows_errors(self):
+        from zodb_pgjsonb.cache_warmer import CacheWarmer
+
+        class _BadConn:
+            def execute(self, sql, params=None):
+                raise RuntimeError("connection gone")
+
+            def close(self):
+                raise RuntimeError("close gone too")
+
+        w = CacheWarmer(
+            conn=mock.Mock(),
+            target_count=10,
+            shared_cache=_mk_shared_cache(),
+            load_current_tid_fn=lambda: 100,
+            concurrency=2,
+        )
+        # Must not raise.
+        w._release_slot(_BadConn(), slot=1)
+
 
 @pytest.mark.db
 class TestCacheWarmerDB:

@@ -227,6 +227,27 @@ class CacheWarmer:
                 lock_conn.close()
             return None
 
+    def _release_slot(self, lock_conn, slot):
+        """Release the advisory lock and close the dedicated connection.
+
+        Errors are logged and suppressed — PG auto-releases session
+        locks on connection close, so a failed unlock is recoverable.
+        """
+        key = WARMER_SLOT_BASE + slot
+        try:
+            lock_conn.execute(
+                "SELECT pg_advisory_unlock(%s, %s)",
+                (WARMER_LOCK_NS, key),
+            )
+        except Exception:
+            log.warning(
+                "Cache warmer: pg_advisory_unlock failed for slot %d",
+                slot,
+                exc_info=True,
+            )
+        with contextlib.suppress(Exception):
+            lock_conn.close()
+
     # ── Warming phase ────────────────────────────────────────────────
 
     def _read_top_oids(self):
