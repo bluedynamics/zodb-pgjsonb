@@ -172,6 +172,17 @@ class TestPGJsonbStorageIntegration:
         finally:
             s.close()
 
+    def test_clear_caches_resets_shared_cache(self, storage):
+        """storage.clear_caches() empties the process-wide shared cache."""
+        sc = storage._shared_cache
+        sc.poll_advance(new_tid=100, changed_zoids=[])
+        sc.set(zoid=1, data=b"x" * 50, tid_bytes=p64(100), polled_tid=100)
+
+        storage.clear_caches()
+
+        assert sc.consensus_tid is None
+        assert len(sc._cache) == 0
+
     def test_cache_per_connection_mb_controls_l1(self):
         """cache_per_connection_mb controls per-instance L1 cache size."""
         from tests.conftest import clean_db
@@ -231,3 +242,39 @@ class TestSharedLoadCacheAPIExtensions:
         cache.set(zoid=1, data=b"new", tid_bytes=p64(200), polled_tid=200)
         accepted = cache.set(zoid=1, data=b"older", tid_bytes=p64(100), polled_tid=200)
         assert accepted is False
+
+
+class TestClear:
+    """clear() drops all entries and resets the consensus TID.
+
+    Needed when the backing database is rolled *backwards* out of band
+    (e.g. a test harness restoring a snapshot), which the monotonic
+    consensus model otherwise cannot recover from.
+    """
+
+    def test_clear_empties_cache_and_resets_consensus(self):
+        cache = SharedLoadCache(max_mb=4)
+        cache.poll_advance(new_tid=100, changed_zoids=[])
+        cache.set(zoid=1, data=b"x" * 50, tid_bytes=p64(100), polled_tid=100)
+
+        cache.clear()
+
+        assert cache._consensus_tid is None
+        assert len(cache._cache) == 0
+        assert cache._current_bytes == 0
+
+    def test_clear_allows_backwards_tid_afterwards(self):
+        """After clear(), a lower TID is accepted again (DB rolled back)."""
+        cache = SharedLoadCache(max_mb=4)
+        cache.poll_advance(new_tid=200, changed_zoids=[])
+        cache.set(zoid=1, data=b"at200", tid_bytes=p64(200), polled_tid=200)
+
+        cache.clear()
+
+        # DB is now back at an older TID; consensus must accept it.
+        cache.poll_advance(new_tid=100, changed_zoids=[])
+        assert cache.consensus_tid == 100
+        # The stale entry is gone, and a fresh write at the lower TID sticks.
+        assert cache.get(zoid=1, polled_tid=100) is None
+        cache.set(zoid=1, data=b"at100", tid_bytes=p64(100), polled_tid=100)
+        assert cache.get(zoid=1, polled_tid=100) == (b"at100", p64(100))

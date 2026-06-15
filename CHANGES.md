@@ -4,6 +4,15 @@
 
 ### Features
 
+- **`PGJsonbStorage.clear_caches()`** and **`SharedLoadCache.clear()`**:
+  public methods that drop all in-memory caches and reset the consensus
+  TID.  Intended for test harnesses that roll the database *backwards*
+  out of band (e.g. restoring a snapshot between tests): the monotonic
+  shared cache cannot otherwise recover and keeps serving object state
+  at TIDs newer than the rolled-back database, causing spurious
+  ``ConflictError`` on the next commit.  Not needed in production, where
+  TIDs never decrease.
+
 - **Cache warmer herd mitigation** (#59).  Rolling Kubernetes deploys
   used to multiply DB primary CPU by the replica count for the warmer
   startup window, because every pod independently fired its full set
