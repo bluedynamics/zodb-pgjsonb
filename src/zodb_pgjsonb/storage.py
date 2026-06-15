@@ -328,6 +328,21 @@ class SharedLoadCache:
                         self._current_bytes -= len(entry[0])
                 self._consensus_tid = new_tid
 
+    def clear(self):
+        """Drop all entries and reset the consensus TID.
+
+        The consensus model is strictly monotonic and cannot recover when
+        the backing database is rolled *backwards* out of band — e.g. a
+        test harness restoring a snapshot, which re-inserts rows at their
+        older TIDs.  Clearing resets consensus to ``None`` so the next
+        ``poll_advance`` re-establishes it from the (lower) current TID.
+        In production TIDs never decrease, so this is not needed there.
+        """
+        with self._lock:
+            self._cache.clear()
+            self._consensus_tid = None
+            self._current_bytes = 0
+
 
 class PGTransactionRecord(TransactionRecord):
     """Transaction record yielded by PGJsonbStorage.iterator()."""
@@ -811,6 +826,21 @@ class PGJsonbStorage(CopyTransactionsMixin, ConflictResolvingStorage, BaseStorag
 
     def sync(self, force=True):
         """Sync snapshot (no-op for main storage)."""
+
+    def clear_caches(self):
+        """Drop all in-memory caches (shared L2, main L1, serial cache).
+
+        For test harnesses that roll the database *backwards* out of band
+        (e.g. snapshot restore between tests): the process-wide
+        ``SharedLoadCache`` outlives a single ``ZODB.DB`` connection pool,
+        so clearing the ZODB caches alone leaves it serving object state at
+        TIDs newer than the rolled-back database, causing spurious
+        ``ConflictError`` on the next commit.  In production TIDs never
+        decrease, so this is not part of the normal code path.
+        """
+        self._shared_cache.clear()
+        self._load_cache.clear()
+        self._serial_cache.clear()
 
     # ── TID generation (thread-safe, shared across instances) ────────
 
