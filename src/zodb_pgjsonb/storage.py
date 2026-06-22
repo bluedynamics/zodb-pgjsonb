@@ -1475,7 +1475,7 @@ class PGJsonbStorage(CopyTransactionsMixin, ConflictResolvingStorage, BaseStorag
     def _sweep_orphan_blob_dirs(self):
         """Delete orphaned "zodb-pgjsonb-blobs-*" dirs from dead workers.
 
-        Pre-1.14 instances materialized read blobs into per-instance
+        Pre-1.13.1 instances materialized read blobs into per-instance
         mkdtemp dirs that were only removed on a clean close(); abnormal
         termination (pod eviction/crash) leaked them entirely (#71).
         Sweep them on startup, but conservatively: never touch our own
