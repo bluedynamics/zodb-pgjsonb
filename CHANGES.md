@@ -1,5 +1,34 @@
 # Changelog
 
+## unreleased
+
+### Bugfixes
+
+- **Bound the per-instance blob materialization dir** (#71).  Each
+  `PGJsonbStorageInstance` used to materialize every blob read via
+  `loadBlob()` into its own `tempfile.mkdtemp(prefix="zodb-pgjsonb-blobs-")`
+  directory with no size limit, cleaned only on a clean `close()`.  On
+  long-running pods this filled local/ephemeral disk (11–14 GB per pod
+  observed) and triggered node `DiskPressure`; instances killed
+  abnormally leaked their dir entirely.  For S3-tiered blobs it was
+  doubly wasteful — every blob was stored both in the unbounded dir and
+  in the bounded `S3BlobCache`.
+
+  Read blobs are now materialized through a single, process-wide
+  **bounded** cache (LRU by access time) for both PG-bytea and S3 blobs:
+
+  - When S3 is configured the existing `S3BlobCache` is reused as the
+    materialization target (no more duplicate copy in the temp dir).
+  - Without S3 a new `LocalBlobCache` (in `zodb_pgjsonb.blob_cache`)
+    provides the same bound for PG-bytea blobs.
+
+  Both are sized by the existing `blob-cache-size` ZConfig key (default
+  1 GB), which now applies with or without S3.  The per-instance temp
+  dir is retained only for transient write-staging.  On startup the
+  storage also sweeps orphaned `zodb-pgjsonb-blobs-*` dirs left by
+  pre-1.14 workers (conservatively: never its own, only dirs older than
+  an hour).
+
 ## 1.13.0
 
 ### Features

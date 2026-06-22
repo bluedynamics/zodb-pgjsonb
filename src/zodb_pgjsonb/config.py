@@ -77,6 +77,9 @@ class PGJsonbStorageFactory(BaseConfig):
             "pool_timeout": config.pool_timeout,
             "s3_client": s3_client,
             "blob_cache": blob_cache,
+            # Also sizes the local materialization cache used when S3 is
+            # not configured (PG-bytea blobs) — see PGJsonbStorage (#71).
+            "blob_cache_size": getattr(config, "blob_cache_size", 1024 * 1024 * 1024),
             "blob_threshold": getattr(config, "blob_threshold", 100 * 1024),
             "cache_warm_pct": getattr(config, "cache_warm_pct", 10),
             "cache_warm_decay": getattr(config, "cache_warm_decay", 0.8),
