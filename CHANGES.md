@@ -2,6 +2,19 @@
 
 ## unreleased
 
+### Tests
+
+- **Recovery conformance: robust destination DSN derivation.**
+  `PGJsonbRecoveryHP` built the destination DSN via
+  `DSN.replace("dbname=zodb_test", ...)`, which silently no-ops for any
+  DSN whose dbname is not literally `zodb_test` (e.g. a `ZODB_TEST_DSN`
+  with `dbname=zodb`), leaving source and destination on the same
+  database and producing confusing `transaction_log_pkey` duplicate-key
+  failures.  The destination dbname is now derived from the source DSN
+  (`<src>_dst`) via regex and asserted distinct, so the tests work with
+  any libpq key=value DSN and a broken derivation fails loudly.
+
+
 ### Bugfixes
 
 - **Bound the per-instance blob materialization dir** (#71).  Each
