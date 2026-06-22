@@ -38,6 +38,7 @@ from zodb_pgjsonb.storage import PGJsonbStorage
 
 import psycopg
 import pytest
+import re
 import threading
 import time
 import transaction
@@ -348,30 +349,45 @@ class PGJsonbRecoveryHP(StorageTestBase, RecoveryStorage):
     """ZODB conformance — recovery (history-preserving mode).
 
     RecoveryStorage tests copyTransactionsFrom, restore, and pack on
-    a destination storage.  Uses a separate database (zodb_test_dst)
-    for the destination storage.
+    a destination storage, which must live in a *separate* database so
+    its TIDs/OIDs don't collide with the source.  The destination DB
+    name is derived from the source DSN's dbname (``<src>_dst``) so the
+    isolation holds for any configured DSN, not just ``dbname=zodb_test``.
     """
 
-    _DST_DB = "zodb_test_dst"
+    @staticmethod
+    def _dbname(dsn):
+        """Extract the dbname from a libpq key=value DSN."""
+        match = re.search(r"\bdbname=(\S+)", dsn)
+        if not match:
+            raise ValueError(f"Cannot find dbname in DSN: {dsn!r}")
+        return match.group(1)
 
     def setUp(self):
         super().setUp()
-        # Create destination database
+        src_db = self._dbname(DSN)
+        self._dst_db = f"{src_db}_dst"
+        dst_dsn = re.sub(r"\bdbname=\S+", f"dbname={self._dst_db}", DSN, count=1)
+        # Guard against a DSN form that silently leaves source == dest,
+        # which would surface as confusing duplicate-key errors mid-test.
+        assert self._dst_db != src_db
+        assert dst_dsn != DSN, f"destination DSN not distinct from source: {DSN!r}"
+
+        # Create a fresh destination database.
         admin_conn = psycopg.connect(DSN)
         admin_conn.autocommit = True
         admin_conn.execute(
             "SELECT pg_terminate_backend(pid) "
             "FROM pg_stat_activity "
             "WHERE datname = %s AND pid != pg_backend_pid()",
-            (self._DST_DB,),
+            (self._dst_db,),
         )
-        admin_conn.execute(f"DROP DATABASE IF EXISTS {self._DST_DB}")
-        admin_conn.execute(f"CREATE DATABASE {self._DST_DB}")
+        admin_conn.execute(f"DROP DATABASE IF EXISTS {self._dst_db}")
+        admin_conn.execute(f"CREATE DATABASE {self._dst_db}")
         admin_conn.close()
 
         clean_db()
         self._storage = PGJsonbStorage(DSN, history_preserving=True)
-        dst_dsn = DSN.replace("dbname=zodb_test", f"dbname={self._DST_DB}")
         self._dst = PGJsonbStorage(dst_dsn, history_preserving=True)
 
     def tearDown(self):
@@ -385,9 +401,9 @@ class PGJsonbRecoveryHP(StorageTestBase, RecoveryStorage):
             "SELECT pg_terminate_backend(pid) "
             "FROM pg_stat_activity "
             "WHERE datname = %s AND pid != pg_backend_pid()",
-            (self._DST_DB,),
+            (self._dst_db,),
         )
-        admin_conn.execute(f"DROP DATABASE IF EXISTS {self._DST_DB}")
+        admin_conn.execute(f"DROP DATABASE IF EXISTS {self._dst_db}")
         admin_conn.close()
 
 
