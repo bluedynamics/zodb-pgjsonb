@@ -1,5 +1,13 @@
 # Changelog
 
+## unreleased
+
+### Documentation
+
+- Add `RELEASE.md` documenting the tag-based (`hatch-vcs`) release
+  process: finalize `CHANGES.md`, merge via release PR, tag `vX.Y.Z`,
+  and publish a GitHub release to trigger the PyPI upload.
+
 ## 1.13.1
 
 ### Bugfixes
