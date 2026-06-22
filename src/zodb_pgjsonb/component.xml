@@ -203,7 +203,10 @@
 
     <key name="blob-cache-size" datatype="byte-size" default="1GB">
       <description>
-        Maximum size of local blob cache. Default: 1GB.
+        Maximum size of the local blob cache used to materialize read
+        blobs. Applies with or without S3: it bounds both the S3 download
+        cache and the local cache for PG-bytea blobs (oldest evicted by
+        access time) so local disk usage stays capped. Default: 1GB.
       </description>
     </key>
 

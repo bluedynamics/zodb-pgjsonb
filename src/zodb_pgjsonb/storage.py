@@ -406,6 +406,7 @@ class PGJsonbStorage(CopyTransactionsMixin, ConflictResolvingStorage, BaseStorag
         pool_timeout=30.0,
         s3_client=None,
         blob_cache=None,
+        blob_cache_size=1024 * 1024 * 1024,
         blob_threshold=102_400,
         cache_warm_pct=10,
         cache_warm_decay=0.8,
@@ -442,7 +443,12 @@ class PGJsonbStorage(CopyTransactionsMixin, ConflictResolvingStorage, BaseStorag
 
         # S3 tiered blob storage (optional)
         self._s3_client = s3_client  # None = PG-only mode
-        self._blob_cache = blob_cache  # S3BlobCache for local caching
+        # Bounded local cache used to materialize read blobs (#71).  When
+        # S3 is configured the caller passes an S3BlobCache; otherwise we
+        # create an equivalent local cache below so loadBlob always has a
+        # bounded target instead of an unbounded per-instance temp dir.
+        self._blob_cache = blob_cache
+        self._blob_cache_size = blob_cache_size
         self._blob_threshold = blob_threshold  # bytes; blobs >= this go to S3
 
         # State processors (plugins that extract extra column data during writes)
@@ -461,11 +467,32 @@ class PGJsonbStorage(CopyTransactionsMixin, ConflictResolvingStorage, BaseStorag
         self._tmp = []
         self._blob_tmp = {}  # pending blob stores: {oid_int: blob_path}
 
-        # Blob temp directory
+        # Blob temp directory — used only for transient write-staging
+        # (storeBlob/restoreBlob and ZODB's uncommitted blobs).  Read
+        # materialization no longer lands here (#71).
         self._blob_temp_dir = blob_temp_dir or tempfile.mkdtemp(
             prefix="zodb-pgjsonb-blobs-"
         )
         os.makedirs(self._blob_temp_dir, exist_ok=True)
+
+        # Remove orphaned per-instance dirs left by abnormally terminated
+        # workers running zodb-pgjsonb <= 1.13 (which materialized read
+        # blobs into per-instance "zodb-pgjsonb-blobs-*" dirs and only
+        # cleaned them on a clean close()).  Conservative: skip our own
+        # dir and anything younger than an hour, so a concurrently
+        # starting peer is never disturbed.
+        self._sweep_orphan_blob_dirs()
+
+        # Ensure a bounded materialization cache always exists.  With S3
+        # the caller supplies an S3BlobCache; without it, fall back to a
+        # local bounded cache so PG-bytea read blobs are capped too (#71).
+        if self._blob_cache is None:
+            from .blob_cache import LocalBlobCache
+
+            self._blob_cache = LocalBlobCache(
+                cache_dir=os.path.join(self._blob_temp_dir, "_materialized"),
+                max_size=blob_cache_size,
+            )
 
         # Per-instance L1 load cache (small, fast path, no lock).
         # Size from cache_per_connection_mb.  See instance.py.
@@ -1414,46 +1441,23 @@ class PGJsonbStorage(CopyTransactionsMixin, ConflictResolvingStorage, BaseStorag
     def loadBlob(self, oid, serial):
         """Return path to a file containing the blob data.
 
-        Uses deterministic filenames so repeated calls for the same
-        (oid, serial) return the same path — required by ZODB.blob.Blob.
+        Read blobs are materialized through the bounded ``_blob_cache``
+        (see ``_materialize_blob``) so local disk usage stays capped
+        instead of growing for the storage's lifetime (#71).
         """
         zoid = u64(oid)
-        tid_int = u64(serial)
         # Check pending blobs first (staged in current txn, not yet in DB)
         pending = self._blob_tmp.get(zoid)
         if pending is not None and os.path.exists(pending):
             return pending
-        path = os.path.join(self._blob_temp_dir, f"{zoid:016x}-{tid_int:016x}.blob")
-        if os.path.exists(path):
-            return path
-        # Check S3 blob cache before hitting the database
-        if self._blob_cache is not None:
-            cached = self._blob_cache.get(oid, serial)
-            if cached:
-                return cached
-        with self._conn.cursor() as cur:
-            cur.execute(
-                "SELECT data, s3_key FROM blob_state WHERE zoid = %s AND tid = %s",
-                (zoid, tid_int),
-            )
-            row = cur.fetchone()
-        if row is None:
-            raise POSKeyError(oid)
-        if row["s3_key"]:
-            return _load_blob_from_s3(
-                self._s3_client,
-                self._blob_cache,
-                row["s3_key"],
-                oid,
-                serial,
-                path,
-            )
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        try:
-            os.write(fd, row["data"])
-        finally:
-            os.close(fd)
-        return path
+        return _materialize_blob(
+            self._conn,
+            self._blob_cache,
+            self._s3_client,
+            self._blob_temp_dir,
+            oid,
+            serial,
+        )
 
     def openCommittedBlobFile(self, oid, serial, blob=None):
         """Open committed blob file for reading."""
@@ -1468,6 +1472,39 @@ class PGJsonbStorage(CopyTransactionsMixin, ConflictResolvingStorage, BaseStorag
         """Return directory for uncommitted blob data."""
         return self._blob_temp_dir
 
+    def _sweep_orphan_blob_dirs(self):
+        """Delete orphaned "zodb-pgjsonb-blobs-*" dirs from dead workers.
+
+        Pre-1.14 instances materialized read blobs into per-instance
+        mkdtemp dirs that were only removed on a clean close(); abnormal
+        termination (pod eviction/crash) leaked them entirely (#71).
+        Sweep them on startup, but conservatively: never touch our own
+        dir, and only remove dirs older than an hour so a peer process
+        starting at the same time is left alone.
+        """
+        import time
+
+        root = os.path.dirname(os.path.abspath(self._blob_temp_dir))
+        own = os.path.abspath(self._blob_temp_dir)
+        cutoff = time.time() - 3600
+        try:
+            entries = os.listdir(root)
+        except OSError:
+            return
+        for name in entries:
+            if not name.startswith("zodb-pgjsonb-blobs-"):
+                continue
+            path = os.path.join(root, name)
+            if os.path.abspath(path) == own or not os.path.isdir(path):
+                continue
+            try:
+                if os.stat(path).st_mtime >= cutoff:
+                    continue
+            except OSError:
+                continue
+            logger.info("Removing orphaned blob temp dir: %s", path)
+            shutil.rmtree(path, ignore_errors=True)
+
     # ── IStorage: close ──────────────────────────────────────────────
 
     def close(self):
@@ -1476,6 +1513,8 @@ class PGJsonbStorage(CopyTransactionsMixin, ConflictResolvingStorage, BaseStorag
             self._conn.close()
         if hasattr(self, "_instance_pool"):
             self._instance_pool.close()
+        if self._blob_cache is not None and hasattr(self._blob_cache, "close"):
+            self._blob_cache.close()
         if os.path.exists(self._blob_temp_dir):
             shutil.rmtree(self._blob_temp_dir, ignore_errors=True)
 
@@ -1617,24 +1656,54 @@ def _mask_dsn(dsn):
     return _DSN_PASSWORD_RE.sub(r"\1***", dsn)
 
 
-def _load_blob_from_s3(s3_client, blob_cache, s3_key, oid, serial, path):
-    """Download a blob from S3 and optionally cache it locally.
+def _materialize_blob(conn, blob_cache, s3_client, staging_dir, oid, serial):
+    """Return a local path to the blob for (oid, serial).
+
+    Reads are materialized through the *bounded* ``blob_cache`` for both
+    PG-bytea and S3-tiered blobs, so local disk usage is capped by the
+    cache's ``max_size`` instead of growing for the worker's lifetime
+    (#71).  Bytes are first written to a short-lived staging file in
+    ``staging_dir`` and then handed to ``blob_cache.put``; the staging
+    file is removed immediately afterwards.
 
     Args:
-        s3_client: S3Client instance
-        blob_cache: S3BlobCache instance or None
-        s3_key: S3 key string
+        conn: psycopg connection used for the blob_state lookup
+        blob_cache: bounded local cache (LocalBlobCache or S3BlobCache)
+        s3_client: S3Client instance, or None for PG-only mode
+        staging_dir: directory for the transient download/write file
         oid: OID bytes
         serial: TID bytes
-        path: local file path to write to
 
     Returns:
-        Path to the local blob file.
+        Path to the cached local blob file.
     """
-    s3_client.download_file(s3_key, path)
-    if blob_cache is not None:
-        blob_cache.put(oid, serial, path)
-    return path
+    cached = blob_cache.get(oid, serial)
+    if cached:
+        return cached
+
+    zoid = u64(oid)
+    tid_int = u64(serial)
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT data, s3_key FROM blob_state WHERE zoid = %s AND tid = %s",
+            (zoid, tid_int),
+        )
+        row = cur.fetchone()
+    if row is None:
+        raise POSKeyError(oid)
+
+    fd, staging = tempfile.mkstemp(dir=staging_dir, suffix=".tmp")
+    os.close(fd)
+    try:
+        if row["s3_key"]:
+            s3_client.download_file(row["s3_key"], staging)
+        else:
+            with open(staging, "wb") as f:
+                f.write(row["data"])
+        return blob_cache.put(oid, serial, staging)
+    finally:
+        if os.path.exists(staging):
+            os.unlink(staging)
 
 
 def _do_loadSerial(conn, serial_cache, history_preserving, oid, serial):
