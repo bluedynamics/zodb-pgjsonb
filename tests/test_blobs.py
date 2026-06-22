@@ -238,6 +238,76 @@ class TestBlobStoreAndLoad:
         inst.release()
 
 
+class TestBlobMaterializationBounded:
+    """Regression for #71 — loadBlob must materialize read blobs through a
+    bounded cache, never accumulate them in the per-instance temp dir
+    (which filled local disk to 11-14 GB per pod in production).
+    """
+
+    def _store_blob(self, inst, payload):
+        import zodb_json_codec
+
+        record = {
+            "@cls": ["persistent.mapping", "PersistentMapping"],
+            "@s": {"data": {}},
+        }
+        data = zodb_json_codec.encode_zodb_record(record)
+        fd, blob_path = tempfile.mkstemp()
+        os.write(fd, payload)
+        os.close(fd)
+        t = txn.Transaction()
+        inst.tpc_begin(t)
+        oid = inst.new_oid()
+        inst.storeBlob(oid, z64, data, blob_path, "", t)
+        inst.tpc_vote(t)
+        tid = inst.tpc_finish(t)
+        return oid, tid
+
+    def test_loadblob_does_not_accumulate_in_instance_dir(self, storage):
+        """Loading many distinct blobs must not pile up *.blob files in the
+        per-instance temp dir — the unbounded growth that triggered #71."""
+        inst = storage.new_instance()
+        inst.poll_invalidations()
+
+        oids_tids = [self._store_blob(inst, b"B" * 4096) for _ in range(20)]
+
+        # Force materialization of every blob (read path).
+        for oid, tid in oids_tids:
+            path = inst.loadBlob(oid, tid)
+            assert os.path.isfile(path)
+
+        leftover = [f for f in os.listdir(inst._blob_temp_dir) if f.endswith(".blob")]
+        assert leftover == [], (
+            f"loadBlob leaked {len(leftover)} materialized blobs into the "
+            f"per-instance temp dir {inst._blob_temp_dir}: {leftover[:5]}"
+        )
+        inst.release()
+
+    def test_materialization_cache_is_bounded_without_s3(self):
+        """Without S3, the local materialization cache evicts so total disk
+        stays under blob_cache_size even after many distinct reads (#71)."""
+        clean_db()
+        max_size = 64 * 1024
+        s = PGJsonbStorage(DSN, blob_cache_size=max_size)
+        try:
+            inst = s.new_instance()
+            inst.poll_invalidations()
+
+            oids_tids = [self._store_blob(inst, b"X" * 8192) for _ in range(40)]
+            for oid, tid in oids_tids:
+                assert os.path.isfile(inst.loadBlob(oid, tid))
+
+            s._blob_cache.wait_for_cleanup()
+            size = s._blob_cache.current_size()
+            assert size <= max_size, (
+                f"materialization cache grew to {size} bytes, over the "
+                f"{max_size}-byte bound"
+            )
+            inst.release()
+        finally:
+            s.close()
+
+
 class TestBlobsWithZODB:
     """Test blob objects through ZODB.DB."""
 
@@ -520,8 +590,12 @@ class TestS3BlobTiering:
 
     def test_no_s3_config_all_pg(self, storage):
         """Without S3 config, all blobs go to PG (backward compatible)."""
+        from zodb_pgjsonb.blob_cache import LocalBlobCache
+
         assert storage._s3_client is None
-        assert storage._blob_cache is None
+        # No S3, but a bounded local materialization cache still exists so
+        # read blobs don't accumulate unbounded on local disk (#71).
+        assert isinstance(storage._blob_cache, LocalBlobCache)
 
     def test_blob_threshold_zero_all_s3(self, tmp_path):
         """With threshold=0, all blobs go to S3."""

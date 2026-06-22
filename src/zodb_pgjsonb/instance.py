@@ -13,9 +13,9 @@ from .conflict import _batch_check_read_conflicts
 from .conflict import _batch_resolve_conflicts
 from .serialization import _unsanitize_from_pg
 from .storage import _do_loadSerial
-from .storage import _load_blob_from_s3
 from .storage import _loadBefore_hf
 from .storage import _loadBefore_hp
+from .storage import _materialize_blob
 from .storage import _NoopSerialCache
 from .storage import _read_max_tid
 from .storage import LoadCache
@@ -543,46 +543,24 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
     def loadBlob(self, oid, serial):
         """Return path to a file containing the blob data.
 
-        Uses deterministic filenames so repeated calls for the same
-        (oid, serial) return the same path — required by ZODB.blob.Blob.
+        Read blobs are materialized through the process-wide bounded
+        ``_blob_cache`` (see ``_materialize_blob``) rather than into this
+        instance's temp dir, so local disk usage stays capped for the
+        instance's whole lifetime (#71).
         """
         zoid = u64(oid)
-        tid_int = u64(serial)
         # Check pending blobs first (staged in current txn, not yet in DB)
         pending = self._blob_tmp.get(zoid)
         if pending is not None and os.path.exists(pending):
             return pending
-        path = os.path.join(self._blob_temp_dir, f"{zoid:016x}-{tid_int:016x}.blob")
-        if os.path.exists(path):
-            return path
-        # Check S3 blob cache before hitting the database
-        if self._blob_cache is not None:
-            cached = self._blob_cache.get(oid, serial)
-            if cached:
-                return cached
-        with self._conn.cursor() as cur:
-            cur.execute(
-                "SELECT data, s3_key FROM blob_state WHERE zoid = %s AND tid = %s",
-                (zoid, tid_int),
-            )
-            row = cur.fetchone()
-        if row is None:
-            raise POSKeyError(oid)
-        if row["s3_key"]:
-            return _load_blob_from_s3(
-                self._s3_client,
-                self._blob_cache,
-                row["s3_key"],
-                oid,
-                serial,
-                path,
-            )
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        try:
-            os.write(fd, row["data"])
-        finally:
-            os.close(fd)
-        return path
+        return _materialize_blob(
+            self._conn,
+            self._blob_cache,
+            self._s3_client,
+            self._blob_temp_dir,
+            oid,
+            serial,
+        )
 
     def openCommittedBlobFile(self, oid, serial, blob=None):
         """Open committed blob file for reading."""
