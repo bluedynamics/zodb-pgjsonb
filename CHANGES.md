@@ -7,6 +7,8 @@
 - Add `cdk8s-plone` to the ecosystem dashboard under a new `Deployment`
   group, covering Kubernetes deployment of Plone backend and frontend.
 
+- Add `cdk8s-plone` to the ecosystem navigation dropdown.
+
 - Add `RELEASE.md` documenting the tag-based (`hatch-vcs`) release
   process: finalize `CHANGES.md`, merge via release PR, tag `vX.Y.Z`,
   and publish a GitHub release to trigger the PyPI upload.
