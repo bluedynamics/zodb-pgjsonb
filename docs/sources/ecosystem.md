@@ -37,6 +37,12 @@ layout: landing
   group: Image Processing
   description: Thumbor blob loader for zodb-pgjsonb
 
+- repo: bluedynamics/cdk8s-plone
+  pypi: cdk8s-plone
+  docs: https://bluedynamics.github.io/cdk8s-plone/
+  group: Deployment
+  description: Deploy Plone backend and frontend to Kubernetes with cdk8s
+
 - repo: bluedynamics/zodb-json-codec
   pypi: zodb-json-codec
   docs: https://bluedynamics.github.io/zodb-json-codec/
