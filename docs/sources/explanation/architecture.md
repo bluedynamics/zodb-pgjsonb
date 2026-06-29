@@ -130,6 +130,35 @@ Within the lock, `_new_tid()` generates a timestamp-based TID that is guaranteed
 This is a simplicity trade-off: it limits write throughput to one transaction at a time, but guarantees correct TID ordering without complex distributed coordination.
 For most ZODB workloads, write transactions are short and the advisory lock introduces negligible contention.
 
+(startup-ddl-gate)=
+
+## Startup DDL and the schema-version gate
+
+State processors (and plugins like plone-pgcatalog) contribute schema DDL — new columns, indexes, statistics — that must exist before the first request.
+This DDL cannot run while a ZODB connection holds an open `REPEATABLE READ` snapshot, because `CREATE INDEX` needs `ACCESS EXCLUSIVE` and would deadlock against the snapshot's `ACCESS SHARE`.
+So the storage defers it: `register_state_processor()` and `defer_startup_action()` queue the work, and `_apply_pending_ddl()` runs it from the first write transaction, once the snapshot has been released.
+
+A single replica applying idempotent DDL is cheap.
+The problem is a rolling deploy of many replicas.
+Each pod boots, queues the same DDL, and serializes on a session-level advisory lock (`startup_ddl_lock`) so only one actually runs it.
+The DDL is idempotent (`CREATE INDEX IF NOT EXISTS`), so the losers do no real work — but they still *connect and wait on the lock*, holding idle-in-transaction connections for the whole migration window.
+On a large catalog that was enough to saturate the database and cascade into failed health checks (issue #78).
+
+The fix is the classic double-checked locking pattern, keyed by a schema version.
+Each deferred entry carries a version string, and the storage records which version it last applied per source in a small `pgjsonb_schema_state` table.
+Before taking the lock, a pod runs one cheap `SELECT` against that table.
+If every tagged entry is already current, the pod returns immediately and never touches the lock — so on a warm cluster N−1 replicas bail out in a single round-trip.
+The check is repeated *inside* the lock, because between the probe and acquiring the lock another replica may have applied the DDL; the winner re-reads the markers and skips anything already done.
+
+Two version sources feed the gate.
+The static `get_schema_sql()` block is hashed automatically (`sha256` of the DDL text), so it re-applies exactly when the DDL changes and needs no cooperation from the processor.
+Deferred callables pass an explicit `version` to `defer_startup_action()`, because their effect depends on runtime state (such as the live index registry) that no hash of static text would capture.
+Entries with `version=None` are always treated as stale and run under the lock on every startup, which preserves the original behavior for callers that have not opted in.
+
+This trades one property for another.
+The gate *trusts the marker* instead of re-checking the live schema, so if someone manually drops an index, the idempotent DDL that would have recreated it is skipped until the version changes.
+That trade is deliberate — skipping the redundant DDL is the entire point — and `ZODB_PGJSONB_FORCE_DDL=1` is the escape hatch when you need a full re-apply.
+
 ## Connection pool lifecycle
 
 zodb-pgjsonb uses psycopg3's `ConnectionPool` for all database connections.

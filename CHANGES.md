@@ -2,6 +2,28 @@
 
 ## unreleased
 
+### Features
+
+- **Gate startup DDL behind a double-checked schema-version probe** (#78).
+  On a rolling deploy every replica used to enter `_apply_pending_ddl()`,
+  take the `startup_ddl_lock` advisory lock, and re-run the full idempotent
+  DDL batch even when the schema was already current — so all N pods
+  connected and waited on the lock, saturating the DB during the migration
+  window (downstream symptom: bluedynamics/plone-pgcatalog#136).
+
+  Deferred DDL/actions now carry a version marker recorded in a new
+  `pgjsonb_schema_state` table.  A cheap `SELECT` runs *before* the lock, so
+  replicas whose tagged work is already current bail out without ever
+  contending for it; the check is repeated *inside* the lock to cover the
+  race where another replica applies while we wait.  The static
+  `get_schema_sql()` block is gated automatically (its version is the
+  `sha256` of the DDL), and `defer_startup_action()` gained an optional
+  `version` argument for deferred callables.  Untagged work (`version=None`)
+  still runs under the lock on every startup, as before.
+
+  Set `ZODB_PGJSONB_FORCE_DDL=1` to bypass the gate and force a full run
+  (e.g. after a manual index drop).
+
 ### Documentation
 
 - Add `cdk8s-plone` to the ecosystem dashboard under a new `Deployment`

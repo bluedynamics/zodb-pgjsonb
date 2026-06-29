@@ -92,6 +92,20 @@ The ZConfig factory (`PGJsonbStorageFactory`) constructs `S3Client` and
 | Tiered | `s3-bucket-name` set, `blob-threshold` > 0 | Blobs smaller than threshold stored in PG bytea; blobs at or above threshold stored in S3 with key in `blob_state.s3_key`. |
 | S3-only | `s3-bucket-name` set, `blob-threshold` = 0 | All blobs stored in S3. |
 
+## Environment variables
+
+These variables tune startup-DDL coordination across replicas.
+They are read from the process environment, not from ZConfig.
+
+| Variable | Default | Description |
+|---|---|---|
+| `ZODB_PGJSONB_DDL_LOCK_TIMEOUT` | `15min` | `lock_timeout` applied while acquiring the startup DDL advisory lock. Accepts any PostgreSQL interval literal (for example `30s`, `5min`). On timeout the pending DDL is requeued and retried on the next transaction. |
+| `ZODB_PGJSONB_FORCE_DDL` | unset | When set to any non-empty value, bypasses the schema-version gate and forces a full deferred-DDL run under the lock. Use it after a manual index drop or to re-apply DDL that the version markers consider current. |
+
+```{versionadded} 1.14
+`ZODB_PGJSONB_FORCE_DDL` and the schema-version gate it controls.
+```
+
 ## Dependencies
 
 ### Required

@@ -40,6 +40,26 @@ The cache stores pickle bytes keyed by object ID, avoiding repeated PostgreSQL r
 The default is 16 MB.
 Set to 0 to disable caching entirely.
 
+## Roll out without a DDL stampede
+
+When you run several replicas and deploy with a rolling update, every pod starts up and wants to apply its deferred schema DDL.
+The storage coordinates this with a session-level advisory lock so only one pod runs the DDL at a time.
+A schema-version gate runs a cheap `SELECT` *before* taking that lock, so replicas whose DDL is already current return immediately instead of all queuing on the lock.
+
+You do not need to configure anything for this — it is on by default.
+The first deploy after upgrading records the version markers; from then on, deploys that do not change the schema skip the lock entirely.
+
+Two environment variables let you tune the behavior:
+
+- Set `ZODB_PGJSONB_DDL_LOCK_TIMEOUT` (default `15min`) to bound how long a pod waits for the lock before requeuing its DDL for the next transaction.
+- Set `ZODB_PGJSONB_FORCE_DDL=1` on a single pod to bypass the gate and re-apply all deferred DDL, for example after you manually dropped an index.
+  Remove it again once that pod has started, so the rest of the fleet keeps using the fast path.
+
+```{seealso}
+{ref}`startup-ddl-gate` explains how the gate works and why it trades re-running idempotent DDL for skipping the lock.
+For the variables themselves, see {doc}`/reference/configuration`.
+```
+
 ## Schedule periodic pack
 
 Pack removes unreachable objects (history-free mode) or old revisions (history-preserving mode).
