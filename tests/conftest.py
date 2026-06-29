@@ -24,6 +24,7 @@ DSN = get_test_dsn()
 
 # All tables that may exist across history-free and history-preserving modes.
 ALL_TABLES = (
+    "pgjsonb_schema_state",
     "cache_warm_stats",
     "migration_watermark",
     "pack_state",

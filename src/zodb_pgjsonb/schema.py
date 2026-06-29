@@ -119,6 +119,28 @@ def _set_lz4_compression(conn):
                 conn.rollback()
 
 
+SCHEMA_STATE_TABLE = """\
+CREATE TABLE IF NOT EXISTS pgjsonb_schema_state (
+    source     text PRIMARY KEY,
+    version    text NOT NULL,
+    applied_at timestamptz NOT NULL DEFAULT now()
+);
+"""
+
+
+def _ensure_schema_state_table(conn):
+    """Create the ``pgjsonb_schema_state`` marker table.
+
+    Records, per deferred-DDL source, the version that has been applied so
+    that ``_apply_pending_ddl`` can skip the startup advisory lock when the
+    schema is already current (issue #78).  ``CREATE TABLE IF NOT EXISTS`` on
+    a brand-new table name takes no lock that conflicts with REPEATABLE READ
+    snapshots on other tables, so this is safe to run on every startup.
+    """
+    conn.execute(SCHEMA_STATE_TABLE)
+    conn.commit()
+
+
 def _ensure_zoid_seq(conn):
     """Create or synchronize the zoid_seq sequence.
 
@@ -201,6 +223,9 @@ def install_schema(conn, *, history_preserving=False):
 
     # OID sequence for cross-process uniqueness (#31).
     _ensure_zoid_seq(conn)
+
+    # Startup-DDL version markers for the double-checked gate (#78).
+    _ensure_schema_state_table(conn)
 
 
 def drop_history_tables(conn):

@@ -50,6 +50,7 @@ from ZODB.utils import z64
 
 import contextlib
 import dataclasses
+import hashlib
 import logging
 import os
 import psycopg
@@ -687,7 +688,10 @@ class PGJsonbStorage(CopyTransactionsMixin, ConflictResolvingStorage, BaseStorag
         - ``get_schema_sql() -> str | None``
           Return DDL to apply (e.g. ALTER TABLE, CREATE INDEX).  Applied
           via a separate autocommit connection.  If blocked by startup
-          read transactions, deferred to the first tpc_begin().
+          read transactions, deferred to the first tpc_begin().  The DDL is
+          version-tagged automatically (``sha256`` of the returned text) so
+          the startup schema-version gate skips it — and the startup
+          advisory lock — when it has not changed since the last apply (#78).
 
         ``process`` may modify *state* in-place (e.g. pop annotation keys).
         It returns a dict of ``{column_name: value}`` to be written as extra
@@ -754,9 +758,10 @@ class PGJsonbStorage(CopyTransactionsMixin, ConflictResolvingStorage, BaseStorag
             "DDL from %s deferred to first write transaction.",
             processor_name,
         )
-        self._pending_ddl.append((sql, processor_name))
+        version = "sha256:" + hashlib.sha256(sql.encode("utf-8")).hexdigest()
+        self._pending_ddl.append((sql, processor_name, version))
 
-    def defer_startup_action(self, action, name):
+    def defer_startup_action(self, action, name, version=None):
         """Defer a callable to be executed on the first write transaction.
 
         Like ``_apply_processor_ddl`` but accepts an arbitrary callable
@@ -766,9 +771,77 @@ class PGJsonbStorage(CopyTransactionsMixin, ConflictResolvingStorage, BaseStorag
         Used by plugins (e.g. plone-pgcatalog) to defer index creation
         that would deadlock against open REPEATABLE READ snapshots at
         startup.
+
+        Pass *version* (a string that changes whenever the action's effect
+        changes, e.g. a hash of the index list it would create) to let the
+        double-checked schema-version gate skip this action — and the
+        startup advisory lock — when it has already been applied (#78).
+        When *version* is ``None`` the action runs on every startup, holding
+        the lock, as before.
         """
         logger.info("Startup action '%s' deferred to first write transaction.", name)
-        self._pending_ddl.append((action, name))
+        self._pending_ddl.append((action, name, version))
+
+    def _read_schema_state(self, conn=None):
+        """Return ``{source: version}`` from ``pgjsonb_schema_state``.
+
+        Tolerates the table being absent (very first deploy / probe race)
+        by returning ``{}`` so every tagged source is treated as stale.
+        When *conn* is given (the startup lock's autocommit connection) it
+        is reused; otherwise a short-lived autocommit connection is opened.
+        """
+        own = conn is None
+        if own:
+            conn = psycopg.connect(self._dsn, autocommit=True)
+            conn.execute("SET statement_timeout = '5s'")
+        try:
+            with conn.cursor() as cur:
+                try:
+                    cur.execute("SELECT source, version FROM pgjsonb_schema_state")
+                except psycopg.errors.UndefinedTable:
+                    return {}
+                rows = cur.fetchall()
+            state = {}
+            for row in rows:
+                if isinstance(row, dict):
+                    state[row["source"]] = row["version"]
+                else:
+                    state[row[0]] = row[1]
+            return state
+        finally:
+            if own:
+                conn.close()
+
+    def _filter_stale(self, pending, conn=None):
+        """Return the pending entries that still need applying.
+
+        An entry is stale when its version is ``None`` (always run) or when
+        the recorded marker differs from the entry's version.  Skips reading
+        the marker table entirely when nothing is version-tagged.
+        """
+        if not any(version is not None for _, _, version in pending):
+            return list(pending)
+        applied = self._read_schema_state(conn)
+        return [
+            entry
+            for entry in pending
+            if entry[2] is None or applied.get(entry[1]) != entry[2]
+        ]
+
+    def _mark_schema_applied(self, conn, name, version):
+        """Record that *name* has been applied at *version* (best effort)."""
+        try:
+            conn.execute(
+                "INSERT INTO pgjsonb_schema_state (source, version) "
+                "VALUES (%s, %s) "
+                "ON CONFLICT (source) DO UPDATE "
+                "SET version = EXCLUDED.version, applied_at = now()",
+                (name, version),
+            )
+        except Exception:
+            logger.warning(
+                "Failed to record schema version marker for %s", name, exc_info=True
+            )
 
     def _apply_pending_ddl(self):
         """Apply deferred DDL and startup actions.
@@ -776,20 +849,60 @@ class PGJsonbStorage(CopyTransactionsMixin, ConflictResolvingStorage, BaseStorag
         Called from ``tpc_begin()`` / ``_begin()`` after the read
         transaction is committed (ACCESS SHARE released).
 
-        Each entry is either ``(sql_string, name)`` or
-        ``(callable, name)``.  Callables receive ``self._dsn``.
+        Each entry is ``(action, name, version)`` where *action* is a SQL
+        string or a callable receiving ``self._dsn``, and *version* is a
+        marker string or ``None``.
 
-        Wraps the whole batch in a session-level PG advisory lock so
-        concurrent replicas serialize their DDL.  On lock timeout, the
+        Uses a double-checked schema-version gate around the session-level
+        advisory lock (#78): a cheap marker probe runs *before* the lock so
+        replicas whose tagged work is already current bail without ever
+        contending for the lock; the check is repeated *inside* the lock in
+        case another replica applied while we waited.  ``ZODB_PGJSONB_FORCE_DDL``
+        bypasses both checks and forces a full run.  On lock timeout the
         pending entries are requeued for the next call.
         """
         if not self._pending_ddl:
             return
         pending = self._pending_ddl[:]
         self._pending_ddl.clear()
+
+        force = bool(os.environ.get("ZODB_PGJSONB_FORCE_DDL"))
+
+        # Cheap probe before the lock — loser replicas bail out here.
+        if force:
+            stale = pending
+        else:
+            try:
+                stale = self._filter_stale(pending)
+            except Exception:
+                # Probe failed (DB hiccup) — fall back to the safe path of
+                # taking the lock and letting the in-lock re-check decide.
+                logger.warning(
+                    "Startup schema-version probe failed — taking the DDL lock",
+                    exc_info=True,
+                )
+                stale = pending
+            if not stale:
+                logger.debug(
+                    "Startup schema current on all %d pending source(s) — "
+                    "skipping startup DDL lock",
+                    len(pending),
+                )
+                return
+
         try:
-            with startup_ddl_lock(self._dsn):
-                for action, name in pending:
+            with startup_ddl_lock(self._dsn) as lock_conn:
+                # Re-check under the lock: another replica may have applied
+                # while we waited.
+                if not force:
+                    stale = self._filter_stale(pending, conn=lock_conn)
+                    if not stale:
+                        logger.info(
+                            "Startup schema applied by another replica while "
+                            "waiting for the DDL lock — nothing to do",
+                        )
+                        return
+                for action, name, version in stale:
                     try:
                         if callable(action):
                             action(self._dsn)
@@ -799,6 +912,8 @@ class PGJsonbStorage(CopyTransactionsMixin, ConflictResolvingStorage, BaseStorag
                             ) as ddl_conn:
                                 ddl_conn.execute("SET lock_timeout = '30s'")
                                 ddl_conn.execute(action)
+                        if version is not None:
+                            self._mark_schema_applied(lock_conn, name, version)
                         logger.info("Applied deferred DDL/action from %s", name)
                     except Exception:
                         logger.warning(

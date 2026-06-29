@@ -176,6 +176,13 @@ class IStateProcessor:
 
 Used by plone-pgcatalog to write catalog index columns in the same PG transaction.
 
+Processor `get_schema_sql()` DDL and `defer_startup_action()` callables run from
+the first write transaction under a session-level advisory lock. A double-checked
+schema-version gate (markers in `pgjsonb_schema_state`) lets replicas skip the
+lock when their tagged DDL is already current: the static DDL block is auto-tagged
+by `sha256`, deferred actions pass an explicit `version`, and `version=None` always
+runs. `ZODB_PGJSONB_FORCE_DDL=1` forces a full re-apply.
+
 ## Configuration (ZConfig)
 
 ```xml

@@ -34,7 +34,7 @@ def test_apply_pending_ddl_serializes_across_threads():
                 finished.append(time.monotonic())
 
         def worker():
-            storage._pending_ddl.append((slow_action, "slow"))
+            storage._pending_ddl.append((slow_action, "slow", None))
             barrier.wait()
             storage._apply_pending_ddl()
 
@@ -78,7 +78,7 @@ def test_apply_pending_ddl_requeues_on_lock_timeout():
             def noop_action(dsn):
                 pass
 
-            storage._pending_ddl.append((noop_action, "noop"))
+            storage._pending_ddl.append((noop_action, "noop", None))
 
             # Force a very short timeout via env var.
             old = os.environ.get("ZODB_PGJSONB_DDL_LOCK_TIMEOUT")
