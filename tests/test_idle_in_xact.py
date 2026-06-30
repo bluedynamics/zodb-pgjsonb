@@ -130,6 +130,68 @@ def test_after_completion_safe_when_conn_killed():
             storage.close()
 
 
+def _kill_backend(pid):
+    """Terminate a backend pid from a separate session (#81 simulation)."""
+    killer = psycopg.connect(DSN)
+    try:
+        killer.execute("SELECT pg_terminate_backend(%s)", (pid,))
+        killer.commit()
+    finally:
+        killer.close()
+
+
+def test_end_read_txn_resets_flag_when_conn_killed():
+    """_end_read_txn must not raise when PG closed the conn server-side, and
+    must still clear _in_read_txn so the instance isn't wedged (#81)."""
+    from zodb_pgjsonb.storage import PGJsonbStorage
+
+    clean_db()
+    storage = PGJsonbStorage(DSN, cache_warm_pct=0)
+    try:
+        instance = storage.new_instance()
+        try:
+            instance.poll_invalidations()
+            assert instance._in_read_txn is True
+
+            _kill_backend(instance._conn.info.backend_pid)
+
+            instance._end_read_txn()  # must not raise
+            assert instance._in_read_txn is False
+        finally:
+            instance.release()
+    finally:
+        storage.close()
+
+
+def test_release_returns_pool_slot_when_conn_killed_server_side():
+    """release() must not raise and must return the pool slot even when the
+    connection was terminated server-side.  Otherwise the slot leaks and the
+    pool is eventually exhausted (PoolTimeout), wedging the pod (#81)."""
+    from zodb_pgjsonb.storage import PGJsonbStorage
+
+    clean_db()
+    storage = PGJsonbStorage(
+        DSN, cache_warm_pct=0, pool_size=1, pool_max_size=1, pool_timeout=5.0
+    )
+    try:
+        instance = storage.new_instance()
+        instance.poll_invalidations()
+        _kill_backend(instance._conn.info.backend_pid)
+
+        instance.release()  # must not raise (was bug #81)
+
+        # With pool_max_size=1, a leaked slot would make this getconn() block
+        # until PoolTimeout.  Success here proves the slot was returned.
+        instance2 = storage.new_instance()
+        try:
+            assert instance2._conn is not None
+            assert instance2.poll_invalidations() == []
+        finally:
+            instance2.release()
+    finally:
+        storage.close()
+
+
 def test_zodb_connection_close_releases_virtualxid():
     """End-to-end: closing a read-only ZODB connection releases its virtualxid.
 

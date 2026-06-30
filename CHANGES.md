@@ -1,5 +1,28 @@
 # Changelog
 
+## unreleased
+
+### Bugfixes
+
+- **Don't leak a pool slot when a connection is closed server-side** (#81).
+  `_end_read_txn()` ran `COMMIT` unguarded, so when PostgreSQL terminated an
+  idle-in-transaction connection (e.g. via `idle_in_transaction_session_timeout`)
+  the next read-only request raised through `poll_invalidations` (HTTP 500) and,
+  worse, `release()` raised *before* `putconn()` — leaking the pool slot. After
+  ~`pool-max-size` such leaks the pool was permanently exhausted (`PoolTimeout`)
+  and the pod never became ready again, stalling rolling deploys. `_end_read_txn()`
+  now clears its flag and swallows the failed `COMMIT`, and `release()` always
+  returns the connection to the pool (the pool discards the dead one and opens a
+  replacement).
+
+- **Stop logging a spurious `42P01` ERROR on every startup** (#82). In
+  non-history-preserving mode `_set_lz4_compression()` issued
+  `ALTER TABLE object_history …` for a table that never exists, which PostgreSQL
+  logged as a server-side ERROR on every pod startup (red noise in CNPG
+  dashboards) even though the client caught and rolled it back. Each table is now
+  probed with `to_regclass` first and skipped if absent, so no failing statement
+  is sent.
+
 ## 1.14.0
 
 ### Features
