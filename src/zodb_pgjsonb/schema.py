@@ -102,6 +102,14 @@ def _set_lz4_compression(conn):
         ("blob_state", "data"),
     ]
     for table, column in columns:
+        # Probe first: object_history exists only in history-preserving mode.
+        # to_regclass returns NULL for an absent relation without raising, so
+        # we never send a failing ALTER that PG logs as a server-side ERROR
+        # on every startup (#82).
+        row = conn.execute("SELECT to_regclass(%s) AS reg", (table,)).fetchone()
+        reg = row["reg"] if isinstance(row, dict) else row[0]
+        if reg is None:
+            continue
         try:
             conn.execute("SET lock_timeout = '5s'")
             conn.execute(

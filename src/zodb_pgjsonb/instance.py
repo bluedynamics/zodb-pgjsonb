@@ -106,11 +106,27 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
         return self._main.new_instance()
 
     def release(self):
-        """Return connection to pool and clean up temp dir."""
-        if self._conn and not self._conn.closed:
-            self._end_read_txn()
-            self._instance_pool.putconn(self._conn)
-            self._conn = None
+        """Return connection to pool and clean up temp dir.
+
+        Always returns the connection to the pool — even if ending the read
+        transaction fails — so a connection killed server-side (e.g. by
+        ``idle_in_transaction_session_timeout``) cannot leak its pool slot
+        and eventually exhaust the pool (``PoolTimeout``), wedging the pod
+        (#81).  Returning a broken connection is safe: the pool discards it
+        and opens a replacement.
+        """
+        if self._conn is not None:
+            try:
+                self._end_read_txn()
+            finally:
+                try:
+                    self._instance_pool.putconn(self._conn)
+                except Exception:
+                    logger.warning(
+                        "release: returning connection to pool failed",
+                        exc_info=True,
+                    )
+                self._conn = None
         if os.path.exists(self._blob_temp_dir):
             shutil.rmtree(self._blob_temp_dir, ignore_errors=True)
 
@@ -140,10 +156,26 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
         self._serial_cache.clear()
 
     def _end_read_txn(self):
-        """End the current REPEATABLE READ snapshot transaction, if any."""
-        if self._in_read_txn:
+        """End the current REPEATABLE READ snapshot transaction, if any.
+
+        Resilient to the connection having been closed server-side (e.g. by
+        ``idle_in_transaction_session_timeout`` or an operator): the flag is
+        cleared first, then any error from the ``COMMIT`` is swallowed so no
+        caller (``release``, ``poll_invalidations``, ``tpc_begin``) has to
+        guard it (#81).  The dead connection is recycled by the pool on the
+        next ``release``/``putconn``.
+        """
+        if not self._in_read_txn:
+            return
+        self._in_read_txn = False
+        try:
             self._conn.execute("COMMIT")
-            self._in_read_txn = False
+        except Exception:
+            logger.warning(
+                "_end_read_txn: COMMIT failed (connection likely closed "
+                "server-side); the pool will recycle it",
+                exc_info=True,
+            )
 
     def _begin_read_txn(self):
         """Start a REPEATABLE READ snapshot transaction for consistent reads.
