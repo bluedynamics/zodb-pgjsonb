@@ -528,6 +528,13 @@ class PGJsonbStorage(CopyTransactionsMixin, ConflictResolvingStorage, BaseStorag
             timeout=pool_timeout,
             kwargs={"row_factory": dict_row},
             configure=_configure_pool_conn,
+            # Validate liveness on checkout: a pooled connection can be closed
+            # server-side while idle (idle_in_transaction_session_timeout, an
+            # operator, or a pooler/CNPG idle-recycle).  Without this, getconn
+            # hands out dead connections; the first use raises and — during
+            # Connection.open() — ZODB strands the connection, leaking its pool
+            # slot until the pool is exhausted (#85).
+            check=ConnectionPool.check_connection,
             open=True,
         )
         logger.debug("Connection pool ready")

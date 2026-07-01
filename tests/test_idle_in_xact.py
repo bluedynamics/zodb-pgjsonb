@@ -192,6 +192,117 @@ def test_release_returns_pool_slot_when_conn_killed_server_side():
         storage.close()
 
 
+def _kill_all_backends():
+    """Terminate every other backend on the test DB (mass server-side close)."""
+    killer = psycopg.connect(DSN)
+    try:
+        killer.execute(
+            "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+            "WHERE datname = current_database() AND pid <> pg_backend_pid()"
+        )
+        killer.commit()
+    finally:
+        killer.close()
+
+
+def test_poll_invalidations_reconnects_when_conn_killed():
+    """poll_invalidations must self-heal a server-closed pooled connection
+    instead of raising — a raise here makes ZODB strand the connection during
+    Connection.open() and leak its pool slot (#85)."""
+    from zodb_pgjsonb.storage import PGJsonbStorage
+
+    clean_db()
+    storage = PGJsonbStorage(DSN, cache_warm_pct=0, pool_size=1, pool_max_size=3)
+    try:
+        instance = storage.new_instance()
+        try:
+            instance.poll_invalidations()
+            old_conn = instance._conn
+            _kill_backend(old_conn.info.backend_pid)
+
+            # Must not raise: the dead connection is replaced with a live one.
+            instance.poll_invalidations()
+
+            assert instance._conn is not old_conn
+            assert not instance._conn.closed
+            assert instance._in_read_txn is True
+        finally:
+            instance.release()
+    finally:
+        storage.close()
+
+
+def test_open_write_cycle_does_not_leak_pool_on_server_close():
+    """A write churn during which pooled connections are repeatedly closed
+    server-side must not permanently leak pool slots.  Without the fix, each
+    stranded Connection.open() leaks one slot until the pool hits max_size of
+    leaked slots and every getconn PoolTimeouts (#85).
+
+    Measures leaked slots directly: connections checked out of the pool whose
+    owning ZODB connection is gone.  It must stay ~baseline, not grow to
+    max_size.
+    """
+    from persistent.mapping import PersistentMapping
+    from zodb_pgjsonb.storage import PGJsonbStorage
+
+    import gc
+    import transaction as txn
+    import ZODB
+
+    clean_db()
+    storage = PGJsonbStorage(
+        DSN, cache_warm_pct=0, pool_size=2, pool_max_size=4, pool_timeout=3.0
+    )
+    pool = storage._instance_pool
+    checked_out = {}
+    _get, _put = pool.getconn, pool.putconn
+
+    def tracking_getconn(*a, **k):
+        conn = _get(*a, **k)
+        checked_out[id(conn)] = 1
+        return conn
+
+    def tracking_putconn(conn, *a, **k):
+        checked_out.pop(id(conn), None)
+        return _put(conn, *a, **k)
+
+    pool.getconn = tracking_getconn
+    pool.putconn = tracking_putconn
+
+    db = ZODB.DB(storage)
+
+    def cycle(i, kill=False):
+        if kill:
+            _kill_all_backends()
+        try:
+            conn = db.open()
+            try:
+                conn.root()[f"k{i}"] = PersistentMapping({"i": i})
+                txn.commit()
+            finally:
+                conn.close()
+        except Exception:
+            txn.abort()
+
+    try:
+        for i in range(3):
+            cycle(i)
+        gc.collect()
+        baseline = len(checked_out)
+
+        for i in range(3, 25):
+            cycle(i, kill=(i % 2 == 0))
+        gc.collect()
+        leaked = len(checked_out)
+
+        assert leaked <= baseline + 1, (
+            f"pool slots leaked: baseline={baseline} after_churn={leaked} (max_size=4)"
+        )
+    finally:
+        db.close()
+        storage.close()
+
+
 def test_zodb_connection_close_releases_virtualxid():
     """End-to-end: closing a read-only ZODB connection releases its virtualxid.
 

@@ -31,6 +31,7 @@ from ZODB.utils import z64
 
 import logging
 import os
+import psycopg
 import shutil
 import tempfile
 import zodb_json_codec
@@ -177,13 +178,48 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
                 exc_info=True,
             )
 
+    def _replace_broken_conn(self):
+        """Return the current (broken) pooled connection and acquire a fresh one.
+
+        A pooled connection can be closed server-side while the instance holds
+        it (``idle_in_transaction_session_timeout``, an operator, or a
+        pooler/CNPG idle-recycle).  Returning the dead one lets the pool
+        discard and replace it; without this the slot would leak (#85).
+        """
+        old = self._conn
+        self._conn = None
+        self._in_read_txn = False
+        if old is not None:
+            try:
+                self._instance_pool.putconn(old)
+            except Exception:
+                logger.warning(
+                    "replacing broken connection: putconn failed", exc_info=True
+                )
+        self._conn = self._instance_pool.getconn()
+
     def _begin_read_txn(self):
         """Start a REPEATABLE READ snapshot transaction for consistent reads.
 
         All subsequent load()/loadBefore() queries will see a consistent
         point-in-time snapshot until _end_read_txn() is called.
+
+        ``poll_invalidations`` runs this at the start of every transaction and
+        during ``Connection.open()``.  If the pooled connection was closed
+        server-side, the ``BEGIN`` fails; we swap in a fresh connection and
+        retry once, so the read path self-heals instead of raising — which
+        would make ZODB strand the connection and leak its pool slot (#85).
         """
-        self._conn.execute("BEGIN ISOLATION LEVEL REPEATABLE READ")
+        try:
+            self._conn.execute("BEGIN ISOLATION LEVEL REPEATABLE READ")
+        except psycopg.OperationalError:
+            logger.warning(
+                "read snapshot BEGIN failed (connection closed server-side); "
+                "replacing connection and retrying",
+                exc_info=True,
+            )
+            self._replace_broken_conn()
+            self._conn.execute("BEGIN ISOLATION LEVEL REPEATABLE READ")
         self._in_read_txn = True
 
     def poll_invalidations(self):
