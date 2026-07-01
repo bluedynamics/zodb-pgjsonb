@@ -1,5 +1,34 @@
 # Changelog
 
+## unreleased
+
+### Bugfixes
+
+- **Stop leaking pool slots when a pooled connection dies server-side** (#85).
+  When PostgreSQL closed a pooled connection while it was idle (a pooler/CNPG
+  idle-recycle, `idle_in_transaction_session_timeout`, or an operator),
+  `poll_invalidations()` raised on the first use.  During `Connection.open()`
+  ZODB does not guard that call, so it **stranded the connection** — its pool
+  slot was never returned.  Under sustained write load (a bulk
+  `reindexObject()` run) the pool filled with stranded slots until every
+  `getconn()` hit `PoolTimeout`; all pods went `0/1 Ready` with PostgreSQL
+  nearly idle, and only a restart recovered.  (The 1.14.1 `release()` fix,
+  #81, was already correct — this is a separate, open-path leak.)
+
+  Two changes make the read path self-heal instead of stranding:
+
+  - The instance pool now validates liveness on checkout
+    (`check=ConnectionPool.check_connection`), so `getconn()` never hands out
+    a connection that was closed while idle in the pool.
+  - `_begin_read_txn()` (run by `poll_invalidations`) now returns a
+    connection found broken and retries once on a fresh one, so a connection
+    that died while *held* by a reused ZODB connection is replaced rather than
+    raising through `Connection.open()`.
+
+  A write transaction whose connection is killed mid-flight still fails that
+  one transaction (a half-applied write cannot be resumed on a new
+  connection), but the pool now recovers and the pod stays healthy.
+
 ## 1.14.1
 
 ### Bugfixes
