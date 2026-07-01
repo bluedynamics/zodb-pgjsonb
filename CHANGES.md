@@ -1,6 +1,6 @@
 # Changelog
 
-## unreleased
+## 1.14.2
 
 ### Bugfixes
 
