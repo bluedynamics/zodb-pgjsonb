@@ -11,6 +11,7 @@ maxdepth: 2
 titlesonly: true
 ---
 architecture
+caching
 why-postgresql-jsonb
 performance
 security
