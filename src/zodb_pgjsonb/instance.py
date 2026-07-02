@@ -58,6 +58,11 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
         self._conn = self._instance_pool.getconn()
         self._polled_tid = None  # None = never polled, int = last seen TID
         self._in_read_txn = False  # True when inside REPEATABLE READ snapshot
+        # Plain-int load counters for optional, soft-coupled observability
+        # (e.g. plone.observability reads them via getattr).  No dependency:
+        # zodb-pgjsonb does not import or require any tracing library.
+        self._l2_load_hits = 0  # objects served from the shared (L2) cache
+        self._pg_load_count = 0  # objects fetched from PostgreSQL
         self._tmp = []
         self._blob_tmp = {}  # pending blob stores: {oid_int: blob_path}
         self._tid = None
@@ -300,6 +305,7 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
         shared = self._main._shared_cache
         shared_hit = shared.get(zoid, self._polled_tid)
         if shared_hit is not None:
+            self._l2_load_hits += 1
             data, tid = shared_hit
             self._load_cache.set(zoid, data, tid)
             # Also populate per-instance serial cache so that
@@ -321,6 +327,7 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
         if row is None:
             raise POSKeyError(oid)
 
+        self._pg_load_count += 1
         record = {
             "@cls": [row["class_mod"], row["class_name"]],
             "@s": _unsanitize_from_pg(row["state"]),
@@ -373,6 +380,7 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
                 continue
             shared_hit = shared.get(zoid, self._polled_tid)
             if shared_hit is not None:
+                self._l2_load_hits += 1
                 self._load_cache.set(zoid, *shared_hit)
                 # Populate serial cache for HF conflict resolution (same as
                 # load()'s shared-hit branch — see instance.load).
@@ -396,6 +404,7 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
             )
             rows = cur.fetchall()
 
+        self._pg_load_count += len(rows)
         for row in rows:
             record = {
                 "@cls": [row["class_mod"], row["class_name"]],
