@@ -1,5 +1,20 @@
 # Changelog
 
+## unreleased
+
+### Features
+
+- **Per-connection load counters for optional observability** (no new
+  dependency).  Each storage instance now exposes two plain-int counters —
+  `_l2_load_hits` (objects served from the shared L2 cache) and
+  `_pg_load_count` (objects fetched from PostgreSQL) — incremented in `load()`
+  and `load_multiple()`.  A soft-coupled observer (e.g. `plone.observability`)
+  can read them via `getattr(connection._storage, ...)` to attribute
+  per-request cache effectiveness (shared-cache hit ratio =
+  `l2 / (l2 + pg)`), which pinpoints load-time outliers between "cold/gated
+  cache" and "slow per-load latency".  zodb-pgjsonb itself imports no tracing
+  library; the counters are dependency-neutral numbers.
+
 ## 1.14.2
 
 ### Bugfixes
