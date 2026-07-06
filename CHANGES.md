@@ -1,5 +1,16 @@
 # Changelog
 
+## unreleased
+
+### Documentation
+
+- Document the GIL convoy under concurrency: why per-load wall time inflates when
+  CPU-heavy request work runs alongside object loads in the same process, why it is a
+  Python-runtime property rather than a storage issue, and the levers that reduce it
+  (cache hits and prefetch to cut round-trips, keeping CPU work out of the request path,
+  and sizing worker threads per process against replica count). Added to the performance
+  explanation and the production how-to. #98
+
 ## 1.16.0
 
 ### Features
