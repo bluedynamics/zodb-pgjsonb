@@ -25,6 +25,23 @@ Set `pool-size` and `pool-max-size` based on your expected concurrency:
 
 Each ZODB connection gets its own `PGJsonbStorageInstance` with a dedicated PostgreSQL connection from the pool.
 
+(size-threads-gil)=
+
+## Size worker threads for GIL headroom
+
+A single process runs its worker threads under one CPython GIL.
+When several threads render responses concurrently while others wait on PostgreSQL, a thread returning from a query queues behind the CPU-bound ones for the GIL, which inflates per-load wall time even when the database is fast.
+
+Prefer more processes with fewer threads each over fewer processes with many threads:
+
+- Keep the thread count per process modest — a small number such as 2 to 4 — and scale out with more processes or replicas to serve the same concurrency.
+- Match `pool-size` to the thread count per process, as described above, so each thread still has its own pooled connection.
+- Cache CPU-heavy per-request work such as theme compilation out of the request path, so waiting threads re-acquire the GIL sooner.
+
+```{seealso}
+{ref}`gil-convoy` explains why per-load timings inflate under concurrency even when PostgreSQL is fast.
+```
+
 ## Tune the object cache
 
 Set `cache-local-mb` to control the per-instance LRU cache for `load()` results:

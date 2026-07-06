@@ -291,6 +291,30 @@ Each ZODB Connection gets its own storage instance with its own pool connection,
 Prepared statements amortize PostgreSQL's parse overhead across the lifetime of a connection.
 Since pool connections are reused across ZODB Connection cycles, the prepared statement cache persists and benefits subsequent connections.
 
+(gil-convoy)=
+
+### GIL convoy under concurrency
+
+Under CPython, a worker thread that has issued a query parks on the PostgreSQL socket while it waits for the response, releasing the GIL so other threads run.
+When the response arrives, the thread must re-acquire the GIL before `psycopg` returns the row to the caller.
+If the other threads in the same process are doing CPU-heavy work at that moment — template rendering, theme transformation, pickling — the returning thread queues behind them for the GIL.
+The wall-clock time attributed to a single object load then inflates from a few milliseconds of real query time to tens or hundreds of milliseconds of GIL-scheduling delay, even though PostgreSQL answered promptly.
+
+This is a property of the Python runtime, not of the storage.
+The database and the storage read path can both be fast — measured per-query latency on the server stays low — while a per-load timing at the application level looks slow.
+The effect is largest for requests that issue only a few loads interleaved with rendering; a request that issues many loads in a tight loop stays near the real per-query latency, because the thread spends almost all of that time parked on the socket and little of it contending for the GIL.
+
+Three levers reduce the exposure:
+
+- Reduce the number of round-trips per request, so fewer loads pay the GIL-scheduling delay.
+  Every load served from the per-instance (L1) or shared (L2) cache, or folded into a batched `load_multiple` / `prefetch`, skips the socket wait entirely.
+- Keep CPU-heavy work out of the request path, so fewer threads compete for the GIL while others wait on the socket — for example, cache compiled theme transforms instead of compiling them per request.
+- Size worker threads per process against replica count for GIL headroom, rather than maximizing threads per process.
+
+```{seealso}
+{ref}`size-threads-gil` in the production how-to covers the deployment-side tuning.
+```
+
 ### Write serialization
 
 The advisory lock serialization model (`pg_advisory_xact_lock(0)`) limits write throughput to one transaction at a time.
