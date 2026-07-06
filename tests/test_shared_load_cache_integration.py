@@ -238,3 +238,59 @@ class TestMainStorageFinishAdvancesConsensus:
             assert storage._shared_cache.consensus_tid > 0
         finally:
             db.close()
+
+
+class TestPerEntryReadGate:
+    """The read gate is per entry: a lagging reader hits unchanged objects but
+    never observes a version newer than its snapshot (#92)."""
+
+    def test_held_snapshot_never_sees_post_snapshot_commit_via_l2(self, db):
+        """A connection holding a REPEATABLE READ snapshot must never observe a
+        concurrent post-snapshot commit through L2.  The per-entry gate must
+        deny a cached version newer than the reader's snapshot, so the reader
+        falls through to PostgreSQL and sees its snapshot version.
+        """
+        from ZODB.utils import u64
+
+        import transaction
+
+        _create_tree(db, 3)
+
+        tm_a = transaction.TransactionManager()
+        conn_a = db.open(transaction_manager=tm_a)
+        try:
+            # conn_a loads c0 v0 and pins its snapshot at T0.
+            assert conn_a.root()["c0"]["i"] == 0
+            inst_a = conn_a._storage
+            snapshot_tid = inst_a._polled_tid
+            zoid = u64(conn_a.root()["c0"]._p_oid)
+
+            # A second connection commits a new version of c0.
+            tm_b = transaction.TransactionManager()
+            conn_b = db.open(transaction_manager=tm_b)
+            try:
+                conn_b.root()["c0"]["i"] = 999
+                tm_b.commit()
+            finally:
+                conn_b.close()
+
+            # A third connection reads c0, repopulating L2 with the new version.
+            tm_c = transaction.TransactionManager()
+            conn_c = db.open(transaction_manager=tm_c)
+            try:
+                assert conn_c.root()["c0"]["i"] == 999
+            finally:
+                conn_c.close()
+
+            # L2 now holds c0 at a TID newer than conn_a's snapshot; the gate
+            # must deny it for conn_a.
+            shared = inst_a._main._shared_cache
+            assert shared.get(zoid, snapshot_tid) is None
+
+            # conn_a, still on its snapshot, must re-read v0 from PostgreSQL —
+            # never the future 999 — even after ghosting and clearing L1.
+            conn_a.cacheMinimize()
+            inst_a._load_cache.clear()
+            assert conn_a.root()["c0"]["i"] == 0
+        finally:
+            conn_a.close()

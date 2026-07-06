@@ -1,5 +1,25 @@
 # Changelog
 
+## unreleased
+
+### Features
+
+- **Per-entry read gate for the shared L2 cache** (#92).  `SharedLoadCache.get`
+  previously denied a connection *all* of L2 whenever its snapshot was behind
+  the process-wide `consensus_tid` — so during any write burst a lagging reader
+  fell through to PostgreSQL for every object, one round-trip at a time, and an
+  otherwise-warm pod served cold-looking requests.  The gate is now per entry:
+  a cached entry is served when its committed TID is at or below the reader's
+  snapshot (unchanged since the snapshot, hence exactly the version the reader
+  must see) and skipped when it is newer.  A lagging reader keeps hitting L2 for
+  every object unchanged since its snapshot and misses only genuinely newer
+  objects.  Correctness rests on the existing invariant that every commit drops
+  its changed zoids from L2 at commit time, so a present entry always carries the
+  object's true latest TID; the write gate is unchanged.  Verified with a
+  held-snapshot integration test (a REPEATABLE READ connection never observes a
+  concurrent post-snapshot commit through L2) and the existing no-stale-reads
+  concurrency stress test.
+
 ## 1.14.3
 
 ### Features
