@@ -65,12 +65,23 @@ uv run python benchmarks/bench.py all --iterations 100
 Flags:
 
 - `--iterations N` / `--warmup N` — measured and warmup iterations (default 100 / 10).
+- `--runs K` — pool `K` independent runs per operation (default 1). Each run
+  re-does its own setup, so this is safe for the write benchmarks; pooling folds
+  run-to-run noise into the reported spread. Raise it on a busy machine.
 - `--format {table,json,both}` — console table, machine-readable JSON, or both.
 - `--output FILE` — write the JSON results to `FILE`.
 
-Each figure is the median of `N` iterations after `warmup` discarded runs. The
-harness runs both storages back-to-back against the same PostgreSQL server so the
-comparison ratio cancels out most machine noise.
+Each cell is reported as **`median ±CV%`**, where the coefficient of variation
+(`stddev / median`, over all pooled samples) makes noisy rows obvious — a high
+percentage means background load contaminated the measurement and the row should
+not be trusted. The JSON export additionally carries `min`/`max`/`p95`/`stddev`.
+
+> [!TIP]
+> Treat the numbers accordingly: absolute values are machine-specific and, on a
+> shared/desktop machine, carry a large variance (a CV of 10–40% is common). For
+> trustworthy numbers, run on a **quiet, dedicated** machine with `--runs 5` or
+> more, and compare the **PGJsonb-versus-RelStorage ratio** (same run, same
+> machine) rather than absolute values.
 
 ### Plone subset
 

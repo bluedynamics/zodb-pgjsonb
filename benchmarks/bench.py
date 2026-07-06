@@ -124,18 +124,49 @@ def _percentile(data: list[float], pct: float) -> float:
 # ---------------------------------------------------------------------------
 
 
+# Number of independent measurement runs to pool. Raised via --runs so that
+# run-to-run noise (background load on a shared/desktop machine) is captured in
+# the reported spread, not hidden. Applied at the orchestration level (each run
+# re-does setup), so it is safe for the stateful write benchmarks. Set in main().
+RUNS = 1
+
+
 def bench_one(fn, *args, iterations: int = 100, warmup: int = 10) -> TimingStats:
-    """Time a function, return stats in milliseconds."""
+    """Time a function ``iterations`` times (after ``warmup``), pooled stats in ms.
+
+    Reports ``median``/``min``/``stddev`` over the samples.  On a noisy machine
+    ``min`` is the least-contaminated estimate of intrinsic cost (background load
+    only ever adds time) and the coefficient of variation (stddev / median) flags
+    unreliable rows; ``--runs`` pools several independent runs for robustness.
+    """
+    stats = TimingStats()
     for _ in range(warmup):
         fn(*args)
-
-    stats = TimingStats()
     for _ in range(iterations):
         t0 = time.perf_counter()
         fn(*args)
         t1 = time.perf_counter()
         stats.samples.append((t1 - t0) * 1000.0)
     return stats
+
+
+def _repeat_merge(run_fn, *args) -> dict:
+    """Call a ``run_*_benchmarks`` function ``RUNS`` times and pool the samples.
+
+    Each call re-does its own setup (fresh storage), so this is safe for write
+    benchmarks; pooling the per-run ``TimingStats.samples`` folds run-to-run
+    variance into the reported median/spread.
+    """
+    merged: dict = {}
+    for _ in range(RUNS):
+        result = run_fn(*args)
+        for op, backends in result.items():
+            slot = merged.setdefault(op, {})
+            for backend, stats in backends.items():
+                if stats is None:
+                    continue
+                slot.setdefault(backend, TimingStats()).samples.extend(stats.samples)
+    return merged
 
 
 # ---------------------------------------------------------------------------
@@ -149,6 +180,20 @@ def _fmt_ms(val: float) -> str:
     if val >= 1:
         return f"{val:.1f} ms"
     return f"{val * 1000:.0f} us"
+
+
+def _fmt_stat(stats) -> str:
+    """Median with coefficient of variation, e.g. ``9.1 ms ±4%``.
+
+    The percentage is ``stddev / median`` over all pooled samples -- a high
+    value means the row is noisy (background load) and should not be trusted;
+    raise ``--runs`` and/or measure on a quiet machine.
+    """
+    if stats is None or not stats.samples:
+        return "N/A"
+    med = stats.median
+    cv = (stats.stddev / med * 100.0) if med > 0 else 0.0
+    return f"{_fmt_ms(med)} ±{cv:.0f}%"
 
 
 def _comparison(pgjsonb: float, relstorage: float) -> str:
@@ -462,7 +507,7 @@ def run_storage_benchmarks(iterations, warmup):
                 )
                 stats = bench_fn(storage)
                 results[bench_name][backend_name] = stats
-                print(f" {_fmt_ms(stats.mean)}")
+                print(f" {_fmt_ms(stats.median)}")
             except Exception as exc:
                 print(f" ERROR: {exc}")
             finally:
@@ -653,7 +698,7 @@ def run_zodb_benchmarks(iterations, warmup):
                 )
                 stats = bench_fn(db)
                 results[bench_name][backend_name] = stats
-                print(f" {_fmt_ms(stats.mean)}")
+                print(f" {_fmt_ms(stats.median)}")
             except Exception as exc:
                 print(f" ERROR: {exc}")
             finally:
@@ -752,7 +797,7 @@ def run_pack_benchmarks():
             if stats is not None and stats.count > 0:
                 results[n_objects][backend_name] = stats
                 print(
-                    f" {_fmt_ms(stats.mean)} +/- {_fmt_ms(stats.stddev)}"
+                    f" {_fmt_ms(stats.median)} +/- {_fmt_ms(stats.stddev)}"
                     f" ({reachable} reachable, {garbage} garbage, n={stats.count})"
                 )
             else:
@@ -939,7 +984,7 @@ def run_hp_benchmarks(iterations, warmup):
                 )
                 stats = bench_fn(storage)
                 results[bench_name][backend_name] = stats
-                print(f" {_fmt_ms(stats.mean)}")
+                print(f" {_fmt_ms(stats.median)}")
             except Exception as exc:
                 print(f" ERROR: {exc}")
             finally:
@@ -1047,7 +1092,7 @@ def run_zodb_hp_benchmarks(iterations, warmup):
                 )
                 stats = bench_fn(db)
                 results[bench_name][backend_name] = stats
-                print(f" {_fmt_ms(stats.mean)}")
+                print(f" {_fmt_ms(stats.median)}")
             except Exception as exc:
                 print(f" ERROR: {exc}")
             finally:
@@ -1149,7 +1194,7 @@ def run_pack_hp_benchmarks():
             if stats is not None and stats.count > 0:
                 results[n_objects][backend_name] = stats
                 print(
-                    f" {_fmt_ms(stats.mean)} +/- {_fmt_ms(stats.stddev)}"
+                    f" {_fmt_ms(stats.median)} +/- {_fmt_ms(stats.stddev)}"
                     f" ({reachable} reachable x4 revisions, {garbage} garbage,"
                     f" n={stats.count})"
                 )
@@ -1358,9 +1403,9 @@ def print_storage_results(results: dict, iterations: int, warmup: int):
 
     if has_relstorage:
         print(
-            f"  {'Operation':<24} {'PGJsonb':>12} {'RelStorage':>12} {'Comparison':>20}"
+            f"  {'Operation':<24} {'PGJsonb':>15} {'RelStorage':>15} {'Comparison':>18}"
         )
-        print(f"  {'-' * 70}")
+        print(f"  {'-' * 78}")
     else:
         print(f"  {'Operation':<24} {'PGJsonb':>12}")
         print(f"  {'-' * 38}")
@@ -1369,16 +1414,16 @@ def print_storage_results(results: dict, iterations: int, warmup: int):
         pgjsonb_stats = backend_results.get("PGJsonbStorage")
         rs_stats = backend_results.get("RelStorage")
 
-        pj_str = _fmt_ms(pgjsonb_stats.mean) if pgjsonb_stats else "N/A"
+        pj_str = _fmt_stat(pgjsonb_stats)
 
         if has_relstorage:
-            rs_str = _fmt_ms(rs_stats.mean) if rs_stats else "N/A"
+            rs_str = _fmt_stat(rs_stats)
             cmp_str = (
-                _comparison(pgjsonb_stats.mean, rs_stats.mean)
+                _comparison(pgjsonb_stats.median, rs_stats.median)
                 if pgjsonb_stats and rs_stats
                 else ""
             )
-            print(f"  {bench_name:<24} {pj_str:>12} {rs_str:>12} {cmp_str:>20}")
+            print(f"  {bench_name:<24} {pj_str:>15} {rs_str:>15} {cmp_str:>18}")
         else:
             print(f"  {bench_name:<24} {pj_str:>12}")
 
@@ -1394,9 +1439,9 @@ def print_zodb_results(results: dict, iterations: int, warmup: int):
 
     if has_relstorage:
         print(
-            f"  {'Operation':<24} {'PGJsonb':>12} {'RelStorage':>12} {'Comparison':>20}"
+            f"  {'Operation':<24} {'PGJsonb':>15} {'RelStorage':>15} {'Comparison':>18}"
         )
-        print(f"  {'-' * 70}")
+        print(f"  {'-' * 78}")
     else:
         print(f"  {'Operation':<24} {'PGJsonb':>12}")
         print(f"  {'-' * 38}")
@@ -1405,16 +1450,16 @@ def print_zodb_results(results: dict, iterations: int, warmup: int):
         pgjsonb_stats = backend_results.get("PGJsonbStorage")
         rs_stats = backend_results.get("RelStorage")
 
-        pj_str = _fmt_ms(pgjsonb_stats.mean) if pgjsonb_stats else "N/A"
+        pj_str = _fmt_stat(pgjsonb_stats)
 
         if has_relstorage:
-            rs_str = _fmt_ms(rs_stats.mean) if rs_stats else "N/A"
+            rs_str = _fmt_stat(rs_stats)
             cmp_str = (
-                _comparison(pgjsonb_stats.mean, rs_stats.mean)
+                _comparison(pgjsonb_stats.median, rs_stats.median)
                 if pgjsonb_stats and rs_stats
                 else ""
             )
-            print(f"  {bench_name:<24} {pj_str:>12} {rs_str:>12} {cmp_str:>20}")
+            print(f"  {bench_name:<24} {pj_str:>15} {rs_str:>15} {cmp_str:>18}")
         else:
             print(f"  {bench_name:<24} {pj_str:>12}")
 
@@ -1442,19 +1487,19 @@ def print_pack_results(results: dict):
         rs_stats = backend_results.get("RelStorage")
 
         pj_str = (
-            f"{_fmt_ms(pj_stats.mean)} +/- {_fmt_ms(pj_stats.stddev)}"
+            f"{_fmt_ms(pj_stats.median)} +/- {_fmt_ms(pj_stats.stddev)}"
             if pj_stats is not None
             else "N/A"
         )
 
         if has_relstorage:
             rs_str = (
-                f"{_fmt_ms(rs_stats.mean)} +/- {_fmt_ms(rs_stats.stddev)}"
+                f"{_fmt_ms(rs_stats.median)} +/- {_fmt_ms(rs_stats.stddev)}"
                 if rs_stats is not None
                 else "N/A"
             )
             cmp_str = (
-                _comparison(pj_stats.mean, rs_stats.mean)
+                _comparison(pj_stats.median, rs_stats.median)
                 if pj_stats is not None and rs_stats is not None
                 else ""
             )
@@ -1474,9 +1519,9 @@ def print_hp_results(results: dict, iterations: int, warmup: int):
 
     if has_relstorage:
         print(
-            f"  {'Operation':<24} {'PGJsonb':>12} {'RelStorage':>12} {'Comparison':>20}"
+            f"  {'Operation':<24} {'PGJsonb':>15} {'RelStorage':>15} {'Comparison':>18}"
         )
-        print(f"  {'-' * 70}")
+        print(f"  {'-' * 78}")
     else:
         print(f"  {'Operation':<24} {'PGJsonb':>12}")
         print(f"  {'-' * 38}")
@@ -1485,16 +1530,16 @@ def print_hp_results(results: dict, iterations: int, warmup: int):
         pgjsonb_stats = backend_results.get("PGJsonbStorage")
         rs_stats = backend_results.get("RelStorage")
 
-        pj_str = _fmt_ms(pgjsonb_stats.mean) if pgjsonb_stats else "N/A"
+        pj_str = _fmt_stat(pgjsonb_stats)
 
         if has_relstorage:
-            rs_str = _fmt_ms(rs_stats.mean) if rs_stats else "N/A"
+            rs_str = _fmt_stat(rs_stats)
             cmp_str = (
-                _comparison(pgjsonb_stats.mean, rs_stats.mean)
+                _comparison(pgjsonb_stats.median, rs_stats.median)
                 if pgjsonb_stats and rs_stats
                 else ""
             )
-            print(f"  {bench_name:<24} {pj_str:>12} {rs_str:>12} {cmp_str:>20}")
+            print(f"  {bench_name:<24} {pj_str:>15} {rs_str:>15} {cmp_str:>18}")
         else:
             print(f"  {bench_name:<24} {pj_str:>12}")
 
@@ -1510,9 +1555,9 @@ def print_zodb_hp_results(results: dict, iterations: int, warmup: int):
 
     if has_relstorage:
         print(
-            f"  {'Operation':<24} {'PGJsonb':>12} {'RelStorage':>12} {'Comparison':>20}"
+            f"  {'Operation':<24} {'PGJsonb':>15} {'RelStorage':>15} {'Comparison':>18}"
         )
-        print(f"  {'-' * 70}")
+        print(f"  {'-' * 78}")
     else:
         print(f"  {'Operation':<24} {'PGJsonb':>12}")
         print(f"  {'-' * 38}")
@@ -1521,16 +1566,16 @@ def print_zodb_hp_results(results: dict, iterations: int, warmup: int):
         pgjsonb_stats = backend_results.get("PGJsonbStorage")
         rs_stats = backend_results.get("RelStorage")
 
-        pj_str = _fmt_ms(pgjsonb_stats.mean) if pgjsonb_stats else "N/A"
+        pj_str = _fmt_stat(pgjsonb_stats)
 
         if has_relstorage:
-            rs_str = _fmt_ms(rs_stats.mean) if rs_stats else "N/A"
+            rs_str = _fmt_stat(rs_stats)
             cmp_str = (
-                _comparison(pgjsonb_stats.mean, rs_stats.mean)
+                _comparison(pgjsonb_stats.median, rs_stats.median)
                 if pgjsonb_stats and rs_stats
                 else ""
             )
-            print(f"  {bench_name:<24} {pj_str:>12} {rs_str:>12} {cmp_str:>20}")
+            print(f"  {bench_name:<24} {pj_str:>15} {rs_str:>15} {cmp_str:>18}")
         else:
             print(f"  {bench_name:<24} {pj_str:>12}")
 
@@ -1558,19 +1603,19 @@ def print_pack_hp_results(results: dict):
         rs_stats = backend_results.get("RelStorage")
 
         pj_str = (
-            f"{_fmt_ms(pj_stats.mean)} +/- {_fmt_ms(pj_stats.stddev)}"
+            f"{_fmt_ms(pj_stats.median)} +/- {_fmt_ms(pj_stats.stddev)}"
             if pj_stats is not None
             else "N/A"
         )
 
         if has_relstorage:
             rs_str = (
-                f"{_fmt_ms(rs_stats.mean)} +/- {_fmt_ms(rs_stats.stddev)}"
+                f"{_fmt_ms(rs_stats.median)} +/- {_fmt_ms(rs_stats.stddev)}"
                 if rs_stats is not None
                 else "N/A"
             )
             cmp_str = (
-                _comparison(pj_stats.mean, rs_stats.mean)
+                _comparison(pj_stats.median, rs_stats.median)
                 if pj_stats is not None and rs_stats is not None
                 else ""
             )
@@ -1590,9 +1635,9 @@ def print_plone_results(results: dict, n_docs: int):
 
     if has_relstorage:
         print(
-            f"  {'Operation':<24} {'PGJsonb':>12} {'RelStorage':>12} {'Comparison':>20}"
+            f"  {'Operation':<24} {'PGJsonb':>15} {'RelStorage':>15} {'Comparison':>18}"
         )
-        print(f"  {'-' * 70}")
+        print(f"  {'-' * 78}")
     else:
         print(f"  {'Operation':<24} {'PGJsonb':>12}")
         print(f"  {'-' * 38}")
@@ -1625,7 +1670,7 @@ def print_plone_results(results: dict, n_docs: int):
                 if pj_val is not None and rs_val is not None
                 else ""
             )
-            print(f"  {label:<24} {pj_str:>12} {rs_str:>12} {cmp_str:>20}")
+            print(f"  {label:<24} {pj_str:>15} {rs_str:>15} {cmp_str:>18}")
         else:
             print(f"  {label:<24} {pj_str:>12}")
 
@@ -1775,6 +1820,12 @@ def main() -> None:
     for p in [st, zd, al, pl, hp]:
         p.add_argument("--output", help="Write JSON results to file")
         p.add_argument(
+            "--runs",
+            type=int,
+            default=1,
+            help="Independent measurement runs to pool (raise on a noisy machine)",
+        )
+        p.add_argument(
             "--format",
             choices=["table", "json", "both"],
             default="table",
@@ -1784,6 +1835,12 @@ def main() -> None:
     # pack also gets output/format
     pack_parser = sub.choices["pack"]
     pack_parser.add_argument("--output", help="Write JSON results to file")
+    pack_parser.add_argument(
+        "--runs",
+        type=int,
+        default=1,
+        help="Independent measurement runs to pool (raise on a noisy machine)",
+    )
     pack_parser.add_argument(
         "--format",
         choices=["table", "json", "both"],
@@ -1800,7 +1857,14 @@ def main() -> None:
     warmup = getattr(args, "warmup", 10)
     n_docs = getattr(args, "docs", 50)
 
+    global RUNS
+    RUNS = max(1, getattr(args, "runs", 1))
+
     print(f"\n{HEADER}PGJsonbStorage vs RelStorage — Performance Benchmarks{RESET}")
+    print(
+        f"  {DIM}values: median ±CV%  (CV = stddev/median; high = noisy row); "
+        f"pooling {RUNS} run(s){RESET}"
+    )
 
     # Check RelStorage availability
     try:
@@ -1821,11 +1885,11 @@ def main() -> None:
 
     if args.command in ("storage", "all"):
         print(f"\n{HEADER}Running storage benchmarks...{RESET}")
-        storage_results = run_storage_benchmarks(iterations, warmup)
+        storage_results = _repeat_merge(run_storage_benchmarks, iterations, warmup)
 
     if args.command in ("zodb", "all"):
         print(f"\n{HEADER}Running ZODB benchmarks...{RESET}")
-        zodb_results = run_zodb_benchmarks(iterations, warmup)
+        zodb_results = _repeat_merge(run_zodb_benchmarks, iterations, warmup)
 
     if args.command in ("pack", "all"):
         print(f"\n{HEADER}Running pack benchmarks...{RESET}")
@@ -1833,10 +1897,10 @@ def main() -> None:
 
     if args.command in ("history", "all"):
         print(f"\n{HEADER}Running HP storage benchmarks...{RESET}")
-        hp_storage_results = run_hp_benchmarks(iterations, warmup)
+        hp_storage_results = _repeat_merge(run_hp_benchmarks, iterations, warmup)
 
         print(f"\n{HEADER}Running HP ZODB benchmarks...{RESET}")
-        hp_zodb_results = run_zodb_hp_benchmarks(iterations, warmup)
+        hp_zodb_results = _repeat_merge(run_zodb_hp_benchmarks, iterations, warmup)
 
         print(f"\n{HEADER}Running HP pack benchmarks...{RESET}")
         hp_pack_results = run_pack_hp_benchmarks()

@@ -21,6 +21,17 @@
   lives in the run's temp directory, so the Plone subset runs regardless of
   checkout layout.
 
+- **Make the benchmark harness variance-aware.**  Each cell is now reported as
+  `median ±CV%` (coefficient of variation over the pooled samples) so noisy rows
+  are obvious instead of hidden behind a single number, and a new `--runs K` flag
+  pools several independent runs (each re-does its own setup, so it is safe for
+  the write benchmarks).  On a shared/desktop machine a CV of 10–40% is normal;
+  the `benchmarks/README.md` documents running on a quiet machine and comparing
+  ratios rather than absolute values.  (Investigating apparent slowdowns showed
+  no regression: current storage numbers match zodb-pgjsonb 1.13.1 on the same
+  machine, and the only consistent cost is the ~20 µs connection-checkout
+  liveness probe added with the 1.14.2 pool-leak fix.)
+
 ## 1.15.0
 
 ### Features
