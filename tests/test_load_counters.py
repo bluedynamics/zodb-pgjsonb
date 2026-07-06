@@ -71,3 +71,45 @@ def test_load_multiple_counts_pg_then_l2(db, storage):
         assert inst2._pg_load_count == 0
     finally:
         inst2.release()
+
+
+def _store_objects(db, n):
+    """Commit n PersistentMappings and return their oids."""
+    conn = db.open()
+    try:
+        root = conn.root()
+        objs = []
+        for i in range(n):
+            obj = PersistentMapping({"i": i})
+            root[f"obj{i}"] = obj
+            objs.append(obj)
+        transaction.commit()
+        return [o._p_oid for o in objs]
+    finally:
+        conn.close()
+
+
+def test_query_counter_single_load(db, storage):
+    oid = _store_object(db)
+    inst = storage.new_instance()
+    try:
+        inst.poll_invalidations()
+        inst.load(oid)
+        assert inst._pg_load_count == 1
+        assert inst._pg_query_count == 1  # one object, one round-trip
+        inst.load(oid)  # now L1-cached
+        assert inst._pg_query_count == 1
+    finally:
+        inst.release()
+
+
+def test_query_counter_batch_is_one_per_query(db, storage):
+    oids = _store_objects(db, 5)
+    inst = storage.new_instance()
+    try:
+        inst.poll_invalidations()
+        inst.load_multiple(oids)
+        assert inst._pg_load_count == 5  # five objects
+        assert inst._pg_query_count == 1  # one ANY() query
+    finally:
+        inst.release()

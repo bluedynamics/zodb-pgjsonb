@@ -2,6 +2,14 @@
 
 ## unreleased
 
+### Features
+
+- Add a per-connection `_pg_query_count` counter (PostgreSQL round-trips) next to the
+  existing `_pg_load_count` (objects). `load()` bumps both by 1; `load_multiple()` bumps
+  `_pg_load_count` by the batch size but `_pg_query_count` by **1** (one `WHERE zoid = ANY(...)`
+  query), so `_pg_load_count / _pg_query_count` quantifies batching/prefetch. Plain int, no
+  dependency; read best-effort by plone.observability. #96
+
 ### Documentation
 
 - **Refresh the performance benchmarks and document how to reproduce them.**

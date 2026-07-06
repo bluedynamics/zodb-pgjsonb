@@ -63,6 +63,7 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
         # zodb-pgjsonb does not import or require any tracing library.
         self._l2_load_hits = 0  # objects served from the shared (L2) cache
         self._pg_load_count = 0  # objects fetched from PostgreSQL
+        self._pg_query_count = 0  # PostgreSQL round-trips (queries)
         self._tmp = []
         self._blob_tmp = {}  # pending blob stores: {oid_int: blob_path}
         self._tid = None
@@ -328,6 +329,7 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
             raise POSKeyError(oid)
 
         self._pg_load_count += 1
+        self._pg_query_count += 1
         record = {
             "@cls": [row["class_mod"], row["class_name"]],
             "@s": _unsanitize_from_pg(row["state"]),
@@ -419,6 +421,7 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
             rows = cur.fetchall()
 
         self._pg_load_count += len(rows)
+        self._pg_query_count += 1
         for row in rows:
             record = {
                 "@cls": [row["class_mod"], row["class_name"]],
