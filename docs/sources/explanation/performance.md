@@ -265,6 +265,20 @@ The gate is now per entry: a lagging reader keeps hitting L2 for every object un
 Without it, `Connection.prefetch()` was a no-op on zodb-pgjsonb, so a result set (a collection listing, a tile) was loaded one object at a time -- N sequential round-trips.
 A caller that prefetches its result set turns those N round-trips into one; the micro-benchmark `benchmarks/bench_prefetch.py` shows 151 objects collapsing from 151 round-trips to 1 (about 130x faster at a 20 ms per-query latency).
 
+### Load counters for observability
+
+Each connection instance exposes plain-int counters (read best-effort by tracing tools such as
+plone.observability, with no dependency added here):
+
+- `_l2_load_hits` -- objects served from the shared (L2) cache.
+- `_pg_load_count` -- objects fetched from PostgreSQL.
+- `_pg_query_count` -- PostgreSQL round-trips (queries).
+
+`_pg_load_count` counts *objects*; `_pg_query_count` counts *queries*. A single
+`load_multiple()` / `prefetch` that fetches N objects in one `WHERE zoid = ANY(...)` bumps
+`_pg_load_count` by N but `_pg_query_count` by 1 -- so their ratio makes the batching/prefetch
+win directly visible, where a per-object N+1 pattern keeps the ratio near 1.
+
 ## Scaling characteristics
 
 ### Connection pool
