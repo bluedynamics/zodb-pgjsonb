@@ -20,6 +20,18 @@
   concurrent post-snapshot commit through L2) and the existing no-stale-reads
   concurrency stress test.
 
+### Documentation
+
+- **Document the cache tiers** as a new explanation page
+  (`explanation/caching.md`): the ZODB object cache, the L1 per-connection
+  load cache, the L2 process-wide shared cache and its consensus-TID gate, the
+  startup cache warmer, and how to read the `plone.zodb.load_l2_hits` /
+  `load_pg_queries` span attributes to tell a cold/gated cache from high
+  per-load latency.  Also correct the stale cache configuration in the
+  reference and `llms.txt`: the current keys are `cache-shared-mb` (default
+  256) and `cache-per-connection-mb` (default 16); `cache-local-mb` is a
+  deprecated alias.  The cache-warmer keys are now documented in the reference.
+
 ## 1.14.3
 
 ### Features
