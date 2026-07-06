@@ -152,21 +152,17 @@ Storage overhead dropped by roughly 50% because `object_history` now contains on
 
 ## Plone application workloads
 
-```{note}
-The Plone-workload figures below are from an earlier run and were not refreshed in the 2026-07 pass, because they require a full Plone environment.
-To refresh them, run `bench.py plone` in an environment with `Products.CMFPlone` installed -- see [`benchmarks/README.md`](https://github.com/bluedynamics/zodb-pgjsonb/tree/main/benchmarks).
-The conclusion is unchanged: at the application level both backends are on par.
-```
+Measured on Plone 6.2.1 (50 documents):
 
 | Operation | PGJsonb | RelStorage | Comparison |
 |---|---|---|---|
-| site creation | 1.07 s | 1.06 s | on par |
-| content create/doc | 27.5 ms | 27.2 ms | on par |
-| catalog query | 190 us | 180 us | on par |
-| content modify/doc | 6.6 ms | 6.7 ms | on par |
+| site creation | 1.27 s | 1.23 s | on par |
+| content create/doc | 36.8 ms | 31.5 ms | 1.2x slower |
+| catalog query | 228 us | 213 us | 1.1x slower |
+| content modify/doc | 8.7 ms | 8.2 ms | 1.1x slower |
 
-Real Plone workloads show both backends performing identically.
-At the application level, ZODB's object cache handles the hot path, and per-object transcoding cost is negligible relative to Plone's own processing (security checks, event handling, catalog indexing, template rendering).
+Real Plone workloads land close together, with zodb-pgjsonb marginally slower on content operations (within roughly 20%).
+At the application level, ZODB's object cache handles the hot path, and per-object transcoding cost is small relative to Plone's own processing (security checks, event handling, catalog indexing, template rendering).
 
 This is the expected result: zodb-pgjsonb's performance differences are visible at the storage API level, but Plone's application overhead dominates at the user-facing level.
 The value proposition of zodb-pgjsonb is not raw speed for Plone operations -- it is SQL queryability, faster pack/GC, and the ecosystem of PostgreSQL-native integrations.

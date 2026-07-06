@@ -44,7 +44,9 @@ Two harnesses live here:
 
 4. **Plone** (only for the `plone` subset). The storage/zodb/pack/history subsets
    are self-contained (`ZODB.tests.MinPO`) and need no Plone. The `plone` subset
-   needs `Products.CMFPlone` importable in the environment.
+   builds a real Plone site, so it needs a full Plone install in the same
+   interpreter that runs `bench.py` (the worker is spawned via `sys.executable`).
+   See [Plone subset](#plone-subset) below for a ready-to-run recipe.
 
 ## Running
 
@@ -69,6 +71,32 @@ Flags:
 Each figure is the median of `N` iterations after `warmup` discarded runs. The
 harness runs both storages back-to-back against the same PostgreSQL server so the
 comparison ratio cancels out most machine noise.
+
+### Plone subset
+
+The `plone` subset builds a real Plone site per backend, so it needs a full Plone
+install **plus** zodb-pgjsonb and RelStorage in one interpreter. Always benchmark
+against the **current Plone release** -- bump the constraints URL accordingly. A
+dedicated throwaway venv keeps this out of your dev environment:
+
+```shell
+uv venv /tmp/plonebench --python 3.12
+PYBIN=/tmp/plonebench/bin/python
+
+# current Plone release + its constraints, RelStorage, and this checkout of zodb-pgjsonb
+C=https://dist.plone.org/release/6.2.1/constraints.txt
+uv pip install --python $PYBIN -c $C Plone plone.volto plone.distribution relstorage psycopg2-binary "psycopg[binary]"
+uv pip install --python $PYBIN --no-deps -e .
+uv pip install --python $PYBIN "zodb-json-codec>=1.6.1" "psycopg[binary,pool]>=3.1"
+
+# run the plone subset with that interpreter (bench.py spawns the worker via sys.executable)
+$PYBIN benchmarks/bench.py plone --docs 50 --format both --output plone.json
+```
+
+The subset creates a `bench_site` in each benchmark database, then times site
+creation, per-document content creation, catalog queries, and content
+modification. RelStorage must be importable for the comparison column; without it
+the subset reports PGJsonb-only.
 
 ### Prefetch micro-benchmark
 
