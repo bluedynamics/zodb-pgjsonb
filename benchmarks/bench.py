@@ -1232,6 +1232,10 @@ def _generate_zope_conf(dsn, backend_type, tmp_dir):
     clienthome.mkdir(exist_ok=True)
     (clienthome / "cache").mkdir(exist_ok=True)
     (clienthome / "log").mkdir(exist_ok=True)
+    # instancehome must exist (Zope validates it); keep it inside the run's
+    # temp dir so the benchmark is self-contained regardless of checkout layout.
+    instancehome = Path(tmp_dir) / f"instancehome-{backend_type}"
+    instancehome.mkdir(exist_ok=True)
 
     if backend_type == "pgjsonb":
         db_section = PGJSONB_DB_SECTION.format(dsn=dsn)
@@ -1241,7 +1245,7 @@ def _generate_zope_conf(dsn, backend_type, tmp_dir):
         raise ValueError(f"Unknown backend type: {backend_type}")
 
     conf_content = ZOPE_CONF_TEMPLATE.format(
-        instancehome=INSTANCE_HOME,
+        instancehome=instancehome,
         clienthome=clienthome,
         db_section=db_section,
     )
