@@ -1,5 +1,19 @@
 # Changelog
 
+## unreleased
+
+### Documentation
+
+- **Refresh the performance benchmarks and document how to reproduce them.**
+  Re-ran the suite (PostgreSQL 17.9, RelStorage 4.2.0, zodb-json-codec 1.6.1) and
+  updated `explanation/performance.md` with current numbers, an honest
+  machine-specific caveat, the two-tier L1/L2 cache description, the optimization
+  history through 1.15 (shared cache, cache warmer, connection-pool hardening,
+  per-entry L2 gate, the ZODB `prefetch` hook), and a note that the Plone-workload
+  table needs a Plone environment to refresh.  Add `benchmarks/README.md`
+  documenting the prerequisites, how to run each subset, the methodology, and how
+  to update the docs from a run.
+
 ## 1.15.0
 
 ### Features
