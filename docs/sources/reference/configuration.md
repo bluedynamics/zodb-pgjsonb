@@ -32,10 +32,20 @@ It implements `ZODB.storage`.
 | `name` | string | `pgjsonb` | no | Storage name, used in sort keys. |
 | `history-preserving` | boolean | `false` | no | Enable history-preserving mode. |
 | `blob-temp-dir` | string | (auto-created tempdir) | no | Directory for temporary blob files. Auto-created if omitted. |
-| `cache-local-mb` | integer | `16` | no | Size of the per-instance object cache in megabytes. Caches `load()` results (pickle bytes) to avoid repeated PostgreSQL round-trips and JSONB transcoding. Set to `0` to disable. |
+| `cache-shared-mb` | integer | `256` | no | Size of the process-wide shared load cache (L2) in megabytes, shared across all connections in the process. Caches `load()` results (pickle bytes) to avoid repeated PostgreSQL round-trips and JSONB transcoding. Set to `0` to disable. See {ref}`cache-tiers`. |
+| `cache-per-connection-mb` | integer | `16` | no | Size of the per-connection L1 load cache in megabytes, a lock-free hot cache ahead of `cache-shared-mb`. Set to `0` to rely entirely on the shared cache. |
+| `cache-local-mb` | integer | -- | no | **Deprecated since 1.12.0.** Alias for `cache-shared-mb` that emits a `DeprecationWarning` when set. Use `cache-shared-mb` instead. |
 | `pool-size` | integer | `1` | no | Minimum number of connections in the instance connection pool. Set to `0` for on-demand creation. |
 | `pool-max-size` | integer | `10` | no | Maximum number of connections in the instance connection pool. |
 | `pool-timeout` | float | `30.0` | no | Connection pool acquisition timeout in seconds. Raises `StorageError` if a connection cannot be acquired within this time. |
+| `cache-warm-pct` | integer | `10` | no | Percentage of `cache-shared-mb` to pre-warm at startup from the most-accessed objects. Set to `0` to disable warming. See {ref}`cache-tiers`. |
+| `cache-warm-decay` | float | `0.8` | no | Per-restart decay factor for historical access scores. `0.8` means scores from 10 restarts ago retain 10% of their weight. |
+| `cache-warm-delay` | integer | `15` | no | Baseline delay in seconds before the warmer starts, keeping it out of the pod's cold-start window. Set to `0` to disable. |
+| `cache-warm-jitter` | integer | `30` | no | Additional uniform-random delay (0 to `jitter` seconds) on top of `cache-warm-delay`, spreading warmer start across replicas. Set to `0` to disable. |
+| `cache-warm-concurrency` | integer | `2` | no | Maximum number of pods warming concurrently cluster-wide, enforced by a PostgreSQL advisory-lock semaphore. Set to a very large value to effectively disable the cap. |
+| `cache-warm-wait-max` | integer | `300` | no | Maximum seconds a pod waits for a warming slot before skipping warmup (logs a `WARNING`). |
+| `cache-warm-batch-size` | integer | `500` | no | Number of object ids fetched per warmer `SELECT` batch. |
+| `cache-warm-batch-pause` | float | `0.5` | no | Seconds to pause between warmer batches, lowering per-pod peak query rate. Set to `0` to disable. |
 | `blob-threshold` | byte-size | `100KB` | no | Blobs larger than this value are stored in S3 when S3 is configured. Blobs smaller than this remain in PostgreSQL bytea. Set to `0` to send all blobs to S3. Requires `s3-bucket-name`. |
 | `s3-bucket-name` | string | -- | no | S3 bucket name for large blob storage. If omitted, all blobs are stored in PostgreSQL bytea. |
 | `s3-prefix` | string | `""` | no | S3 key prefix for namespace isolation. |

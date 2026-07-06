@@ -49,7 +49,7 @@ ZODB.DB
 
 ### Read Path
 
-1. ZODB calls `load(oid)` → check LRU cache first
+1. ZODB calls `load(oid)` → check L1 per-connection cache, then L2 process-wide shared cache (consensus-TID gated)
 2. Cache miss: `SELECT class_mod, class_name, state FROM object_state WHERE zoid = %s`
 3. `zodb_json_codec.encode_zodb_record()` transcodes JSON back to pickle bytes (Rust)
 4. Returns `(pickle_bytes, tid_bytes)` to ZODB
@@ -195,7 +195,8 @@ runs. `ZODB_PGJSONB_FORCE_DDL=1` forces a full re-apply.
     pool-size 1
     pool-max-size 10
     pool-timeout 30.0
-    cache-local-mb 16
+    cache-shared-mb 256
+    cache-per-connection-mb 16
     blob-temp-dir /var/zodb/tmp
     s3-bucket-name my-bucket
     s3-endpoint-url https://s3.amazonaws.com
@@ -214,7 +215,9 @@ runs. `ZODB_PGJSONB_FORCE_DDL=1` forces a full re-apply.
 | dsn | *required* | PostgreSQL connection string (libpq or URI) |
 | name | pgjsonb | Storage name |
 | history-preserving | false | Enable history-preserving mode |
-| cache-local-mb | 16 | Per-instance LRU cache (MB) |
+| cache-shared-mb | 256 | Process-wide shared load cache L2 (MB) |
+| cache-per-connection-mb | 16 | Per-connection L1 load cache (MB) |
+| cache-local-mb | *deprecated* | Alias for cache-shared-mb (since 1.12.0) |
 | pool-size | 1 | Min pool connections |
 | pool-max-size | 10 | Max pool connections |
 | pool-timeout | 30.0 | Connection acquisition timeout (seconds) |
