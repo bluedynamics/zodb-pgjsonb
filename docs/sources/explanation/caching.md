@@ -41,13 +41,16 @@ A process-wide cache shared between them is dangerous: a connection holding an o
 
 The `SharedLoadCache` prevents that with a single process-wide consensus TID — the highest transaction id any connection in the process has polled to.
 Every `poll_invalidations` advances it and drops the object ids that changed.
-L2 reads and writes are gated on it: a connection whose snapshot is older than the consensus may neither read from nor write to L2, and its loads fall through to PostgreSQL instead.
-This keeps the shared cache correct without per-object locking or versioning.
+The **write** side is gated on the consensus: a connection whose snapshot is older than the consensus may not write to L2, because it could insert an older version that a newer reader would then read as if current.
 
-The gate has an observable cost.
-During a burst of writes — a bulk `reindexObject` run, a publishing wave — the consensus advances on nearly every request, so a reader that opened its snapshot a moment earlier is "behind" and sees L2 as empty for the rest of that transaction.
-Its object loads go to PostgreSQL one at a time.
-This is the main reason an otherwise warm pod can serve a slow, cold-looking request in the middle of heavy write activity, even though nothing is wrong.
+**Reads** are gated per entry rather than wholesale.
+A cached entry carries the committed TID of the version it holds, and — because every commit drops its changed objects from L2 at commit time — a present entry is always the object's current version.
+So L2 serves an entry to a reader when the entry's TID is at or below the reader's snapshot (the object has not changed through that snapshot, so it is exactly the version the reader must see) and skips it when the entry is newer (a version the reader must not see yet).
+This keeps the shared cache correct without per-object locking or versioning, and a reader is never handed a version newer than its snapshot.
+
+The gate is precise, not all-or-nothing.
+During a burst of writes — a bulk `reindexObject` run, a publishing wave — the consensus advances on nearly every request, but a reader whose snapshot is a moment behind still hits L2 for every object unchanged since its snapshot; only objects committed after its snapshot miss and fall through to PostgreSQL.
+So heavy write activity costs a warm pod only the objects that actually changed, not its whole cache.
 
 ## The cache warmer
 
@@ -76,7 +79,7 @@ When zodb-pgjsonb runs under [plone.observability](https://github.com/plone/plon
 The shared-cache hit ratio for a request is `load_l2_hits / (load_l2_hits + load_pg_queries)`.
 Reading a slow span this way tells you which layer failed.
 
-- `load_pg_queries` ≈ `objects_loaded` and `load_l2_hits` ≈ 0 — the caches were cold or the consensus gate was closed, and the request did a round-trip per object.
+- `load_pg_queries` ≈ `objects_loaded` and `load_l2_hits` ≈ 0 — the caches were cold, or the working set had just been rewritten so every object is newer than the request's snapshot, and the request did a round-trip per object.
 - `load_pg_queries` small but `load_time_ms` still high — few loads, but slow ones: high per-round-trip latency, or a handful of very large objects.
 
 `plone.zodb.load_time_ms` is the wall time spent inside those `setstate` loads, so comparing it against `load_pg_queries` gives the effective per-load latency.
@@ -94,8 +97,8 @@ If the working set is larger than `cache-shared-mb`, L2 evicts hot objects and c
 
 The warmer keeps fresh pods from starting cold, and tuning its pacing trades startup database load against time-to-warm.
 
-None of these change the consensus gate.
-Under sustained writes, readers still fall through to PostgreSQL, which is correct; the durable answer there is to make falling through cheap by reducing the per-object round-trip cost.
+None of these change the per-entry read gate.
+Under sustained writes a reader still falls through to PostgreSQL for the objects that changed since its snapshot, which is correct; the durable answer there is to make falling through cheap by reducing the per-object round-trip cost.
 
 ```{seealso}
 {doc}`/explanation/architecture` for the read path and MVCC snapshots,

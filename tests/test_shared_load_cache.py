@@ -40,16 +40,33 @@ class TestGetSetBasic:
 
 
 class TestConsensusTIDGating:
-    def test_stale_reader_bypasses_cache(self):
-        """A reader with polled_tid < consensus_tid gets None."""
+    def test_lagging_reader_hits_unchanged_entry(self):
+        """A reader behind consensus still hits an object unchanged since its
+        snapshot — the per-entry read gate (#92).
+
+        zoid 1 was last committed at 100 and did not change while consensus
+        advanced to 200 (zoid 2 changed).  A reader at snapshot 150 must see
+        zoid 1's version as of 150, which is exactly v(100).
+        """
         cache = SharedLoadCache(max_mb=4)
         cache.poll_advance(new_tid=100, changed_zoids=[])
         cache.set(zoid=1, data=b"at100", tid_bytes=p64(100), polled_tid=100)
 
-        # Consensus moves forward via another instance's poll
         cache.poll_advance(new_tid=200, changed_zoids=[2])
 
-        # Reader with old snapshot is gated out
+        assert cache.get(zoid=1, polled_tid=150) == (b"at100", p64(100))
+
+    def test_lagging_reader_misses_entry_newer_than_snapshot(self):
+        """A reader must miss an entry committed after its snapshot (#92).
+
+        The cached version (tid 200) is newer than the reader's snapshot
+        (150), so returning it would let the reader see the future; it must
+        fall through to PostgreSQL instead.
+        """
+        cache = SharedLoadCache(max_mb=4)
+        cache.poll_advance(new_tid=200, changed_zoids=[])
+        cache.set(zoid=1, data=b"at200", tid_bytes=p64(200), polled_tid=200)
+
         assert cache.get(zoid=1, polled_tid=150) is None
 
     def test_current_reader_hits(self):

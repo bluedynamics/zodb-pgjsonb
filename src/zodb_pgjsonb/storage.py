@@ -274,19 +274,31 @@ class SharedLoadCache:
     def get(self, zoid, polled_tid):
         """Return (data, tid) for zoid or None.
 
-        Returns None when the cache has never been initialized, when
-        the caller's snapshot is older than the current consensus, or
-        when the zoid is not cached.
+        Returns None when the cache has never been initialized, when the
+        zoid is not cached, or when the cached version is newer than the
+        caller's snapshot.
+
+        The read gate is **per entry**, not global (#92).  A present entry
+        is always the current version as of ``consensus_tid``: every commit
+        drops its changed zoids at commit time (``poll_advance``), and any
+        later change drops the entry again, so a re-inserted entry carries
+        the object's true latest TID.  Therefore an entry whose TID is at or
+        below the caller's snapshot has not changed through that snapshot and
+        is exactly the version the caller must see; an entry newer than the
+        snapshot is the future and must miss (fall through to PostgreSQL).
+        This lets a reader lagging behind ``consensus_tid`` keep hitting the
+        cache for every object unchanged since its snapshot, instead of being
+        denied the whole cache.
         """
         with self._lock:
             if self._consensus_tid is None or polled_tid is None:
                 self.misses += 1
                 return None
-            if polled_tid < self._consensus_tid:
-                self.misses += 1
-                return None
             entry = self._cache.get(zoid)
             if entry is None:
+                self.misses += 1
+                return None
+            if u64(entry[1]) > polled_tid:
                 self.misses += 1
                 return None
             self._cache.move_to_end(zoid)

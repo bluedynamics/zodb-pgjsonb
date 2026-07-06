@@ -1,5 +1,7 @@
 # Shared Process-Wide LoadCache Implementation Plan
 
+> **⚠️ Partially superseded (2026-07) — read before implementing.** The **read** gate described in this plan (Task 1 / Task 2: deny the cache to any reader whose `polled_tid < consensus_tid`) was replaced by a **per-entry** gate: `SharedLoadCache.get()` now serves an entry when `entry_tid <= polled_tid` and skips it when newer, so a reader lagging behind `consensus_tid` keeps hitting L2 for every object unchanged since its snapshot. The `SharedLoadCache` structure, the **write** gate, `poll_advance`, and the L1 → L2 → PG cascade are unchanged. Do **not** re-implement the `polled_tid < consensus_tid → miss` read rule. See issue #92, PR #93, and `docs/sources/explanation/caching.md`; details at the end of this document.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Eliminate per-connection duplication of the zodb-pgjsonb LoadCache by introducing a single process-wide shared cache gated by a consensus TID for MVCC correctness (#63).
@@ -1887,3 +1889,30 @@ Plan complete and saved to `docs/superpowers/plans/2026-04-22-shared-loadcache.m
 **2. Inline Execution** — Execute tasks in this session using executing-plans, batch execution with checkpoints.
 
 Which approach?
+
+---
+
+## Update log
+
+### 2026-07 — read gate changed from coarse to per-entry (#92 / #93)
+
+This plan shipped as #63 with a **coarse read gate**: `SharedLoadCache.get()` returned a miss for *any* reader whose `polled_tid < consensus_tid` (see Task 1's `get()` body and Task 2's `test_stale_reader_bypasses_cache`). That is correct but pessimistic — during a write burst a reader a moment behind `consensus_tid` lost access to the *whole* L2 and fell through to PostgreSQL for every object (N+1), so an otherwise-warm pod served slow, cold-looking requests.
+
+#92 / #93 replaced the read gate with a **per-entry** check while leaving everything else intact:
+
+```python
+# get(): after fetching the entry
+if u64(entry[1]) > polled_tid:   # cached version newer than the reader's snapshot
+    return None                  # miss → PostgreSQL returns the correct older version
+return entry                     # entry_tid <= polled_tid → exactly the reader's version
+```
+
+A lagging reader now keeps hitting L2 for every object unchanged since its snapshot and misses only objects genuinely newer than it.
+
+Correctness rests on the invariant this plan already established: every commit drops its changed zoids from L2 at commit time (`poll_advance`, always effective because a commit TID is monotonic and above `consensus_tid`), so a *present* entry always carries the object's true latest TID. Therefore `entry_tid <= polled_tid` means the object was unchanged through the reader's snapshot.
+
+Unchanged by #93: the `SharedLoadCache` data structure, the **write** gate in `set()` (a lagging writer still must not insert a version that could shadow a newer one), `poll_advance`, LRU/byte accounting, and the L1 → L2 → PG cascade.
+
+Tests: `test_stale_reader_bypasses_cache` was replaced by `test_lagging_reader_hits_unchanged_entry` and `test_lagging_reader_misses_entry_newer_than_snapshot`; a held-snapshot integration test was added (`test_shared_load_cache_integration.py::TestPerEntryReadGate`). The existing `test_no_stale_reads_under_concurrent_writes_and_polls` concurrency stress test still applies unchanged (and fails if the per-entry check is removed).
+
+See `docs/sources/explanation/caching.md` for the current behavior.
