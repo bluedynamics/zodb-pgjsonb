@@ -356,6 +356,20 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
 
         return data, tid
 
+    def prefetch(self, oids):
+        """ZODB batch-load hint: warm the caches for *oids* in one query.
+
+        Called by ``ZODB.Connection.prefetch``.  Without this hook ZODB
+        installs a no-op fallback, so a result set (e.g. a collection listing)
+        is loaded one object at a time — N sequential ``setstate`` → ``load``
+        round-trips (the classic N+1).  Delegating to ``load_multiple`` fetches
+        the not-yet-cached oids from PostgreSQL in a single
+        ``WHERE zoid = ANY(...)`` query and populates L1/L2, so the subsequent
+        per-object loads become cache hits.  The result is discarded — this is
+        a cache-warming hint, not a return-valued load.
+        """
+        self.load_multiple(list(oids))
+
     def load_multiple(self, oids):
         """Load multiple objects in a single query.
 

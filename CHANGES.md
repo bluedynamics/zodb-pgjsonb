@@ -4,6 +4,18 @@
 
 ### Features
 
+- **Implement the ZODB `prefetch` hook** so batch loading actually works.
+  `Connection.prefetch()` calls `storage.prefetch(oids)`; zodb-pgjsonb did not
+  implement it, so ZODB installed a no-op fallback and a result set was loaded
+  one object at a time — N sequential `setstate` → `load` round-trips (the
+  classic N+1).  The hook now delegates to `load_multiple`, fetching the
+  not-yet-cached oids in a single `WHERE zoid = ANY(...)` query that warms
+  L1/L2, so the subsequent per-object loads are cache hits.  A caller (for
+  example a collection tile) that prefetches its result set turns N round-trips
+  into one.  Micro-benchmark (`benchmarks/bench_prefetch.py`), 151 objects: 151
+  → 1 round-trips; at a 20 ms per-query latency the load drops from ~3.1 s to
+  ~24 ms.
+
 - **Per-entry read gate for the shared L2 cache** (#92).  `SharedLoadCache.get`
   previously denied a connection *all* of L2 whenever its snapshot was behind
   the process-wide `consensus_tid` — so during any write burst a lagging reader
