@@ -2,6 +2,26 @@
 
 ## unreleased
 
+### Bug fixes
+
+- **Self-healing admin connection.** The storage's admin connection (`self._conn`,
+  opened once in `__init__`) had no liveness guard: once it died — a CNPG
+  switchover/failover, an operator kill, an idle timeout — every user raised
+  `psycopg.OperationalError: the connection is closed` until the process was
+  restarted, flooding logs via the metrics scrape (`len(storage)`/`getSize()`)
+  and silently stopping the cache warmer. Admin operations now reconnect on a
+  closed connection and retry once on `OperationalError` (a server-side kill is
+  only detected client-side on first use). Routed paths: `__len__`, `getSize`,
+  `get_blob_stats`, `get_blob_histogram`, `history`, `undoLog`, `current_max_tid`
+  (keeps its degrade-to-`None` contract when the DB is really unreachable),
+  `new_oid`, `load`/`loadBefore`/`loadSerial`, `loadBlob`, and the direct-use
+  tpc write path (ensure-only before `BEGIN`; no retry mid-transaction, where a
+  silent reconnect would drop the transaction block). `pack` gets an ensured
+  connection but no retry. The cache warmer now obtains the connection through
+  the storage's healing accessor instead of holding a reference that goes stale
+  on reconnect, and `close()` marks the storage so healing cannot resurrect
+  connections during shutdown. #103
+
 ### Documentation
 
 - Document the GIL convoy under concurrency: why per-load wall time inflates when

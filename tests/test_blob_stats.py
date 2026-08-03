@@ -42,6 +42,8 @@ def _make_storage(s3_client=None, blob_threshold=102400):
     storage.__class__ = _get_storage_class()
     storage._s3_client = s3_client
     storage._blob_threshold = blob_threshold
+    # Call through the self-healing wrapper (#103) with the mock conn.
+    storage._with_admin_conn = lambda fn: fn(storage._conn)
     return storage
 
 
