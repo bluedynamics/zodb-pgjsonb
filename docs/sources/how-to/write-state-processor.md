@@ -20,7 +20,6 @@ from zodb_pgjsonb import ExtraColumn
 
 
 class MyProcessor:
-
     def get_extra_columns(self):
         return [
             ExtraColumn(

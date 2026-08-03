@@ -60,7 +60,10 @@ class TestCurrentMaxTid:
 
         # MAX(tid) should match the last committed TID.
         from ZODB.utils import u64
-        assert storage_from_db(db).current_max_tid() == u64(db._storage.lastTransaction())
+
+        assert storage_from_db(db).current_max_tid() == u64(
+            db._storage.lastTransaction()
+        )
 
     def test_returns_none_on_query_failure(self, storage, caplog):
         """Closed or broken connection → log.warning + return None."""
@@ -113,22 +116,20 @@ def _read_max_tid(conn):
 Inside the `PGJsonbStorage` class (place the method near other admin-style read methods such as `__len__`/`getSize`, which are around line 1058 in the current source):
 
 ```python
-    def current_max_tid(self):
-        """Return the current MAX(tid) in transaction_log, or ``None``.
+def current_max_tid(self):
+    """Return the current MAX(tid) in transaction_log, or ``None``.
 
-        On any psycopg / DB error the failure is logged at WARNING and
-        ``None`` is returned.  ``None`` signals callers to skip any
-        work that depends on a fresh TID (e.g. the cache warmer
-        gracefully skips warmup rather than installing a fabricated
-        consensus of 0).
-        """
-        try:
-            return _read_max_tid(self._conn)
-        except Exception:
-            logger.warning(
-                "PGJsonbStorage.current_max_tid: query failed", exc_info=True
-            )
-            return None
+    On any psycopg / DB error the failure is logged at WARNING and
+    ``None`` is returned.  ``None`` signals callers to skip any
+    work that depends on a fresh TID (e.g. the cache warmer
+    gracefully skips warmup rather than installing a fabricated
+    consensus of 0).
+    """
+    try:
+        return _read_max_tid(self._conn)
+    except Exception:
+        logger.warning("PGJsonbStorage.current_max_tid: query failed", exc_info=True)
+        return None
 ```
 
 - [ ] **Step 4: Run the new tests**
@@ -189,48 +190,46 @@ The surrounding body stays the same.
 In `src/zodb_pgjsonb/cache_warmer.py`, find `warm()` (around line 125). Replace the body up to the `shared.poll_advance` call with:
 
 ```python
-    def warm(self, load_multiple_fn):
-        """Load top-N ZOIDs into the shared cache.
+def warm(self, load_multiple_fn):
+    """Load top-N ZOIDs into the shared cache.
 
-        Runs in a background daemon thread.  Primes the consensus TID
-        on the shared cache to the current PG max_tid so that
-        subsequent ``shared.set`` calls are accepted.  Skips warmup
-        entirely when the TID is unavailable.
-        """
-        from ZODB.utils import p64
-        from ZODB.utils import u64
+    Runs in a background daemon thread.  Primes the consensus TID
+    on the shared cache to the current PG max_tid so that
+    subsequent ``shared.set`` calls are accepted.  Skips warmup
+    entirely when the TID is unavailable.
+    """
+    from ZODB.utils import p64
+    from ZODB.utils import u64
 
-        top_zoids = self._read_top_oids()
-        if not top_zoids:
-            log.info("Cache warmer: no stats yet, skipping warmup")
-            return
+    top_zoids = self._read_top_oids()
+    if not top_zoids:
+        log.info("Cache warmer: no stats yet, skipping warmup")
+        return
 
-        current_tid = self._load_current_tid_fn()
-        if current_tid is None:
-            log.warning(
-                "Cache warmer: could not read current TID, skipping warmup"
-            )
-            return
+    current_tid = self._load_current_tid_fn()
+    if current_tid is None:
+        log.warning("Cache warmer: could not read current TID, skipping warmup")
+        return
 
-        oids = [p64(z) for z in top_zoids]
-        try:
-            results = load_multiple_fn(oids)
-        except Exception:
-            log.warning("Cache warmer: load_multiple failed", exc_info=True)
-            return
+    oids = [p64(z) for z in top_zoids]
+    try:
+        results = load_multiple_fn(oids)
+    except Exception:
+        log.warning("Cache warmer: load_multiple failed", exc_info=True)
+        return
 
-        # Prime consensus so set() accepts our writes, then populate.
-        self._shared_cache.poll_advance(new_tid=current_tid, changed_zoids=[])
-        written = 0
-        for oid, (data, tid_bytes) in results.items():
-            self._shared_cache.set(
-                zoid=u64(oid),
-                data=data,
-                tid_bytes=tid_bytes,
-                polled_tid=current_tid,
-            )
-            written += 1
-        log.info("Cache warmer: loaded %d objects into shared cache", written)
+    # Prime consensus so set() accepts our writes, then populate.
+    self._shared_cache.poll_advance(new_tid=current_tid, changed_zoids=[])
+    written = 0
+    for oid, (data, tid_bytes) in results.items():
+        self._shared_cache.set(
+            zoid=u64(oid),
+            data=data,
+            tid_bytes=tid_bytes,
+            polled_tid=current_tid,
+        )
+        written += 1
+    log.info("Cache warmer: loaded %d objects into shared cache", written)
 ```
 
 Note: the `current_tid is None` guard is the new behaviour. The race fix + written-count correctness is in Task 3 — Task 1 leaves the write loop as-is.
@@ -304,33 +303,25 @@ class TestSharedLoadCacheAPIExtensions:
     def test_set_returns_true_on_accept(self):
         cache = SharedLoadCache(max_mb=4)
         cache.poll_advance(new_tid=100, changed_zoids=[])
-        accepted = cache.set(
-            zoid=1, data=b"xyz", tid_bytes=p64(100), polled_tid=100
-        )
+        accepted = cache.set(zoid=1, data=b"xyz", tid_bytes=p64(100), polled_tid=100)
         assert accepted is True
 
     def test_set_returns_false_when_consensus_uninitialized(self):
         cache = SharedLoadCache(max_mb=4)
-        accepted = cache.set(
-            zoid=1, data=b"xyz", tid_bytes=p64(100), polled_tid=100
-        )
+        accepted = cache.set(zoid=1, data=b"xyz", tid_bytes=p64(100), polled_tid=100)
         assert accepted is False
 
     def test_set_returns_false_for_stale_writer(self):
         cache = SharedLoadCache(max_mb=4)
         cache.poll_advance(new_tid=200, changed_zoids=[])
-        accepted = cache.set(
-            zoid=1, data=b"xyz", tid_bytes=p64(100), polled_tid=100
-        )
+        accepted = cache.set(zoid=1, data=b"xyz", tid_bytes=p64(100), polled_tid=100)
         assert accepted is False
 
     def test_set_returns_false_when_older_than_existing(self):
         cache = SharedLoadCache(max_mb=4)
         cache.poll_advance(new_tid=200, changed_zoids=[])
         cache.set(zoid=1, data=b"new", tid_bytes=p64(200), polled_tid=200)
-        accepted = cache.set(
-            zoid=1, data=b"older", tid_bytes=p64(100), polled_tid=200
-        )
+        accepted = cache.set(zoid=1, data=b"older", tid_bytes=p64(100), polled_tid=200)
         assert accepted is False
 ```
 
@@ -480,9 +471,9 @@ class TestWarmerRaceRecovery:
             w.warm(loader)
 
         warnings = [
-            r for r in caplog.records
-            if r.levelno == logging.WARNING
-            and "rejected" in r.getMessage().lower()
+            r
+            for r in caplog.records
+            if r.levelno == logging.WARNING and "rejected" in r.getMessage().lower()
         ]
         assert warnings, (
             f"expected a WARNING about rejected writes, got: "
@@ -511,13 +502,12 @@ class TestWarmerRaceRecovery:
 
         warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
         assert not warnings, (
-            f"expected no warnings, got: "
-            f"{[r.getMessage() for r in warnings]}"
+            f"expected no warnings, got: {[r.getMessage() for r in warnings]}"
         )
         infos = [
-            r for r in caplog.records
-            if r.levelno == logging.INFO
-            and "loaded 2 objects" in r.getMessage()
+            r
+            for r in caplog.records
+            if r.levelno == logging.INFO and "loaded 2 objects" in r.getMessage()
         ]
         assert infos, (
             f"expected INFO with loaded count, got: "
@@ -535,87 +525,85 @@ Expected: all 3 FAIL. `test_warm_uses_effective_consensus_when_race_advances_it`
 In `src/zodb_pgjsonb/cache_warmer.py`, replace the entire `warm` method (currently around line 125-160) with:
 
 ```python
-    def warm(self, load_multiple_fn):
-        """Load top-N ZOIDs into the shared cache.
+def warm(self, load_multiple_fn):
+    """Load top-N ZOIDs into the shared cache.
 
-        Runs in a background daemon thread.  Primes the consensus TID
-        on the shared cache to the current PG max_tid so that
-        subsequent ``shared.set`` calls are accepted.  Re-reads
-        consensus after ``poll_advance`` and uses that as the
-        ``polled_tid`` for set calls — this is the mitigation for the
-        startup race where an instance's poll advances consensus past
-        the warmer's sampled TID before the set loop begins.
+    Runs in a background daemon thread.  Primes the consensus TID
+    on the shared cache to the current PG max_tid so that
+    subsequent ``shared.set`` calls are accepted.  Re-reads
+    consensus after ``poll_advance`` and uses that as the
+    ``polled_tid`` for set calls — this is the mitigation for the
+    startup race where an instance's poll advances consensus past
+    the warmer's sampled TID before the set loop begins.
 
-        Skips warmup when the TID is unavailable.  Logs a WARNING when
-        every set() was rejected despite a non-empty result set (a
-        likely sign of the race being wider than this mitigation
-        covers).
-        """
-        from ZODB.utils import p64
-        from ZODB.utils import u64
+    Skips warmup when the TID is unavailable.  Logs a WARNING when
+    every set() was rejected despite a non-empty result set (a
+    likely sign of the race being wider than this mitigation
+    covers).
+    """
+    from ZODB.utils import p64
+    from ZODB.utils import u64
 
-        top_zoids = self._read_top_oids()
-        if not top_zoids:
-            log.info("Cache warmer: no stats yet, skipping warmup")
-            return
+    top_zoids = self._read_top_oids()
+    if not top_zoids:
+        log.info("Cache warmer: no stats yet, skipping warmup")
+        return
 
-        current_tid = self._load_current_tid_fn()
-        if current_tid is None:
-            log.warning(
-                "Cache warmer: could not read current TID, skipping warmup"
-            )
-            return
+    current_tid = self._load_current_tid_fn()
+    if current_tid is None:
+        log.warning("Cache warmer: could not read current TID, skipping warmup")
+        return
 
-        oids = [p64(z) for z in top_zoids]
-        try:
-            results = load_multiple_fn(oids)
-        except Exception:
-            log.warning("Cache warmer: load_multiple failed", exc_info=True)
-            return
+    oids = [p64(z) for z in top_zoids]
+    try:
+        results = load_multiple_fn(oids)
+    except Exception:
+        log.warning("Cache warmer: load_multiple failed", exc_info=True)
+        return
 
-        if not results:
-            log.info("Cache warmer: load_multiple returned no objects")
-            return
+    if not results:
+        log.info("Cache warmer: load_multiple returned no objects")
+        return
 
-        # Prime consensus so set() accepts our writes.  Another instance
-        # may have advanced consensus beyond our sampled current_tid
-        # already — in that case poll_advance is a no-op, and the actual
-        # consensus is higher than current_tid.  Re-read it so our
-        # subsequent set() calls use the effective consensus as their
-        # polled_tid and pass the gate.
-        self._shared_cache.poll_advance(new_tid=current_tid, changed_zoids=[])
-        effective_tid = self._shared_cache.consensus_tid
-        if effective_tid is None:  # guarded for paranoia; should not happen
-            log.warning("Cache warmer: consensus still None after poll_advance")
-            return
+    # Prime consensus so set() accepts our writes.  Another instance
+    # may have advanced consensus beyond our sampled current_tid
+    # already — in that case poll_advance is a no-op, and the actual
+    # consensus is higher than current_tid.  Re-read it so our
+    # subsequent set() calls use the effective consensus as their
+    # polled_tid and pass the gate.
+    self._shared_cache.poll_advance(new_tid=current_tid, changed_zoids=[])
+    effective_tid = self._shared_cache.consensus_tid
+    if effective_tid is None:  # guarded for paranoia; should not happen
+        log.warning("Cache warmer: consensus still None after poll_advance")
+        return
 
-        written = 0
-        attempted = 0
-        for oid, (data, tid_bytes) in results.items():
-            attempted += 1
-            if self._shared_cache.set(
-                zoid=u64(oid),
-                data=data,
-                tid_bytes=tid_bytes,
-                polled_tid=effective_tid,
-            ):
-                written += 1
+    written = 0
+    attempted = 0
+    for oid, (data, tid_bytes) in results.items():
+        attempted += 1
+        if self._shared_cache.set(
+            zoid=u64(oid),
+            data=data,
+            tid_bytes=tid_bytes,
+            polled_tid=effective_tid,
+        ):
+            written += 1
 
-        if written == 0:
-            log.warning(
-                "Cache warmer: all %d set() calls rejected by shared cache "
-                "(consensus=%d, sampled_tid=%d) — likely raced with a "
-                "concurrent instance poll",
-                attempted,
-                effective_tid,
-                current_tid,
-            )
-        else:
-            log.info(
-                "Cache warmer: loaded %d of %d objects into shared cache",
-                written,
-                attempted,
-            )
+    if written == 0:
+        log.warning(
+            "Cache warmer: all %d set() calls rejected by shared cache "
+            "(consensus=%d, sampled_tid=%d) — likely raced with a "
+            "concurrent instance poll",
+            attempted,
+            effective_tid,
+            current_tid,
+        )
+    else:
+        log.info(
+            "Cache warmer: loaded %d of %d objects into shared cache",
+            written,
+            attempted,
+        )
 ```
 
 - [ ] **Step 4: Run the new tests**

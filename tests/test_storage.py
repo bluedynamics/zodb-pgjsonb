@@ -722,15 +722,20 @@ class TestCurrentMaxTid:
         assert db.storage.current_max_tid() == u64(db.storage.lastTransaction())
 
     def test_returns_none_on_query_failure(self, storage, caplog):
-        """Closed or broken connection → log.warning + return None."""
+        """Unreachable database → log.warning + return None.
+
+        A merely closed connection is healed by reconnecting since
+        #103, so simulate a database that is really gone: the reconnect
+        attempt itself must fail for the degrade-to-None contract.
+        """
         import logging
 
-        # Close the underlying connection out from under the storage
-        # to simulate a broken/terminated session.
         storage._conn.close()
+        storage._dsn = "postgresql://zodb:zodb@127.0.0.1:9/zodb_test"
 
         with caplog.at_level(logging.WARNING, logger="zodb_pgjsonb.storage"):
             assert storage.current_max_tid() is None
+        storage._dsn = DSN
         assert any(
             "current_max_tid" in rec.getMessage().lower()
             or "max tid" in rec.getMessage().lower()

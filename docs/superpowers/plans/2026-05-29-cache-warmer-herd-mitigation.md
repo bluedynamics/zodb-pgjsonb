@@ -19,8 +19,8 @@
 **Lock keyspace constants** (defined in `cache_warmer.py`):
 
 ```python
-WARMER_LOCK_NS = 0x5A4442    # shared "ZDB" namespace (matches startup_locks.py)
-WARMER_SLOT_BASE = 100       # slot keys are WARMER_SLOT_BASE + i for i in 1..concurrency
+WARMER_LOCK_NS = 0x5A4442  # shared "ZDB" namespace (matches startup_locks.py)
+WARMER_SLOT_BASE = 100  # slot keys are WARMER_SLOT_BASE + i for i in 1..concurrency
 ```
 
 ---
@@ -182,59 +182,62 @@ git commit -m "feat(warmer): add six herd-mitigation kwargs (off defaults) (#59)
 Add to `tests/test_cache_warmer.py` inside `TestCacheWarmerWarm`:
 
 ```python
-    def test_warm_sleeps_delay_plus_jitter(self):
-        from ZODB.utils import p64
-        from zodb_pgjsonb.cache_warmer import CacheWarmer
-        from zodb_pgjsonb.storage import SharedLoadCache
+def test_warm_sleeps_delay_plus_jitter(self):
+    from ZODB.utils import p64
+    from zodb_pgjsonb.cache_warmer import CacheWarmer
+    from zodb_pgjsonb.storage import SharedLoadCache
 
-        shared = SharedLoadCache(max_mb=4)
-        w = CacheWarmer(
-            conn=_FakeConn(top_oids=[1, 2]),
-            target_count=10,
-            shared_cache=shared,
-            load_current_tid_fn=lambda: 100,
-            delay=15,
-            jitter=30,
-        )
+    shared = SharedLoadCache(max_mb=4)
+    w = CacheWarmer(
+        conn=_FakeConn(top_oids=[1, 2]),
+        target_count=10,
+        shared_cache=shared,
+        load_current_tid_fn=lambda: 100,
+        delay=15,
+        jitter=30,
+    )
 
-        def loader(oids):
-            return {oid: (b"data-" + oid, p64(50)) for oid in oids}
+    def loader(oids):
+        return {oid: (b"data-" + oid, p64(50)) for oid in oids}
 
-        with mock.patch("zodb_pgjsonb.cache_warmer.time.sleep") as mock_sleep, \
-             mock.patch(
-                 "zodb_pgjsonb.cache_warmer.random.uniform",
-                 return_value=7.0,
-             ):
-            w.warm(loader)
+    with (
+        mock.patch("zodb_pgjsonb.cache_warmer.time.sleep") as mock_sleep,
+        mock.patch(
+            "zodb_pgjsonb.cache_warmer.random.uniform",
+            return_value=7.0,
+        ),
+    ):
+        w.warm(loader)
 
-        # First sleep call should be delay + uniform(0, jitter) = 15 + 7 = 22
-        assert mock_sleep.call_args_list[0] == mock.call(22.0)
+    # First sleep call should be delay + uniform(0, jitter) = 15 + 7 = 22
+    assert mock_sleep.call_args_list[0] == mock.call(22.0)
 
-    def test_warm_no_sleep_when_disabled(self):
-        from ZODB.utils import p64
-        from zodb_pgjsonb.cache_warmer import CacheWarmer
-        from zodb_pgjsonb.storage import SharedLoadCache
 
-        shared = SharedLoadCache(max_mb=4)
-        w = CacheWarmer(
-            conn=_FakeConn(top_oids=[1, 2]),
-            target_count=10,
-            shared_cache=shared,
-            load_current_tid_fn=lambda: 100,
-            delay=0,
-            jitter=0,
-        )
+def test_warm_no_sleep_when_disabled(self):
+    from ZODB.utils import p64
+    from zodb_pgjsonb.cache_warmer import CacheWarmer
+    from zodb_pgjsonb.storage import SharedLoadCache
 
-        def loader(oids):
-            return {oid: (b"data-" + oid, p64(50)) for oid in oids}
+    shared = SharedLoadCache(max_mb=4)
+    w = CacheWarmer(
+        conn=_FakeConn(top_oids=[1, 2]),
+        target_count=10,
+        shared_cache=shared,
+        load_current_tid_fn=lambda: 100,
+        delay=0,
+        jitter=0,
+    )
 
-        with mock.patch("zodb_pgjsonb.cache_warmer.time.sleep") as mock_sleep:
-            w.warm(loader)
+    def loader(oids):
+        return {oid: (b"data-" + oid, p64(50)) for oid in oids}
 
-        # When both delay and jitter are zero, no initial sleep call.
-        # (Subsequent calls from batching may exist; check no call with > 0.)
-        for c in mock_sleep.call_args_list:
-            assert c.args[0] == 0 or c.args == ()
+    with mock.patch("zodb_pgjsonb.cache_warmer.time.sleep") as mock_sleep:
+        w.warm(loader)
+
+    # When both delay and jitter are zero, no initial sleep call.
+    # (Subsequent calls from batching may exist; check no call with > 0.)
+    for c in mock_sleep.call_args_list:
+        assert c.args[0] == 0 or c.args == ()
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -309,63 +312,64 @@ git commit -m "feat(warmer): A2+A1 — startup delay + jitter sleep (#59)"
 Add to `tests/test_cache_warmer.py` inside `TestCacheWarmerWarm`:
 
 ```python
-    def test_warm_batches_with_pause(self):
-        from ZODB.utils import p64
-        from zodb_pgjsonb.cache_warmer import CacheWarmer
-        from zodb_pgjsonb.storage import SharedLoadCache
+def test_warm_batches_with_pause(self):
+    from ZODB.utils import p64
+    from zodb_pgjsonb.cache_warmer import CacheWarmer
+    from zodb_pgjsonb.storage import SharedLoadCache
 
-        # 1100 OIDs at batch_size=500 → 3 batches (500+500+100),
-        # 2 inter-batch sleeps (after batches 1 and 2, not after 3).
-        top = list(range(1, 1101))
-        shared = SharedLoadCache(max_mb=64)
-        w = CacheWarmer(
-            conn=_FakeConn(top_oids=top),
-            target_count=1100,
-            shared_cache=shared,
-            load_current_tid_fn=lambda: 100,
-            batch_size=500,
-            batch_pause=0.25,
-        )
+    # 1100 OIDs at batch_size=500 → 3 batches (500+500+100),
+    # 2 inter-batch sleeps (after batches 1 and 2, not after 3).
+    top = list(range(1, 1101))
+    shared = SharedLoadCache(max_mb=64)
+    w = CacheWarmer(
+        conn=_FakeConn(top_oids=top),
+        target_count=1100,
+        shared_cache=shared,
+        load_current_tid_fn=lambda: 100,
+        batch_size=500,
+        batch_pause=0.25,
+    )
 
-        call_chunks = []
+    call_chunks = []
 
-        def loader(oids):
-            call_chunks.append(len(oids))
-            return {oid: (b"x", p64(50)) for oid in oids}
+    def loader(oids):
+        call_chunks.append(len(oids))
+        return {oid: (b"x", p64(50)) for oid in oids}
 
-        with mock.patch("zodb_pgjsonb.cache_warmer.time.sleep") as mock_sleep:
-            w.warm(loader)
+    with mock.patch("zodb_pgjsonb.cache_warmer.time.sleep") as mock_sleep:
+        w.warm(loader)
 
-        # Three loader calls, sizes 500, 500, 100.
-        assert call_chunks == [500, 500, 100]
-        # Exactly two batch_pause sleeps of 0.25 (no trailing).
-        pause_calls = [c for c in mock_sleep.call_args_list if c.args == (0.25,)]
-        assert len(pause_calls) == 2
+    # Three loader calls, sizes 500, 500, 100.
+    assert call_chunks == [500, 500, 100]
+    # Exactly two batch_pause sleeps of 0.25 (no trailing).
+    pause_calls = [c for c in mock_sleep.call_args_list if c.args == (0.25,)]
+    assert len(pause_calls) == 2
 
-    def test_warm_single_batch_no_pause(self):
-        from ZODB.utils import p64
-        from zodb_pgjsonb.cache_warmer import CacheWarmer
-        from zodb_pgjsonb.storage import SharedLoadCache
 
-        shared = SharedLoadCache(max_mb=4)
-        w = CacheWarmer(
-            conn=_FakeConn(top_oids=[1, 2, 3]),
-            target_count=10,
-            shared_cache=shared,
-            load_current_tid_fn=lambda: 100,
-            batch_size=500,
-            batch_pause=0.5,
-        )
+def test_warm_single_batch_no_pause(self):
+    from ZODB.utils import p64
+    from zodb_pgjsonb.cache_warmer import CacheWarmer
+    from zodb_pgjsonb.storage import SharedLoadCache
 
-        def loader(oids):
-            return {oid: (b"x", p64(50)) for oid in oids}
+    shared = SharedLoadCache(max_mb=4)
+    w = CacheWarmer(
+        conn=_FakeConn(top_oids=[1, 2, 3]),
+        target_count=10,
+        shared_cache=shared,
+        load_current_tid_fn=lambda: 100,
+        batch_size=500,
+        batch_pause=0.5,
+    )
 
-        with mock.patch("zodb_pgjsonb.cache_warmer.time.sleep") as mock_sleep:
-            w.warm(loader)
+    def loader(oids):
+        return {oid: (b"x", p64(50)) for oid in oids}
 
-        # Single batch → zero batch_pause sleeps.
-        pause_calls = [c for c in mock_sleep.call_args_list if c.args == (0.5,)]
-        assert pause_calls == []
+    with mock.patch("zodb_pgjsonb.cache_warmer.time.sleep") as mock_sleep:
+        w.warm(loader)
+
+    # Single batch → zero batch_pause sleeps.
+    pause_calls = [c for c in mock_sleep.call_args_list if c.args == (0.5,)]
+    assert pause_calls == []
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -378,72 +382,69 @@ Expected: FAIL — `assert call_chunks == [500, 500, 100]` fails because loader 
 Modify `src/zodb_pgjsonb/cache_warmer.py`. Replace lines 154-203 (everything from `oids = [p64(z) for z in top_zoids]` to the end of the function) with:
 
 ```python
-        # Prime consensus so set() accepts our writes.  Another instance
-        # may have advanced consensus beyond our sampled current_tid
-        # already — in that case poll_advance is a no-op, and the actual
-        # consensus is higher than current_tid.  Re-read it so our
-        # subsequent set() calls use the effective consensus as their
-        # polled_tid and pass the gate.
-        self._shared_cache.poll_advance(new_tid=current_tid, changed_zoids=[])
-        effective_tid = self._shared_cache.consensus_tid
-        if effective_tid is None:  # guarded for paranoia; should not happen
-            log.warning("Cache warmer: consensus still None after poll_advance")
-            return
+# Prime consensus so set() accepts our writes.  Another instance
+# may have advanced consensus beyond our sampled current_tid
+# already — in that case poll_advance is a no-op, and the actual
+# consensus is higher than current_tid.  Re-read it so our
+# subsequent set() calls use the effective consensus as their
+# polled_tid and pass the gate.
+self._shared_cache.poll_advance(new_tid=current_tid, changed_zoids=[])
+effective_tid = self._shared_cache.consensus_tid
+if effective_tid is None:  # guarded for paranoia; should not happen
+    log.warning("Cache warmer: consensus still None after poll_advance")
+    return
 
-        # A3 (#59): batch the fetches and pause between them so a single
-        # pod's warmup doesn't burst the connection pool / DB CPU.
-        batch_size = max(1, self._batch_size)
-        batches = [
-            top_zoids[i:i + batch_size]
-            for i in range(0, len(top_zoids), batch_size)
-        ]
-        written = 0
-        attempted = 0
-        for batch_idx, batch in enumerate(batches):
-            oids = [p64(z) for z in batch]
-            try:
-                results = load_multiple_fn(oids)
-            except Exception:
-                log.warning(
-                    "Cache warmer: load_multiple failed at batch %d/%d",
-                    batch_idx + 1, len(batches),
-                    exc_info=True,
-                )
-                return
-            for oid, (data, tid_bytes) in results.items():
-                attempted += 1
-                if self._shared_cache.set(
-                    zoid=u64(oid),
-                    data=data,
-                    tid_bytes=tid_bytes,
-                    polled_tid=effective_tid,
-                ):
-                    written += 1
-            # Pause only between batches, never after the last.
-            if batch_idx < len(batches) - 1 and self._batch_pause > 0:
-                time.sleep(self._batch_pause)
+# A3 (#59): batch the fetches and pause between them so a single
+# pod's warmup doesn't burst the connection pool / DB CPU.
+batch_size = max(1, self._batch_size)
+batches = [top_zoids[i : i + batch_size] for i in range(0, len(top_zoids), batch_size)]
+written = 0
+attempted = 0
+for batch_idx, batch in enumerate(batches):
+    oids = [p64(z) for z in batch]
+    try:
+        results = load_multiple_fn(oids)
+    except Exception:
+        log.warning(
+            "Cache warmer: load_multiple failed at batch %d/%d",
+            batch_idx + 1,
+            len(batches),
+            exc_info=True,
+        )
+        return
+    for oid, (data, tid_bytes) in results.items():
+        attempted += 1
+        if self._shared_cache.set(
+            zoid=u64(oid),
+            data=data,
+            tid_bytes=tid_bytes,
+            polled_tid=effective_tid,
+        ):
+            written += 1
+    # Pause only between batches, never after the last.
+    if batch_idx < len(batches) - 1 and self._batch_pause > 0:
+        time.sleep(self._batch_pause)
 
-        if attempted == 0:
-            log.info("Cache warmer: load_multiple returned no objects")
-            return
+if attempted == 0:
+    log.info("Cache warmer: load_multiple returned no objects")
+    return
 
-        if written == 0:
-            log.warning(
-                "Cache warmer: all %d set() calls rejected by shared cache "
-                "(consensus=%d, sampled_tid=%d) — likely raced with a "
-                "concurrent instance poll",
-                attempted,
-                effective_tid,
-                current_tid,
-            )
-        else:
-            log.info(
-                "Cache warmer: loaded %d of %d objects into shared cache "
-                "(%d batches)",
-                written,
-                attempted,
-                len(batches),
-            )
+if written == 0:
+    log.warning(
+        "Cache warmer: all %d set() calls rejected by shared cache "
+        "(consensus=%d, sampled_tid=%d) — likely raced with a "
+        "concurrent instance poll",
+        attempted,
+        effective_tid,
+        current_tid,
+    )
+else:
+    log.info(
+        "Cache warmer: loaded %d of %d objects into shared cache (%d batches)",
+        written,
+        attempted,
+        len(batches),
+    )
 ```
 
 Note: this replaces the prior `try/except` around the single `load_multiple_fn` call (lines 155-159) and the prior `if not results` early-return (lines 161-163). The empty-result case is now detected via `attempted == 0` after the loop.
@@ -497,7 +498,9 @@ class TestCacheWarmerSlot:
                 if "pg_try_advisory_lock" in sql:
                     i = call_count[0]
                     call_count[0] += 1
-                    self._row = (slot_results[i],) if i < len(slot_results) else (False,)
+                    self._row = (
+                        (slot_results[i],) if i < len(slot_results) else (False,)
+                    )
                 else:
                     self._row = None
                 return self
@@ -572,41 +575,42 @@ Modify `src/zodb_pgjsonb/cache_warmer.py`. After the existing `WARM_STATS_DDL = 
 ```python
 # Advisory-lock keyspace for B2b inter-pod warmer semaphore (#59).
 # Same namespace as startup_locks.py (separate keys).
-WARMER_LOCK_NS = 0x5A4442    # "ZDB"
-WARMER_SLOT_BASE = 100       # slot keys are WARMER_SLOT_BASE + i for i in 1..N
+WARMER_LOCK_NS = 0x5A4442  # "ZDB"
+WARMER_SLOT_BASE = 100  # slot keys are WARMER_SLOT_BASE + i for i in 1..N
 ```
 
 Then add a new method on `CacheWarmer` (place it just before the `# ── Warming phase ──` comment, so it sits between the recording phase and the warming phase):
 
 ```python
-    # ── B2b slot acquisition (#59) ───────────────────────────────────
+# ── B2b slot acquisition (#59) ───────────────────────────────────
 
-    def _try_acquire_slot_once(self, lock_conn):
-        """Try each slot 1..concurrency once.  Returns the acquired
-        slot number, or None if all slots are taken.
 
-        ``lock_conn`` must be an autocommit psycopg connection
-        dedicated to holding the session-level advisory lock.
-        """
-        for slot in range(1, self._concurrency + 1):
-            key = WARMER_SLOT_BASE + slot
-            try:
-                with lock_conn.cursor() as cur:
-                    cur.execute(
-                        "SELECT pg_try_advisory_lock(%s, %s)",
-                        (WARMER_LOCK_NS, key),
-                    )
-                    row = cur.fetchone()
-            except Exception:
-                log.warning(
-                    "Cache warmer: pg_try_advisory_lock raised for slot %d",
-                    slot,
-                    exc_info=True,
+def _try_acquire_slot_once(self, lock_conn):
+    """Try each slot 1..concurrency once.  Returns the acquired
+    slot number, or None if all slots are taken.
+
+    ``lock_conn`` must be an autocommit psycopg connection
+    dedicated to holding the session-level advisory lock.
+    """
+    for slot in range(1, self._concurrency + 1):
+        key = WARMER_SLOT_BASE + slot
+        try:
+            with lock_conn.cursor() as cur:
+                cur.execute(
+                    "SELECT pg_try_advisory_lock(%s, %s)",
+                    (WARMER_LOCK_NS, key),
                 )
-                return None
-            if row and row[0]:
-                return slot
-        return None
+                row = cur.fetchone()
+        except Exception:
+            log.warning(
+                "Cache warmer: pg_try_advisory_lock raised for slot %d",
+                slot,
+                exc_info=True,
+            )
+            return None
+        if row and row[0]:
+            return slot
+    return None
 ```
 
 Note: `row[0]` indexes the tuple from a default psycopg cursor (the `_LockCursor` in the test returns a tuple). The real production lock connection is opened without `row_factory=dict_row`, so it also yields tuples. This is intentional — the dedicated lock connection is plain.
@@ -637,96 +641,104 @@ git commit -m "feat(warmer): B2b — _try_acquire_slot_once helper (#59)"
 Add to `tests/test_cache_warmer.py` inside `TestCacheWarmerSlot`:
 
 ```python
-    def test_acquire_slot_succeeds_after_retries(self):
-        from zodb_pgjsonb.cache_warmer import CacheWarmer
+def test_acquire_slot_succeeds_after_retries(self):
+    from zodb_pgjsonb.cache_warmer import CacheWarmer
 
-        # First two attempts: all slots taken.  Third attempt: slot 1 free.
-        # With concurrency=2 that's 2 + 2 + 1 = 5 try-lock calls before success.
-        slot_results = [False, False] + [False, False] + [True]
-        lock_conn = self._make_lock_conn(slot_results=slot_results)
+    # First two attempts: all slots taken.  Third attempt: slot 1 free.
+    # With concurrency=2 that's 2 + 2 + 1 = 5 try-lock calls before success.
+    slot_results = [False, False] + [False, False] + [True]
+    lock_conn = self._make_lock_conn(slot_results=slot_results)
 
-        w = CacheWarmer(
-            conn=mock.Mock(),
-            target_count=10,
-            shared_cache=_mk_shared_cache(),
-            load_current_tid_fn=lambda: 100,
-            dsn="dbname=ignored",
-            concurrency=2,
-            wait_max=30,
-        )
+    w = CacheWarmer(
+        conn=mock.Mock(),
+        target_count=10,
+        shared_cache=_mk_shared_cache(),
+        load_current_tid_fn=lambda: 100,
+        dsn="dbname=ignored",
+        concurrency=2,
+        wait_max=30,
+    )
 
-        # Patch psycopg.connect to return our pre-built lock_conn, and
-        # patch sleep so the test doesn't actually wait.
-        with mock.patch(
+    # Patch psycopg.connect to return our pre-built lock_conn, and
+    # patch sleep so the test doesn't actually wait.
+    with (
+        mock.patch(
             "zodb_pgjsonb.cache_warmer.psycopg.connect",
             return_value=lock_conn,
-        ), mock.patch(
-            "zodb_pgjsonb.cache_warmer.time.sleep"
-        ), mock.patch(
+        ),
+        mock.patch("zodb_pgjsonb.cache_warmer.time.sleep"),
+        mock.patch(
             "zodb_pgjsonb.cache_warmer.random.uniform",
             return_value=3.0,
-        ), mock.patch(
+        ),
+        mock.patch(
             "zodb_pgjsonb.cache_warmer.time.monotonic",
             side_effect=[0, 3, 6, 9],
-        ):
-            conn, slot = w._acquire_slot()
+        ),
+    ):
+        conn, slot = w._acquire_slot()
 
-        assert conn is lock_conn
-        assert slot == 1
+    assert conn is lock_conn
+    assert slot == 1
 
-    def test_acquire_slot_times_out(self):
-        from zodb_pgjsonb.cache_warmer import CacheWarmer
 
-        # All slots permanently taken.
-        lock_conn = self._make_lock_conn(slot_results=[False] * 100)
+def test_acquire_slot_times_out(self):
+    from zodb_pgjsonb.cache_warmer import CacheWarmer
 
-        w = CacheWarmer(
-            conn=mock.Mock(),
-            target_count=10,
-            shared_cache=_mk_shared_cache(),
-            load_current_tid_fn=lambda: 100,
-            dsn="dbname=ignored",
-            concurrency=2,
-            wait_max=10,
-        )
+    # All slots permanently taken.
+    lock_conn = self._make_lock_conn(slot_results=[False] * 100)
 
-        # monotonic side_effect: simulate 0s, 3s, 6s, 9s, 12s — wait_max hit.
-        with mock.patch(
+    w = CacheWarmer(
+        conn=mock.Mock(),
+        target_count=10,
+        shared_cache=_mk_shared_cache(),
+        load_current_tid_fn=lambda: 100,
+        dsn="dbname=ignored",
+        concurrency=2,
+        wait_max=10,
+    )
+
+    # monotonic side_effect: simulate 0s, 3s, 6s, 9s, 12s — wait_max hit.
+    with (
+        mock.patch(
             "zodb_pgjsonb.cache_warmer.psycopg.connect",
             return_value=lock_conn,
-        ), mock.patch(
-            "zodb_pgjsonb.cache_warmer.time.sleep"
-        ), mock.patch(
+        ),
+        mock.patch("zodb_pgjsonb.cache_warmer.time.sleep"),
+        mock.patch(
             "zodb_pgjsonb.cache_warmer.random.uniform",
             return_value=3.0,
-        ), mock.patch(
+        ),
+        mock.patch(
             "zodb_pgjsonb.cache_warmer.time.monotonic",
             side_effect=[0, 3, 6, 9, 12],
-        ):
-            result = w._acquire_slot()
+        ),
+    ):
+        result = w._acquire_slot()
 
-        assert result is None
+    assert result is None
 
-    def test_acquire_slot_handles_connect_failure(self):
-        from zodb_pgjsonb.cache_warmer import CacheWarmer
 
-        w = CacheWarmer(
-            conn=mock.Mock(),
-            target_count=10,
-            shared_cache=_mk_shared_cache(),
-            load_current_tid_fn=lambda: 100,
-            dsn="dbname=ignored",
-            concurrency=2,
-            wait_max=30,
-        )
+def test_acquire_slot_handles_connect_failure(self):
+    from zodb_pgjsonb.cache_warmer import CacheWarmer
 
-        with mock.patch(
-            "zodb_pgjsonb.cache_warmer.psycopg.connect",
-            side_effect=RuntimeError("connect refused"),
-        ):
-            result = w._acquire_slot()
+    w = CacheWarmer(
+        conn=mock.Mock(),
+        target_count=10,
+        shared_cache=_mk_shared_cache(),
+        load_current_tid_fn=lambda: 100,
+        dsn="dbname=ignored",
+        concurrency=2,
+        wait_max=30,
+    )
 
-        assert result is None
+    with mock.patch(
+        "zodb_pgjsonb.cache_warmer.psycopg.connect",
+        side_effect=RuntimeError("connect refused"),
+    ):
+        result = w._acquire_slot()
+
+    assert result is None
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -750,68 +762,70 @@ import psycopg
 Then add the `_acquire_slot` method on `CacheWarmer`, immediately after `_try_acquire_slot_once`:
 
 ```python
-    def _acquire_slot(self):
-        """Acquire one of ``concurrency`` cluster-wide slots.
+def _acquire_slot(self):
+    """Acquire one of ``concurrency`` cluster-wide slots.
 
-        Opens a dedicated autocommit psycopg connection and tries each
-        slot via ``_try_acquire_slot_once`` in a retry loop.  Returns
-        ``(lock_conn, slot)`` on success or ``None`` on timeout / open
-        failure.
+    Opens a dedicated autocommit psycopg connection and tries each
+    slot via ``_try_acquire_slot_once`` in a retry loop.  Returns
+    ``(lock_conn, slot)`` on success or ``None`` on timeout / open
+    failure.
 
-        Caller is responsible for releasing the slot and closing the
-        connection (see ``_release_slot``).  Session-level advisory
-        locks auto-release on connection close, so a pod crash mid-warm
-        safely frees the slot.
-        """
-        if self._dsn is None or self._concurrency < 1:
-            return None
-        try:
-            lock_conn = psycopg.connect(self._dsn, autocommit=True)
-        except Exception:
-            log.warning(
-                "Cache warmer: failed to open lock connection, skipping warmup",
-                exc_info=True,
-            )
-            return None
+    Caller is responsible for releasing the slot and closing the
+    connection (see ``_release_slot``).  Session-level advisory
+    locks auto-release on connection close, so a pod crash mid-warm
+    safely frees the slot.
+    """
+    if self._dsn is None or self._concurrency < 1:
+        return None
+    try:
+        lock_conn = psycopg.connect(self._dsn, autocommit=True)
+    except Exception:
+        log.warning(
+            "Cache warmer: failed to open lock connection, skipping warmup",
+            exc_info=True,
+        )
+        return None
 
-        started = time.monotonic()
-        attempt = 0
-        try:
-            while True:
-                attempt += 1
-                slot = self._try_acquire_slot_once(lock_conn)
-                if slot is not None:
-                    waited = time.monotonic() - started
-                    log.info(
-                        "Cache warmer: acquired slot %d after %.1fs wait "
-                        "(attempt %d)",
-                        slot, waited, attempt,
-                    )
-                    return lock_conn, slot
-
+    started = time.monotonic()
+    attempt = 0
+    try:
+        while True:
+            attempt += 1
+            slot = self._try_acquire_slot_once(lock_conn)
+            if slot is not None:
                 waited = time.monotonic() - started
-                if waited >= self._wait_max:
-                    log.warning(
-                        "Cache warmer: gave up after %.1fs waiting for slot "
-                        "(%d attempts), skipping warmup",
-                        waited, attempt,
-                    )
-                    return None
-
                 log.info(
-                    "Cache warmer: all %d slots taken, retrying "
-                    "(waited %.1fs so far)",
-                    self._concurrency, waited,
+                    "Cache warmer: acquired slot %d after %.1fs wait (attempt %d)",
+                    slot,
+                    waited,
+                    attempt,
                 )
-                time.sleep(random.uniform(2.0, 5.0))
-        except Exception:
-            log.warning(
-                "Cache warmer: unexpected error in slot acquisition",
-                exc_info=True,
+                return lock_conn, slot
+
+            waited = time.monotonic() - started
+            if waited >= self._wait_max:
+                log.warning(
+                    "Cache warmer: gave up after %.1fs waiting for slot "
+                    "(%d attempts), skipping warmup",
+                    waited,
+                    attempt,
+                )
+                return None
+
+            log.info(
+                "Cache warmer: all %d slots taken, retrying (waited %.1fs so far)",
+                self._concurrency,
+                waited,
             )
-            with contextlib.suppress(Exception):
-                lock_conn.close()
-            return None
+            time.sleep(random.uniform(2.0, 5.0))
+    except Exception:
+        log.warning(
+            "Cache warmer: unexpected error in slot acquisition",
+            exc_info=True,
+        )
+        with contextlib.suppress(Exception):
+            lock_conn.close()
+        return None
 ```
 
 - [ ] **Step 4: Run tests to verify they pass**
@@ -840,56 +854,57 @@ git commit -m "feat(warmer): B2b — _acquire_slot with retry loop and wait cap 
 Add to `tests/test_cache_warmer.py` inside `TestCacheWarmerSlot`:
 
 ```python
-    def test_release_slot_unlocks_and_closes(self):
-        from zodb_pgjsonb.cache_warmer import CacheWarmer
-        from zodb_pgjsonb.cache_warmer import WARMER_LOCK_NS
-        from zodb_pgjsonb.cache_warmer import WARMER_SLOT_BASE
+def test_release_slot_unlocks_and_closes(self):
+    from zodb_pgjsonb.cache_warmer import CacheWarmer
+    from zodb_pgjsonb.cache_warmer import WARMER_LOCK_NS
+    from zodb_pgjsonb.cache_warmer import WARMER_SLOT_BASE
 
-        executed = []
-        closed = []
+    executed = []
+    closed = []
 
-        class _ReleaseConn:
-            def execute(self, sql, params=None):
-                executed.append((sql, params))
+    class _ReleaseConn:
+        def execute(self, sql, params=None):
+            executed.append((sql, params))
 
-            def close(self):
-                closed.append(True)
+        def close(self):
+            closed.append(True)
 
-        w = CacheWarmer(
-            conn=mock.Mock(),
-            target_count=10,
-            shared_cache=_mk_shared_cache(),
-            load_current_tid_fn=lambda: 100,
-            concurrency=2,
-        )
-        lock_conn = _ReleaseConn()
-        w._release_slot(lock_conn, slot=2)
+    w = CacheWarmer(
+        conn=mock.Mock(),
+        target_count=10,
+        shared_cache=_mk_shared_cache(),
+        load_current_tid_fn=lambda: 100,
+        concurrency=2,
+    )
+    lock_conn = _ReleaseConn()
+    w._release_slot(lock_conn, slot=2)
 
-        assert len(executed) == 1
-        sql, params = executed[0]
-        assert "pg_advisory_unlock" in sql
-        assert params == (WARMER_LOCK_NS, WARMER_SLOT_BASE + 2)
-        assert closed == [True]
+    assert len(executed) == 1
+    sql, params = executed[0]
+    assert "pg_advisory_unlock" in sql
+    assert params == (WARMER_LOCK_NS, WARMER_SLOT_BASE + 2)
+    assert closed == [True]
 
-    def test_release_slot_swallows_errors(self):
-        from zodb_pgjsonb.cache_warmer import CacheWarmer
 
-        class _BadConn:
-            def execute(self, sql, params=None):
-                raise RuntimeError("connection gone")
+def test_release_slot_swallows_errors(self):
+    from zodb_pgjsonb.cache_warmer import CacheWarmer
 
-            def close(self):
-                raise RuntimeError("close gone too")
+    class _BadConn:
+        def execute(self, sql, params=None):
+            raise RuntimeError("connection gone")
 
-        w = CacheWarmer(
-            conn=mock.Mock(),
-            target_count=10,
-            shared_cache=_mk_shared_cache(),
-            load_current_tid_fn=lambda: 100,
-            concurrency=2,
-        )
-        # Must not raise.
-        w._release_slot(_BadConn(), slot=1)
+        def close(self):
+            raise RuntimeError("close gone too")
+
+    w = CacheWarmer(
+        conn=mock.Mock(),
+        target_count=10,
+        shared_cache=_mk_shared_cache(),
+        load_current_tid_fn=lambda: 100,
+        concurrency=2,
+    )
+    # Must not raise.
+    w._release_slot(_BadConn(), slot=1)
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -950,97 +965,99 @@ git commit -m "feat(warmer): B2b — _release_slot helper (#59)"
 Add to `tests/test_cache_warmer.py` inside `TestCacheWarmerWarm`:
 
 ```python
-    def test_warm_acquires_and_releases_slot(self):
-        from ZODB.utils import p64
-        from zodb_pgjsonb.cache_warmer import CacheWarmer
-        from zodb_pgjsonb.storage import SharedLoadCache
+def test_warm_acquires_and_releases_slot(self):
+    from ZODB.utils import p64
+    from zodb_pgjsonb.cache_warmer import CacheWarmer
+    from zodb_pgjsonb.storage import SharedLoadCache
 
-        shared = SharedLoadCache(max_mb=4)
-        w = CacheWarmer(
-            conn=_FakeConn(top_oids=[1, 2]),
-            target_count=10,
-            shared_cache=shared,
-            load_current_tid_fn=lambda: 100,
-            dsn="dbname=ignored",
-            concurrency=2,
-        )
-        # Pretend slot acquisition succeeds without touching PG.
-        acquire_calls = []
-        release_calls = []
+    shared = SharedLoadCache(max_mb=4)
+    w = CacheWarmer(
+        conn=_FakeConn(top_oids=[1, 2]),
+        target_count=10,
+        shared_cache=shared,
+        load_current_tid_fn=lambda: 100,
+        dsn="dbname=ignored",
+        concurrency=2,
+    )
+    # Pretend slot acquisition succeeds without touching PG.
+    acquire_calls = []
+    release_calls = []
 
-        def fake_acquire():
-            sentinel = object()
-            acquire_calls.append(sentinel)
-            return (sentinel, 1)
+    def fake_acquire():
+        sentinel = object()
+        acquire_calls.append(sentinel)
+        return (sentinel, 1)
 
-        def fake_release(lock_conn, slot):
-            release_calls.append((lock_conn, slot))
+    def fake_release(lock_conn, slot):
+        release_calls.append((lock_conn, slot))
 
-        w._acquire_slot = fake_acquire
-        w._release_slot = fake_release
+    w._acquire_slot = fake_acquire
+    w._release_slot = fake_release
 
-        def loader(oids):
-            return {oid: (b"x", p64(50)) for oid in oids}
+    def loader(oids):
+        return {oid: (b"x", p64(50)) for oid in oids}
 
-        w.warm(loader)
-        assert len(acquire_calls) == 1
-        assert len(release_calls) == 1
-        assert release_calls[0][1] == 1  # slot number
-        assert release_calls[0][0] is acquire_calls[0]  # same conn
+    w.warm(loader)
+    assert len(acquire_calls) == 1
+    assert len(release_calls) == 1
+    assert release_calls[0][1] == 1  # slot number
+    assert release_calls[0][0] is acquire_calls[0]  # same conn
 
-    def test_warm_skips_on_acquire_failure(self):
-        from ZODB.utils import p64
-        from zodb_pgjsonb.cache_warmer import CacheWarmer
-        from zodb_pgjsonb.storage import SharedLoadCache
 
-        shared = SharedLoadCache(max_mb=4)
-        w = CacheWarmer(
-            conn=_FakeConn(top_oids=[1, 2]),
-            target_count=10,
-            shared_cache=shared,
-            load_current_tid_fn=lambda: 100,
-            dsn="dbname=ignored",
-            concurrency=2,
-        )
-        w._acquire_slot = lambda: None
+def test_warm_skips_on_acquire_failure(self):
+    from ZODB.utils import p64
+    from zodb_pgjsonb.cache_warmer import CacheWarmer
+    from zodb_pgjsonb.storage import SharedLoadCache
 
-        load_called = []
+    shared = SharedLoadCache(max_mb=4)
+    w = CacheWarmer(
+        conn=_FakeConn(top_oids=[1, 2]),
+        target_count=10,
+        shared_cache=shared,
+        load_current_tid_fn=lambda: 100,
+        dsn="dbname=ignored",
+        concurrency=2,
+    )
+    w._acquire_slot = lambda: None
 
-        def loader(oids):
-            load_called.append(oids)
-            return {}
+    load_called = []
 
-        w.warm(loader)
-        # No load when acquire fails.
-        assert load_called == []
-        assert len(shared._cache) == 0
+    def loader(oids):
+        load_called.append(oids)
+        return {}
 
-    def test_warm_no_slot_when_concurrency_zero(self):
-        """When concurrency=0, the slot path is bypassed entirely
-        (preserves backward-compat for direct test instantiation)."""
-        from ZODB.utils import p64
-        from zodb_pgjsonb.cache_warmer import CacheWarmer
-        from zodb_pgjsonb.storage import SharedLoadCache
+    w.warm(loader)
+    # No load when acquire fails.
+    assert load_called == []
+    assert len(shared._cache) == 0
 
-        shared = SharedLoadCache(max_mb=4)
-        w = CacheWarmer(
-            conn=_FakeConn(top_oids=[1, 2]),
-            target_count=10,
-            shared_cache=shared,
-            load_current_tid_fn=lambda: 100,
-            concurrency=0,
-        )
-        acquired = []
-        w._acquire_slot = lambda: acquired.append(True) or None
 
-        def loader(oids):
-            return {oid: (b"x", p64(50)) for oid in oids}
+def test_warm_no_slot_when_concurrency_zero(self):
+    """When concurrency=0, the slot path is bypassed entirely
+    (preserves backward-compat for direct test instantiation)."""
+    from ZODB.utils import p64
+    from zodb_pgjsonb.cache_warmer import CacheWarmer
+    from zodb_pgjsonb.storage import SharedLoadCache
 
-        w.warm(loader)
-        # _acquire_slot must not be called when concurrency=0.
-        assert acquired == []
-        # Warming still happens.
-        assert len(shared._cache) == 2
+    shared = SharedLoadCache(max_mb=4)
+    w = CacheWarmer(
+        conn=_FakeConn(top_oids=[1, 2]),
+        target_count=10,
+        shared_cache=shared,
+        load_current_tid_fn=lambda: 100,
+        concurrency=0,
+    )
+    acquired = []
+    w._acquire_slot = lambda: acquired.append(True) or None
+
+    def loader(oids):
+        return {oid: (b"x", p64(50)) for oid in oids}
+
+    w.warm(loader)
+    # _acquire_slot must not be called when concurrency=0.
+    assert acquired == []
+    # Warming still happens.
+    assert len(shared._cache) == 2
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -1102,129 +1119,129 @@ Insert slot acquisition between the sleep and `_read_top_oids`, and wrap the res
 Replace the entire `warm()` method in `src/zodb_pgjsonb/cache_warmer.py` with the following two methods (the Task 3 batched-load logic moves into `_warm_body`):
 
 ```python
-    def warm(self, load_multiple_fn):
-        """Load top-N ZOIDs into the shared cache.
+def warm(self, load_multiple_fn):
+    """Load top-N ZOIDs into the shared cache.
 
-        Runs in a background daemon thread.  Orchestrates the four
-        herd-mitigation phases (#59): startup delay + jitter (A2+A1),
-        cluster-wide slot acquisition (B2b), paced batched warmup (A3),
-        slot release.
-        """
-        # A2 + A1: get out of the pod's own cold-start window and
-        # smear lock-arrival times across pods so the cluster doesn't
-        # stampede the primary on rolling deploys.
-        if self._delay > 0 or self._jitter > 0:
-            time.sleep(self._delay + random.uniform(0, self._jitter))
+    Runs in a background daemon thread.  Orchestrates the four
+    herd-mitigation phases (#59): startup delay + jitter (A2+A1),
+    cluster-wide slot acquisition (B2b), paced batched warmup (A3),
+    slot release.
+    """
+    # A2 + A1: get out of the pod's own cold-start window and
+    # smear lock-arrival times across pods so the cluster doesn't
+    # stampede the primary on rolling deploys.
+    if self._delay > 0 or self._jitter > 0:
+        time.sleep(self._delay + random.uniform(0, self._jitter))
 
-        # B2b: try to claim one of N cluster-wide slots.  When
-        # concurrency is 0 the semaphore is disabled.
-        lock_conn = None
-        slot = None
-        if self._concurrency >= 1:
-            acquired = self._acquire_slot()
-            if acquired is None:
-                # Already logged inside _acquire_slot (timeout or open failure).
-                return
-            lock_conn, slot = acquired
+    # B2b: try to claim one of N cluster-wide slots.  When
+    # concurrency is 0 the semaphore is disabled.
+    lock_conn = None
+    slot = None
+    if self._concurrency >= 1:
+        acquired = self._acquire_slot()
+        if acquired is None:
+            # Already logged inside _acquire_slot (timeout or open failure).
+            return
+        lock_conn, slot = acquired
 
+    try:
+        self._warm_body(load_multiple_fn)
+    finally:
+        if lock_conn is not None:
+            self._release_slot(lock_conn, slot)
+
+
+def _warm_body(self, load_multiple_fn):
+    """Top-OID read + prime-consensus + paced batched load+set.
+
+    Primes the consensus TID on the shared cache to the current PG
+    max_tid so that subsequent ``shared.set`` calls are accepted.
+    Re-reads consensus after ``poll_advance`` and uses that as the
+    ``polled_tid`` for set calls — this is the mitigation for the
+    startup race where an instance's poll advances consensus past
+    the warmer's sampled TID before the set loop begins.
+
+    Skips warmup when the TID is unavailable.  Logs a WARNING when
+    every set() was rejected despite a non-empty result set.
+    """
+    from ZODB.utils import p64
+    from ZODB.utils import u64
+
+    top_zoids = self._read_top_oids()
+    if not top_zoids:
+        log.info("Cache warmer: no stats yet, skipping warmup")
+        return
+
+    current_tid = self._load_current_tid_fn()
+    if current_tid is None:
+        log.warning("Cache warmer: could not read current TID, skipping warmup")
+        return
+
+    # Prime consensus so set() accepts our writes.  Another instance
+    # may have advanced consensus beyond our sampled current_tid
+    # already — in that case poll_advance is a no-op, and the actual
+    # consensus is higher than current_tid.  Re-read it so our
+    # subsequent set() calls use the effective consensus as their
+    # polled_tid and pass the gate.
+    self._shared_cache.poll_advance(new_tid=current_tid, changed_zoids=[])
+    effective_tid = self._shared_cache.consensus_tid
+    if effective_tid is None:  # guarded for paranoia; should not happen
+        log.warning("Cache warmer: consensus still None after poll_advance")
+        return
+
+    # A3: batch the fetches and pause between them so a single
+    # pod's warmup doesn't burst the connection pool / DB CPU.
+    batch_size = max(1, self._batch_size)
+    batches = [
+        top_zoids[i : i + batch_size] for i in range(0, len(top_zoids), batch_size)
+    ]
+    written = 0
+    attempted = 0
+    for batch_idx, batch in enumerate(batches):
+        oids = [p64(z) for z in batch]
         try:
-            self._warm_body(load_multiple_fn)
-        finally:
-            if lock_conn is not None:
-                self._release_slot(lock_conn, slot)
-
-    def _warm_body(self, load_multiple_fn):
-        """Top-OID read + prime-consensus + paced batched load+set.
-
-        Primes the consensus TID on the shared cache to the current PG
-        max_tid so that subsequent ``shared.set`` calls are accepted.
-        Re-reads consensus after ``poll_advance`` and uses that as the
-        ``polled_tid`` for set calls — this is the mitigation for the
-        startup race where an instance's poll advances consensus past
-        the warmer's sampled TID before the set loop begins.
-
-        Skips warmup when the TID is unavailable.  Logs a WARNING when
-        every set() was rejected despite a non-empty result set.
-        """
-        from ZODB.utils import p64
-        from ZODB.utils import u64
-
-        top_zoids = self._read_top_oids()
-        if not top_zoids:
-            log.info("Cache warmer: no stats yet, skipping warmup")
-            return
-
-        current_tid = self._load_current_tid_fn()
-        if current_tid is None:
-            log.warning("Cache warmer: could not read current TID, skipping warmup")
-            return
-
-        # Prime consensus so set() accepts our writes.  Another instance
-        # may have advanced consensus beyond our sampled current_tid
-        # already — in that case poll_advance is a no-op, and the actual
-        # consensus is higher than current_tid.  Re-read it so our
-        # subsequent set() calls use the effective consensus as their
-        # polled_tid and pass the gate.
-        self._shared_cache.poll_advance(new_tid=current_tid, changed_zoids=[])
-        effective_tid = self._shared_cache.consensus_tid
-        if effective_tid is None:  # guarded for paranoia; should not happen
-            log.warning("Cache warmer: consensus still None after poll_advance")
-            return
-
-        # A3: batch the fetches and pause between them so a single
-        # pod's warmup doesn't burst the connection pool / DB CPU.
-        batch_size = max(1, self._batch_size)
-        batches = [
-            top_zoids[i:i + batch_size]
-            for i in range(0, len(top_zoids), batch_size)
-        ]
-        written = 0
-        attempted = 0
-        for batch_idx, batch in enumerate(batches):
-            oids = [p64(z) for z in batch]
-            try:
-                results = load_multiple_fn(oids)
-            except Exception:
-                log.warning(
-                    "Cache warmer: load_multiple failed at batch %d/%d",
-                    batch_idx + 1, len(batches),
-                    exc_info=True,
-                )
-                return
-            for oid, (data, tid_bytes) in results.items():
-                attempted += 1
-                if self._shared_cache.set(
-                    zoid=u64(oid),
-                    data=data,
-                    tid_bytes=tid_bytes,
-                    polled_tid=effective_tid,
-                ):
-                    written += 1
-            # Pause only between batches, never after the last.
-            if batch_idx < len(batches) - 1 and self._batch_pause > 0:
-                time.sleep(self._batch_pause)
-
-        if attempted == 0:
-            log.info("Cache warmer: load_multiple returned no objects")
-            return
-
-        if written == 0:
+            results = load_multiple_fn(oids)
+        except Exception:
             log.warning(
-                "Cache warmer: all %d set() calls rejected by shared cache "
-                "(consensus=%d, sampled_tid=%d) — likely raced with a "
-                "concurrent instance poll",
-                attempted,
-                effective_tid,
-                current_tid,
-            )
-        else:
-            log.info(
-                "Cache warmer: loaded %d of %d objects into shared cache "
-                "(%d batches)",
-                written,
-                attempted,
+                "Cache warmer: load_multiple failed at batch %d/%d",
+                batch_idx + 1,
                 len(batches),
+                exc_info=True,
             )
+            return
+        for oid, (data, tid_bytes) in results.items():
+            attempted += 1
+            if self._shared_cache.set(
+                zoid=u64(oid),
+                data=data,
+                tid_bytes=tid_bytes,
+                polled_tid=effective_tid,
+            ):
+                written += 1
+        # Pause only between batches, never after the last.
+        if batch_idx < len(batches) - 1 and self._batch_pause > 0:
+            time.sleep(self._batch_pause)
+
+    if attempted == 0:
+        log.info("Cache warmer: load_multiple returned no objects")
+        return
+
+    if written == 0:
+        log.warning(
+            "Cache warmer: all %d set() calls rejected by shared cache "
+            "(consensus=%d, sampled_tid=%d) — likely raced with a "
+            "concurrent instance poll",
+            attempted,
+            effective_tid,
+            current_tid,
+        )
+    else:
+        log.info(
+            "Cache warmer: loaded %d of %d objects into shared cache (%d batches)",
+            written,
+            attempted,
+            len(batches),
+        )
 ```
 
 - [ ] **Step 4: Run tests to verify they pass**
@@ -1527,57 +1544,58 @@ git commit -m "feat(config): six ZConfig keys for cache-warm herd mitigation (#5
 Add to `tests/test_cache_warmer.py` inside `TestCacheWarmerDB`:
 
 ```python
-    def test_concurrency_1_serializes_two_warmers(self):
-        """Two warmers with concurrency=1 must not warm in parallel."""
-        from ZODB.utils import p64
-        from tests.conftest import DSN
-        from zodb_pgjsonb.cache_warmer import CacheWarmer
-        from zodb_pgjsonb.storage import SharedLoadCache
+def test_concurrency_1_serializes_two_warmers(self):
+    """Two warmers with concurrency=1 must not warm in parallel."""
+    from ZODB.utils import p64
+    from tests.conftest import DSN
+    from zodb_pgjsonb.cache_warmer import CacheWarmer
+    from zodb_pgjsonb.storage import SharedLoadCache
 
-        import threading
-        import time
+    import threading
+    import time
 
-        # Seed warm stats so the warmers have something to do.
-        self.conn.execute(
-            "INSERT INTO cache_warm_stats (zoid, score) "
-            "VALUES (1, 5.0), (2, 4.0), (3, 3.0)"
+    # Seed warm stats so the warmers have something to do.
+    self.conn.execute(
+        "INSERT INTO cache_warm_stats (zoid, score) VALUES (1, 5.0), (2, 4.0), (3, 3.0)"
+    )
+
+    shared = SharedLoadCache(max_mb=4)
+    load_times = []
+
+    def slow_loader(oids):
+        load_times.append(("enter", time.monotonic()))
+        time.sleep(0.5)  # simulate slow load
+        load_times.append(("exit", time.monotonic()))
+        return {oid: (b"x", p64(50)) for oid in oids}
+
+    def run_warmer():
+        w = CacheWarmer(
+            conn=self.conn,
+            target_count=10,
+            shared_cache=shared,
+            load_current_tid_fn=lambda: 100,
+            dsn=DSN,
+            concurrency=1,
+            wait_max=30,
+            batch_size=500,
+            batch_pause=0,
         )
+        w.warm(slow_loader)
 
-        shared = SharedLoadCache(max_mb=4)
-        load_times = []
+    t1 = threading.Thread(target=run_warmer)
+    t2 = threading.Thread(target=run_warmer)
+    t1.start()
+    t2.start()
+    t1.join()
+    t2.join()
 
-        def slow_loader(oids):
-            load_times.append(("enter", time.monotonic()))
-            time.sleep(0.5)  # simulate slow load
-            load_times.append(("exit", time.monotonic()))
-            return {oid: (b"x", p64(50)) for oid in oids}
-
-        def run_warmer():
-            w = CacheWarmer(
-                conn=self.conn,
-                target_count=10,
-                shared_cache=shared,
-                load_current_tid_fn=lambda: 100,
-                dsn=DSN,
-                concurrency=1,
-                wait_max=30,
-                batch_size=500,
-                batch_pause=0,
-            )
-            w.warm(slow_loader)
-
-        t1 = threading.Thread(target=run_warmer)
-        t2 = threading.Thread(target=run_warmer)
-        t1.start(); t2.start()
-        t1.join(); t2.join()
-
-        # Two enter/exit pairs, non-overlapping.
-        enters = sorted(t for k, t in load_times if k == "enter")
-        exits = sorted(t for k, t in load_times if k == "exit")
-        assert len(enters) == 2 and len(exits) == 2
-        # Either exits[0] <= enters[1] (serialized) — strict serialization
-        # by the advisory lock.
-        assert exits[0] <= enters[1] + 0.05  # 50ms slack for thread sched
+    # Two enter/exit pairs, non-overlapping.
+    enters = sorted(t for k, t in load_times if k == "enter")
+    exits = sorted(t for k, t in load_times if k == "exit")
+    assert len(enters) == 2 and len(exits) == 2
+    # Either exits[0] <= enters[1] (serialized) — strict serialization
+    # by the advisory lock.
+    assert exits[0] <= enters[1] + 0.05  # 50ms slack for thread sched
 ```
 
 - [ ] **Step 2: Run the test to verify it fails before implementation is fully wired**
@@ -1607,60 +1625,59 @@ git commit -m "test(warmer): DB integration — slot serialization with concurre
 Add to `tests/test_cache_warmer.py` inside `TestCacheWarmerDB`:
 
 ```python
-    def test_concurrency_2_allows_two_parallel_one_waits(self):
-        """Three warmers, concurrency=2 — two warm in parallel, third waits."""
-        from ZODB.utils import p64
-        from tests.conftest import DSN
-        from zodb_pgjsonb.cache_warmer import CacheWarmer
-        from zodb_pgjsonb.storage import SharedLoadCache
+def test_concurrency_2_allows_two_parallel_one_waits(self):
+    """Three warmers, concurrency=2 — two warm in parallel, third waits."""
+    from ZODB.utils import p64
+    from tests.conftest import DSN
+    from zodb_pgjsonb.cache_warmer import CacheWarmer
+    from zodb_pgjsonb.storage import SharedLoadCache
 
-        import threading
-        import time
+    import threading
+    import time
 
-        self.conn.execute(
-            "INSERT INTO cache_warm_stats (zoid, score) "
-            "VALUES (1, 5.0), (2, 4.0), (3, 3.0)"
+    self.conn.execute(
+        "INSERT INTO cache_warm_stats (zoid, score) VALUES (1, 5.0), (2, 4.0), (3, 3.0)"
+    )
+
+    shared = SharedLoadCache(max_mb=4)
+    load_events = []
+    load_events_lock = threading.Lock()
+
+    def slow_loader(oids):
+        with load_events_lock:
+            load_events.append(("enter", time.monotonic()))
+        time.sleep(0.5)
+        with load_events_lock:
+            load_events.append(("exit", time.monotonic()))
+        return {oid: (b"x", p64(50)) for oid in oids}
+
+    def run_warmer():
+        w = CacheWarmer(
+            conn=self.conn,
+            target_count=10,
+            shared_cache=shared,
+            load_current_tid_fn=lambda: 100,
+            dsn=DSN,
+            concurrency=2,
+            wait_max=30,
+            batch_size=500,
+            batch_pause=0,
         )
+        w.warm(slow_loader)
 
-        shared = SharedLoadCache(max_mb=4)
-        load_events = []
-        load_events_lock = threading.Lock()
+    threads = [threading.Thread(target=run_warmer) for _ in range(3)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
 
-        def slow_loader(oids):
-            with load_events_lock:
-                load_events.append(("enter", time.monotonic()))
-            time.sleep(0.5)
-            with load_events_lock:
-                load_events.append(("exit", time.monotonic()))
-            return {oid: (b"x", p64(50)) for oid in oids}
-
-        def run_warmer():
-            w = CacheWarmer(
-                conn=self.conn,
-                target_count=10,
-                shared_cache=shared,
-                load_current_tid_fn=lambda: 100,
-                dsn=DSN,
-                concurrency=2,
-                wait_max=30,
-                batch_size=500,
-                batch_pause=0,
-            )
-            w.warm(slow_loader)
-
-        threads = [threading.Thread(target=run_warmer) for _ in range(3)]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join()
-
-        enters = sorted(t for k, t in load_events if k == "enter")
-        exits = sorted(t for k, t in load_events if k == "exit")
-        assert len(enters) == 3 and len(exits) == 3
-        # First two enters within a small window (parallel), third
-        # enter must be after at least one exit.
-        assert enters[1] - enters[0] < 0.3
-        assert enters[2] >= exits[0] - 0.05  # 50ms slack
+    enters = sorted(t for k, t in load_events if k == "enter")
+    exits = sorted(t for k, t in load_events if k == "exit")
+    assert len(enters) == 3 and len(exits) == 3
+    # First two enters within a small window (parallel), third
+    # enter must be after at least one exit.
+    assert enters[1] - enters[0] < 0.3
+    assert enters[2] >= exits[0] - 0.05  # 50ms slack
 ```
 
 - [ ] **Step 2: Run the test**
@@ -1690,69 +1707,77 @@ git commit -m "test(warmer): DB integration — N-slot semaphore (concurrency=2)
 Add to `tests/test_cache_warmer.py` inside `TestCacheWarmerDB`:
 
 ```python
-    def test_lock_released_on_connection_close(self):
-        """If the warmer's lock connection closes (e.g. pod crash),
-        PG auto-releases the session-level lock so another warmer can
-        proceed."""
-        from tests.conftest import DSN
-        from zodb_pgjsonb.cache_warmer import (
-            CacheWarmer,
-            WARMER_LOCK_NS,
-            WARMER_SLOT_BASE,
+def test_lock_released_on_connection_close(self):
+    """If the warmer's lock connection closes (e.g. pod crash),
+    PG auto-releases the session-level lock so another warmer can
+    proceed."""
+    from tests.conftest import DSN
+    from zodb_pgjsonb.cache_warmer import (
+        CacheWarmer,
+        WARMER_LOCK_NS,
+        WARMER_SLOT_BASE,
+    )
+
+    import psycopg
+    from psycopg.rows import dict_row
+
+    # Pod 1: open a connection, acquire slot 1 manually.
+    conn1 = psycopg.connect(DSN, autocommit=True)
+    with conn1.cursor() as cur:
+        cur.execute(
+            "SELECT pg_try_advisory_lock(%s, %s)",
+            (WARMER_LOCK_NS, WARMER_SLOT_BASE + 1),
         )
+        assert cur.fetchone()[0] is True
 
-        import psycopg
-        from psycopg.rows import dict_row
-
-        # Pod 1: open a connection, acquire slot 1 manually.
-        conn1 = psycopg.connect(DSN, autocommit=True)
-        with conn1.cursor() as cur:
-            cur.execute(
-                "SELECT pg_try_advisory_lock(%s, %s)",
-                (WARMER_LOCK_NS, WARMER_SLOT_BASE + 1),
-            )
-            assert cur.fetchone()[0] is True
-
-        # Pod 2: a fresh warmer with concurrency=1 must time out quickly
-        # because slot 1 is held.
-        w = CacheWarmer(
-            conn=self.conn,
-            target_count=10,
-            shared_cache=type("S", (), {
+    # Pod 2: a fresh warmer with concurrency=1 must time out quickly
+    # because slot 1 is held.
+    w = CacheWarmer(
+        conn=self.conn,
+        target_count=10,
+        shared_cache=type(
+            "S",
+            (),
+            {
                 "poll_advance": lambda *a, **k: None,
                 "set": lambda *a, **k: True,
                 "consensus_tid": 1,
-            })(),
-            load_current_tid_fn=lambda: 100,
-            dsn=DSN,
-            concurrency=1,
-            wait_max=3,  # very short, just to confirm contention
-        )
-        assert w._acquire_slot() is None
+            },
+        )(),
+        load_current_tid_fn=lambda: 100,
+        dsn=DSN,
+        concurrency=1,
+        wait_max=3,  # very short, just to confirm contention
+    )
+    assert w._acquire_slot() is None
 
-        # Now close pod 1's connection — auto-releases the lock.
-        conn1.close()
+    # Now close pod 1's connection — auto-releases the lock.
+    conn1.close()
 
-        # Pod 3: a new warmer should now acquire slot 1.
-        w2 = CacheWarmer(
-            conn=self.conn,
-            target_count=10,
-            shared_cache=type("S", (), {
+    # Pod 3: a new warmer should now acquire slot 1.
+    w2 = CacheWarmer(
+        conn=self.conn,
+        target_count=10,
+        shared_cache=type(
+            "S",
+            (),
+            {
                 "poll_advance": lambda *a, **k: None,
                 "set": lambda *a, **k: True,
                 "consensus_tid": 1,
-            })(),
-            load_current_tid_fn=lambda: 100,
-            dsn=DSN,
-            concurrency=1,
-            wait_max=10,
-        )
-        result = w2._acquire_slot()
-        assert result is not None
-        lock_conn, slot = result
-        assert slot == 1
-        # Clean up.
-        w2._release_slot(lock_conn, slot)
+            },
+        )(),
+        load_current_tid_fn=lambda: 100,
+        dsn=DSN,
+        concurrency=1,
+        wait_max=10,
+    )
+    result = w2._acquire_slot()
+    assert result is not None
+    lock_conn, slot = result
+    assert slot == 1
+    # Clean up.
+    w2._release_slot(lock_conn, slot)
 ```
 
 - [ ] **Step 2: Run the test**

@@ -244,16 +244,18 @@ Update `test_annotate_sets_delta_including_zero` to 6-tuples and assert both new
 Update the subrequest integration test that currently asserts `load_pg_queries == 11`: the fake advances `storage._pg_load_count += 11`, so that becomes `load_pg_objects == 11`; also advance `storage._pg_query_count += 2` and assert `load_pg_queries == 2`:
 
 ```python
-    def fake(url, **kw):
-        conn.loads += 151
-        storage._l2_load_hits += 140
-        storage._pg_load_count += 11
-        storage._pg_query_count += 2
-        return _Resp(200)
-    ...
-    assert span.attributes["plone.zodb.load_l2_hits"] == 140
-    assert span.attributes["plone.zodb.load_pg_objects"] == 11
-    assert span.attributes["plone.zodb.load_pg_queries"] == 2
+def fake(url, **kw):
+    conn.loads += 151
+    storage._l2_load_hits += 140
+    storage._pg_load_count += 11
+    storage._pg_query_count += 2
+    return _Resp(200)
+
+
+...
+assert span.attributes["plone.zodb.load_l2_hits"] == 140
+assert span.attributes["plone.zodb.load_pg_objects"] == 11
+assert span.attributes["plone.zodb.load_pg_queries"] == 2
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**

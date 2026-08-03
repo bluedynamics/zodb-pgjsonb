@@ -72,7 +72,12 @@ class CacheWarmer:
         self._shared_cache = shared_cache
         self._load_current_tid_fn = load_current_tid_fn
 
-        self._conn = conn
+        # ``conn`` is a live psycopg connection (anything with a
+        # ``cursor`` attribute) or a zero-arg callable returning one.
+        # PGJsonbStorage passes ``_ensure_admin_conn`` so the warmer
+        # keeps working after the admin connection is replaced on a
+        # reconnect (#103).
+        self._conn_getter = (lambda: conn) if hasattr(conn, "cursor") else conn
 
         # Herd-mitigation knobs (#59).  CacheWarmer defaults are off
         # so direct instantiation in tests preserves prior behavior;
@@ -111,9 +116,11 @@ class CacheWarmer:
         if not zoids:
             return
         self._pending.clear()
+        conn = None
         try:
-            self._conn.execute("BEGIN")
-            with self._conn.cursor() as cur:
+            conn = self._conn_getter()
+            conn.execute("BEGIN")
+            with conn.cursor() as cur:
                 if decay:
                     cur.execute(
                         "UPDATE cache_warm_stats SET score = score * %(d)s",
@@ -128,10 +135,11 @@ class CacheWarmer:
                 )
                 if decay:
                     cur.execute("DELETE FROM cache_warm_stats WHERE score < 0.01")
-            self._conn.execute("COMMIT")
+            conn.execute("COMMIT")
         except Exception:
-            with contextlib.suppress(Exception):
-                self._conn.execute("ROLLBACK")
+            if conn is not None:
+                with contextlib.suppress(Exception):
+                    conn.execute("ROLLBACK")
             log.warning("Cache warmer: flush failed", exc_info=True)
 
     # ── B2b slot acquisition (#59) ───────────────────────────────────
@@ -258,7 +266,7 @@ class CacheWarmer:
 
     def _read_top_oids(self):
         try:
-            with self._conn.cursor() as cur:
+            with self._conn_getter().cursor() as cur:
                 cur.execute(
                     "SELECT zoid FROM cache_warm_stats ORDER BY score DESC LIMIT %(n)s",
                     {"n": self._target_count},

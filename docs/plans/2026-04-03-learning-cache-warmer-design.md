@@ -49,13 +49,13 @@ class CacheWarmer:
         self.recording = True
         self._warming_done = False
         self._recorded = set()
-        self._pending = set()       # unflushed OIDs
-        self._target_count = 0      # set from cache size * warm_pct / 100
+        self._pending = set()  # unflushed OIDs
+        self._target_count = 0  # set from cache size * warm_pct / 100
         self._flush_interval = flush_interval
-        self._decayed = False       # decay applied once per startup
-        self._warm_cache = {}       # zoid → (pickle_bytes, tid_bytes)
+        self._decayed = False  # decay applied once per startup
+        self._warm_cache = {}  # zoid → (pickle_bytes, tid_bytes)
         self._decay = decay
-        self._conn = conn           # main storage PG connection
+        self._conn = conn  # main storage PG connection
 
     def record(self, zoid):
         """Called from Instance.load() during recording phase.

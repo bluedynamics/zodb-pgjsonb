@@ -229,9 +229,7 @@ def test_after_completion_safe_when_conn_killed():
             pid = instance._conn.info.backend_pid
             killer = psycopg.connect(DSN)
             try:
-                killer.execute(
-                    "SELECT pg_terminate_backend(%s)", (pid,)
-                )
+                killer.execute("SELECT pg_terminate_backend(%s)", (pid,))
                 killer.commit()
             finally:
                 killer.close()
@@ -283,9 +281,10 @@ def test_zodb_connection_close_releases_virtualxid():
 
             # Confirm via pg_stat_activity that the backend is idle
             # (not "idle in transaction").
-            monitor = psycopg.connect(DSN, row_factory=__import__(
-                "psycopg.rows", fromlist=["dict_row"]
-            ).dict_row)
+            monitor = psycopg.connect(
+                DSN,
+                row_factory=__import__("psycopg.rows", fromlist=["dict_row"]).dict_row,
+            )
             try:
                 state, _age = _backend_state(monitor, pid)
                 assert state == "idle", f"Expected idle, got {state!r}"
@@ -469,7 +468,7 @@ Find the existing pool creation:
 Change the `configure=` line to:
 
 ```python
-            configure=_configure_pool_conn,
+configure = (_configure_pool_conn,)
 ```
 
 (Keep the rest unchanged.)

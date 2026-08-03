@@ -131,6 +131,7 @@ zodb-pgjsonb opens:
 DEFAULT_IDLE_IN_XACT_TIMEOUT_MS = 60_000
 ENV_IDLE_IN_XACT_TIMEOUT = "ZODB_PGJSONB_IDLE_IN_XACT_TIMEOUT_MS"
 
+
 def _configure_conn(conn):
     """Per-connection setup applied by the pool's `configure` hook."""
     timeout = int(

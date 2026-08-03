@@ -524,9 +524,14 @@ class PGJsonbStorage(CopyTransactionsMixin, ConflictResolvingStorage, BaseStorag
         # cache to avoid unbounded growth (#62).
         self._serial_cache = _NoopSerialCache() if history_preserving else {}
 
-        # Database connection (schema init + admin queries)
+        # Database connection (schema init + admin queries).
+        # Guarded by _ensure_admin_conn / _with_admin_conn at runtime:
+        # it can die on a failover or operator kill and must then be
+        # reopened instead of erroring forever (#103).
         logger.debug("Connecting to PostgreSQL: %s", _mask_dsn(dsn))
         self._conn = psycopg.connect(dsn, row_factory=dict_row)
+        self._admin_conn_lock = threading.Lock()
+        self._closed = False
         logger.debug("Connected to PostgreSQL")
 
         # Connection pool for MVCC instances (autocommit=True, dict_row)
@@ -593,7 +598,7 @@ class PGJsonbStorage(CopyTransactionsMixin, ConflictResolvingStorage, BaseStorag
             target = max(1, int(estimated_objects * cache_warm_pct / 100))
 
             self._warmer = CacheWarmer(
-                self._conn,
+                self._ensure_admin_conn,
                 target_count=target,
                 shared_cache=self._shared_cache,
                 load_current_tid_fn=self.current_max_tid,
@@ -606,8 +611,6 @@ class PGJsonbStorage(CopyTransactionsMixin, ConflictResolvingStorage, BaseStorag
                 batch_size=cache_warm_batch_size,
                 batch_pause=cache_warm_batch_pause,
             )
-            import threading
-
             threading.Thread(
                 target=self._warmer.warm,
                 args=(self._warm_load_multiple,),
@@ -661,6 +664,54 @@ class PGJsonbStorage(CopyTransactionsMixin, ConflictResolvingStorage, BaseStorag
         finally:
             self._instance_pool.putconn(conn)
 
+    # ── Admin connection self-healing (#103) ─────────────────────────
+
+    def _ensure_admin_conn(self):
+        """Return the admin connection, reconnecting if it died.
+
+        The admin connection can be closed at any time — a CNPG
+        switchover/failover, an operator kill, an idle timeout.  Without
+        healing, every ``self._conn`` user raises
+        ``psycopg.OperationalError`` until the process restarts.
+        """
+        if self._closed:
+            raise psycopg.OperationalError("the storage is closed")
+        conn = self._conn
+        if conn is not None and not conn.closed:
+            return conn
+        with self._admin_conn_lock:
+            conn = self._conn
+            if conn is None or conn.closed:
+                logger.info("Admin connection is closed; reconnecting")
+                conn = psycopg.connect(self._dsn, row_factory=dict_row)
+                conn.autocommit = True
+                self._conn = conn
+        return conn
+
+    def _with_admin_conn(self, fn):
+        """Run ``fn(conn)`` on the admin connection with self-healing.
+
+        A server-side kill is only detected client-side on first use,
+        so on ``OperationalError`` the connection is discarded and
+        ``fn`` retried once on a fresh one.  Only idempotent operations
+        may be routed through here.
+
+        During an active tpc transaction the connection is used as-is:
+        replacing it would silently drop the open BEGIN block and let
+        ``_vote`` write in autocommit mode — the error must propagate.
+        """
+        if self._transaction is not None:
+            return fn(self._conn)
+        conn = self._ensure_admin_conn()
+        try:
+            return fn(conn)
+        except psycopg.OperationalError:
+            # Close only the failed conn: a concurrent thread may have
+            # already installed a fresh one that must survive.
+            with contextlib.suppress(Exception):
+                conn.close()
+            return fn(self._ensure_admin_conn())
+
     def _restore_state(self):
         """Load max OID and last TID from existing data."""
         with self._conn.cursor() as cur:
@@ -686,11 +737,13 @@ class PGJsonbStorage(CopyTransactionsMixin, ConflictResolvingStorage, BaseStorag
         """
         if self._is_read_only:
             raise ReadOnlyError()
-        with self._conn.cursor() as cur:
-            cur.execute("SELECT nextval('zoid_seq') AS oid")
-            row = cur.fetchone()
-            oid_int = row["oid"]
-        return p64(oid_int)
+
+        def _next_oid(conn):
+            with conn.cursor() as cur:
+                cur.execute("SELECT nextval('zoid_seq') AS oid")
+                return cur.fetchone()["oid"]
+
+        return p64(self._with_admin_conn(_next_oid))
 
     # ── State Processors ───────────────────────────────────────────
 
@@ -1040,13 +1093,16 @@ class PGJsonbStorage(CopyTransactionsMixin, ConflictResolvingStorage, BaseStorag
         if cached is not None:
             return cached
 
-        with self._conn.cursor() as cur:
-            cur.execute(
-                self._load_sql,
-                (zoid,),
-                prepare=True,
-            )
-            row = cur.fetchone()
+        def _fetch_row(conn):
+            with conn.cursor() as cur:
+                cur.execute(
+                    self._load_sql,
+                    (zoid,),
+                    prepare=True,
+                )
+                return cur.fetchone()
+
+        row = self._with_admin_conn(_fetch_row)
 
         if row is None:
             raise POSKeyError(oid)
@@ -1078,15 +1134,20 @@ class PGJsonbStorage(CopyTransactionsMixin, ConflictResolvingStorage, BaseStorag
         zoid = u64(oid)
         tid_int = u64(tid)
 
-        with self._conn.cursor() as cur:
-            if self._history_preserving:
-                return _loadBefore_hp(cur, oid, zoid, tid_int)
-            return _loadBefore_hf(cur, oid, zoid, tid_int)
+        def _load_before(conn):
+            with conn.cursor() as cur:
+                if self._history_preserving:
+                    return _loadBefore_hp(cur, oid, zoid, tid_int)
+                return _loadBefore_hf(cur, oid, zoid, tid_int)
+
+        return self._with_admin_conn(_load_before)
 
     def loadSerial(self, oid, serial):
         """Load a specific revision of an object."""
-        return _do_loadSerial(
-            self._conn, self._serial_cache, self._history_preserving, oid, serial
+        return self._with_admin_conn(
+            lambda conn: _do_loadSerial(
+                conn, self._serial_cache, self._history_preserving, oid, serial
+            )
         )
 
     # ── IStorage: store ──────────────────────────────────────────────
@@ -1141,8 +1202,17 @@ class PGJsonbStorage(CopyTransactionsMixin, ConflictResolvingStorage, BaseStorag
         self._ude = (u, d, e)
         self._voted = False
         self._read_conflicts = []
-        self._conn.execute("BEGIN")
-        self._conn.execute("SELECT pg_advisory_xact_lock(0)")
+        conn = self._ensure_admin_conn()
+        try:
+            conn.execute("BEGIN")
+        except psycopg.OperationalError:
+            # A server-side kill surfaces on first use; nothing has been
+            # sent for this transaction yet, so retry once (#103).
+            with contextlib.suppress(Exception):
+                conn.close()
+            conn = self._ensure_admin_conn()
+            conn.execute("BEGIN")
+        conn.execute("SELECT pg_advisory_xact_lock(0)")
 
     def _vote(self):
         """Flush pending stores + blobs to PostgreSQL.
@@ -1283,7 +1353,7 @@ class PGJsonbStorage(CopyTransactionsMixin, ConflictResolvingStorage, BaseStorag
         consensus of 0).
         """
         try:
-            return _read_max_tid(self._conn)
+            return self._with_admin_conn(_read_max_tid)
         except Exception:
             logger.warning(
                 "PGJsonbStorage.current_max_tid: query failed", exc_info=True
@@ -1292,56 +1362,72 @@ class PGJsonbStorage(CopyTransactionsMixin, ConflictResolvingStorage, BaseStorag
 
     def __len__(self):
         """Return approximate number of objects."""
-        with self._conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) AS cnt FROM object_state")
-            row = cur.fetchone()
-        return row["cnt"]
+
+        def _count(conn):
+            with conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*) AS cnt FROM object_state")
+                return cur.fetchone()
+
+        return self._with_admin_conn(_count)["cnt"]
 
     def getSize(self):
         """Return approximate database size in bytes."""
-        with self._conn.cursor() as cur:
-            cur.execute(
-                "SELECT COALESCE(SUM(state_size), 0) AS total FROM object_state"
-            )
-            row = cur.fetchone()
-        return row["total"]
+
+        def _size(conn):
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT COALESCE(SUM(state_size), 0) AS total FROM object_state"
+                )
+                return cur.fetchone()
+
+        return self._with_admin_conn(_size)["total"]
 
     def get_blob_stats(self):
         """Return blob storage statistics."""
-        return _get_blob_stats(self._conn, self._s3_client, self._blob_threshold)
+        return self._with_admin_conn(
+            lambda conn: _get_blob_stats(conn, self._s3_client, self._blob_threshold)
+        )
 
     def get_blob_histogram(self):
         """Return blob size distribution as logarithmic buckets."""
-        return _get_blob_histogram(self._conn, self._s3_client, self._blob_threshold)
+        return self._with_admin_conn(
+            lambda conn: _get_blob_histogram(
+                conn, self._s3_client, self._blob_threshold
+            )
+        )
 
     def history(self, oid, size=1):
         """Return revision history for an object."""
         zoid = u64(oid)
-        with self._conn.cursor() as cur:
-            if self._history_preserving:
-                cur.execute(
-                    "SELECT sub.tid, sub.state_size, "
-                    "t.username, t.description "
-                    "FROM ("
-                    "  SELECT tid, state_size FROM object_history WHERE zoid = %s"
-                    "  UNION"
-                    "  SELECT tid, state_size FROM object_state WHERE zoid = %s"
-                    ") sub "
-                    "LEFT JOIN transaction_log t ON sub.tid = t.tid "
-                    "ORDER BY sub.tid DESC LIMIT %s",
-                    (zoid, zoid, size),
-                )
-            else:
-                cur.execute(
-                    "SELECT o.tid, o.state_size, "
-                    "t.username, t.description "
-                    "FROM object_state o "
-                    "LEFT JOIN transaction_log t ON o.tid = t.tid "
-                    "WHERE o.zoid = %s "
-                    "ORDER BY o.tid DESC LIMIT %s",
-                    (zoid, size),
-                )
-            rows = cur.fetchall()
+
+        def _fetch_history(conn):
+            with conn.cursor() as cur:
+                if self._history_preserving:
+                    cur.execute(
+                        "SELECT sub.tid, sub.state_size, "
+                        "t.username, t.description "
+                        "FROM ("
+                        "  SELECT tid, state_size FROM object_history WHERE zoid = %s"
+                        "  UNION"
+                        "  SELECT tid, state_size FROM object_state WHERE zoid = %s"
+                        ") sub "
+                        "LEFT JOIN transaction_log t ON sub.tid = t.tid "
+                        "ORDER BY sub.tid DESC LIMIT %s",
+                        (zoid, zoid, size),
+                    )
+                else:
+                    cur.execute(
+                        "SELECT o.tid, o.state_size, "
+                        "t.username, t.description "
+                        "FROM object_state o "
+                        "LEFT JOIN transaction_log t ON o.tid = t.tid "
+                        "WHERE o.zoid = %s "
+                        "ORDER BY o.tid DESC LIMIT %s",
+                        (zoid, size),
+                    )
+                return cur.fetchall()
+
+        rows = self._with_admin_conn(_fetch_history)
 
         if not rows:
             raise POSKeyError(oid)
@@ -1371,7 +1457,9 @@ class PGJsonbStorage(CopyTransactionsMixin, ConflictResolvingStorage, BaseStorag
             pack_time = TimeStamp(*(*time.gmtime(t)[:5], t % 60)).raw()
             self._pack_tid = u64(pack_time)
         _deleted_objects, _deleted_blobs, s3_keys = do_pack(
-            self._conn,
+            # Ensure-only, no retry: pack runs one long transaction and
+            # must not be silently restarted halfway (#103).
+            self._ensure_admin_conn(),
             pack_time=pack_time,
             history_preserving=self._history_preserving,
         )
@@ -1399,25 +1487,28 @@ class PGJsonbStorage(CopyTransactionsMixin, ConflictResolvingStorage, BaseStorag
 
         limit = -last if last < 0 else last - first
 
-        with self._conn.cursor() as cur:
-            if self._pack_tid is not None:
-                cur.execute(
-                    "SELECT tid, username, description, extension "
-                    "FROM transaction_log "
-                    "WHERE tid > %s "
-                    "ORDER BY tid DESC "
-                    "LIMIT %s OFFSET %s",
-                    (self._pack_tid, limit, first),
-                )
-            else:
-                cur.execute(
-                    "SELECT tid, username, description, extension "
-                    "FROM transaction_log "
-                    "ORDER BY tid DESC "
-                    "LIMIT %s OFFSET %s",
-                    (limit, first),
-                )
-            rows = cur.fetchall()
+        def _fetch_undo_log(conn):
+            with conn.cursor() as cur:
+                if self._pack_tid is not None:
+                    cur.execute(
+                        "SELECT tid, username, description, extension "
+                        "FROM transaction_log "
+                        "WHERE tid > %s "
+                        "ORDER BY tid DESC "
+                        "LIMIT %s OFFSET %s",
+                        (self._pack_tid, limit, first),
+                    )
+                else:
+                    cur.execute(
+                        "SELECT tid, username, description, extension "
+                        "FROM transaction_log "
+                        "ORDER BY tid DESC "
+                        "LIMIT %s OFFSET %s",
+                        (limit, first),
+                    )
+                return cur.fetchall()
+
+        rows = self._with_admin_conn(_fetch_undo_log)
 
         result = []
         for row in rows:
@@ -1584,13 +1675,15 @@ class PGJsonbStorage(CopyTransactionsMixin, ConflictResolvingStorage, BaseStorag
         pending = self._blob_tmp.get(zoid)
         if pending is not None and os.path.exists(pending):
             return pending
-        return _materialize_blob(
-            self._conn,
-            self._blob_cache,
-            self._s3_client,
-            self._blob_temp_dir,
-            oid,
-            serial,
+        return self._with_admin_conn(
+            lambda conn: _materialize_blob(
+                conn,
+                self._blob_cache,
+                self._s3_client,
+                self._blob_temp_dir,
+                oid,
+                serial,
+            )
         )
 
     def openCommittedBlobFile(self, oid, serial, blob=None):
@@ -1643,6 +1736,9 @@ class PGJsonbStorage(CopyTransactionsMixin, ConflictResolvingStorage, BaseStorag
 
     def close(self):
         """Close all database connections, pool, and clean up temp dir."""
+        # Flag first so a concurrent admin op cannot resurrect the
+        # connection during shutdown (#103).
+        self._closed = True
         if self._conn and not self._conn.closed:
             self._conn.close()
         if hasattr(self, "_instance_pool"):
