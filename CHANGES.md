@@ -31,6 +31,10 @@
   and sizing worker threads per process against replica count). Added to the performance
   explanation and the production how-to. #98
 
+- Reformat Python code fences in the documentation for ruff 0.16, which now
+  formats markdown code blocks (the QA workflow always runs the latest ruff
+  via `uvx`). No content changes. #103
+
 ## 1.16.0
 
 ### Features

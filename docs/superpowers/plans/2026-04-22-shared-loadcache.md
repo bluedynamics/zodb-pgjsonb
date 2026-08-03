@@ -325,8 +325,7 @@ class TestLRUEviction:
         cache.poll_advance(new_tid=100, changed_zoids=[])
         # Fill with 10 entries of 200_000 bytes each (2 MB total, budget 1 MB)
         for z in range(10):
-            cache.set(zoid=z, data=b"x" * 200_000,
-                      tid_bytes=p64(100), polled_tid=100)
+            cache.set(zoid=z, data=b"x" * 200_000, tid_bytes=p64(100), polled_tid=100)
         # At most ~5 entries fit in 1 MB
         assert len(cache._cache) <= 6
         assert cache._current_bytes <= 1_000_000
@@ -336,13 +335,11 @@ class TestLRUEviction:
         cache.poll_advance(new_tid=100, changed_zoids=[])
         # Fill just under budget
         for z in range(4):
-            cache.set(zoid=z, data=b"x" * 200_000,
-                      tid_bytes=p64(100), polled_tid=100)
+            cache.set(zoid=z, data=b"x" * 200_000, tid_bytes=p64(100), polled_tid=100)
         # Touch zoid 0 — bumps it to most-recent
         cache.get(zoid=0, polled_tid=100)
         # Add one more — zoid 1 (oldest now) should be evicted, not zoid 0
-        cache.set(zoid=99, data=b"x" * 200_000,
-                  tid_bytes=p64(100), polled_tid=100)
+        cache.set(zoid=99, data=b"x" * 200_000, tid_bytes=p64(100), polled_tid=100)
         assert cache.get(zoid=0, polled_tid=100) is not None
 ```
 
@@ -412,13 +409,15 @@ def test_no_stale_reads_under_concurrent_writes_and_polls():
     def writer(start_tid):
         tid = start_tid
         while not stop.is_set():
-            cache.poll_advance(new_tid=tid, changed_zoids=[
-                random.randint(0, 99)
-            ])
+            cache.poll_advance(new_tid=tid, changed_zoids=[random.randint(0, 99)])
             for _ in range(20):
                 z = random.randint(0, 99)
-                cache.set(zoid=z, data=b"x" * random.randint(100, 5000),
-                          tid_bytes=p64(tid), polled_tid=tid)
+                cache.set(
+                    zoid=z,
+                    data=b"x" * random.randint(100, 5000),
+                    tid_bytes=p64(tid),
+                    polled_tid=tid,
+                )
             tid += random.randint(1, 10)
 
     threads = []
@@ -435,8 +434,9 @@ def test_no_stale_reads_under_concurrent_writes_and_polls():
     for t in threads:
         t.join(timeout=5.0)
 
-    assert violations == [], \
+    assert violations == [], (
         f"Cache returned entries at tid > polled_tid: {violations[:5]}"
+    )
 
 
 def test_byte_accounting_consistent_under_concurrent_load():
@@ -450,11 +450,15 @@ def test_byte_accounting_consistent_under_concurrent_load():
         while not stop.is_set():
             for _ in range(50):
                 z = random.randint(0, 199)
-                cache.set(zoid=z, data=b"x" * random.randint(100, 50_000),
-                          tid_bytes=p64(tid), polled_tid=tid)
-            cache.poll_advance(new_tid=tid, changed_zoids=[
-                random.randint(0, 199) for _ in range(5)
-            ])
+                cache.set(
+                    zoid=z,
+                    data=b"x" * random.randint(100, 50_000),
+                    tid_bytes=p64(tid),
+                    polled_tid=tid,
+                )
+            cache.poll_advance(
+                new_tid=tid, changed_zoids=[random.randint(0, 199) for _ in range(5)]
+            )
             tid += 1
 
     threads = [threading.Thread(target=worker) for _ in range(4)]
@@ -468,8 +472,9 @@ def test_byte_accounting_consistent_under_concurrent_load():
 
     with cache._lock:
         actual_bytes = sum(len(e[0]) for e in cache._cache.values())
-        assert cache._current_bytes == actual_bytes, \
+        assert cache._current_bytes == actual_bytes, (
             f"Accounting drift: tracked={cache._current_bytes} actual={actual_bytes}"
+        )
         assert cache._current_bytes <= cache._max_bytes
 ```
 
@@ -553,49 +558,50 @@ Expected: FAIL on all three (no `_shared_cache`, no `cache_shared_mb` / `cache_p
 In `src/zodb_pgjsonb/storage.py` at line 255, change the signature:
 
 ```python
-    def __init__(
-        self,
-        dsn,
-        name="pgjsonb",
-        history_preserving=False,
-        blob_temp_dir=None,
-        cache_local_mb=None,          # deprecated alias for cache_shared_mb
-        cache_shared_mb=256,
-        cache_per_connection_mb=16,
-        pool_size=1,
-        pool_max_size=10,
-        pool_timeout=30.0,
-        s3_client=None,
-        blob_cache=None,
-        blob_threshold=102_400,
-        cache_warm_pct=10,
-        cache_warm_decay=0.8,
-    ):
-        BaseStorage.__init__(self, name)
-        self._dsn = dsn
-        self._history_preserving = history_preserving
+def __init__(
+    self,
+    dsn,
+    name="pgjsonb",
+    history_preserving=False,
+    blob_temp_dir=None,
+    cache_local_mb=None,  # deprecated alias for cache_shared_mb
+    cache_shared_mb=256,
+    cache_per_connection_mb=16,
+    pool_size=1,
+    pool_max_size=10,
+    pool_timeout=30.0,
+    s3_client=None,
+    blob_cache=None,
+    blob_threshold=102_400,
+    cache_warm_pct=10,
+    cache_warm_decay=0.8,
+):
+    BaseStorage.__init__(self, name)
+    self._dsn = dsn
+    self._history_preserving = history_preserving
 
-        # Deprecation: cache_local_mb used to be per-instance; now it is
-        # an alias for cache_shared_mb (see #63).  Warn once per storage.
-        if cache_local_mb is not None:
-            import warnings
-            warnings.warn(
-                "cache_local_mb is deprecated since 1.12.0; use "
-                "cache_shared_mb for the process-wide cache and "
-                "cache_per_connection_mb for the per-instance L1. "
-                "cache_local_mb is being mapped to cache_shared_mb.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-            cache_shared_mb = cache_local_mb
+    # Deprecation: cache_local_mb used to be per-instance; now it is
+    # an alias for cache_shared_mb (see #63).  Warn once per storage.
+    if cache_local_mb is not None:
+        import warnings
 
-        self._cache_shared_mb = cache_shared_mb
-        self._cache_per_connection_mb = cache_per_connection_mb
-        # Keep the old attribute name for backward compat with any
-        # code that reads it (tests etc.)
-        self._cache_local_mb = cache_per_connection_mb
-        self._ltid = z64
-        self._pack_tid = None
+        warnings.warn(
+            "cache_local_mb is deprecated since 1.12.0; use "
+            "cache_shared_mb for the process-wide cache and "
+            "cache_per_connection_mb for the per-instance L1. "
+            "cache_local_mb is being mapped to cache_shared_mb.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        cache_shared_mb = cache_local_mb
+
+    self._cache_shared_mb = cache_shared_mb
+    self._cache_per_connection_mb = cache_per_connection_mb
+    # Keep the old attribute name for backward compat with any
+    # code that reads it (tests etc.)
+    self._cache_local_mb = cache_per_connection_mb
+    self._ltid = z64
+    self._pack_tid = None
 ```
 
 Replace the existing `self._load_cache = LoadCache(max_mb=cache_local_mb)` at line 306 with:
@@ -690,6 +696,7 @@ class TestSharedCachePopulatedByLoad:
             _ = root["c0"]["i"]
             zoid = root["c0"]._p_oid
             from ZODB.utils import u64
+
             shared = instance._main._shared_cache
             entry = shared.get(u64(zoid), instance._polled_tid)
             assert entry is not None
@@ -716,6 +723,7 @@ class TestSharedCachePopulatedByLoad:
             _ = root2["c0"]["i"]  # should hit shared, not PG
             zoid = root2["c0"]._p_oid
             from ZODB.utils import u64
+
             # Now L1 should hold the entry (promoted from shared)
             assert instance._load_cache.get(u64(zoid)) is not None
         finally:
@@ -732,65 +740,63 @@ Expected: FAIL — `instance.load()` does not yet consult or populate the shared
 In `src/zodb_pgjsonb/instance.py`, replace the entire `load()` method (starting at line 217) with:
 
 ```python
-    def load(self, oid, version=""):
-        """Load current object state.
+def load(self, oid, version=""):
+    """Load current object state.
 
-        Three-tier cascade: per-instance L1 (fast, no lock) → process-
-        wide shared cache (L2, consensus-TID gated) → PostgreSQL.
-        """
-        zoid = u64(oid)
+    Three-tier cascade: per-instance L1 (fast, no lock) → process-
+    wide shared cache (L2, consensus-TID gated) → PostgreSQL.
+    """
+    zoid = u64(oid)
 
-        # L1: instance load cache (fast path, no lock)
-        cached = self._load_cache.get(zoid)
-        if cached is not None:
-            return cached
+    # L1: instance load cache (fast path, no lock)
+    cached = self._load_cache.get(zoid)
+    if cached is not None:
+        return cached
 
-        # L2: process-wide shared cache
-        shared = self._main._shared_cache
-        shared_hit = shared.get(zoid, self._polled_tid)
-        if shared_hit is not None:
-            self._load_cache.set(zoid, *shared_hit)
-            return shared_hit
+    # L2: process-wide shared cache
+    shared = self._main._shared_cache
+    shared_hit = shared.get(zoid, self._polled_tid)
+    if shared_hit is not None:
+        self._load_cache.set(zoid, *shared_hit)
+        return shared_hit
 
-        # Miss — go to PG
-        with self._conn.cursor() as cur:
-            cur.execute(
-                self._load_sql,
-                (zoid,),
-                prepare=True,
-            )
-            row = cur.fetchone()
+    # Miss — go to PG
+    with self._conn.cursor() as cur:
+        cur.execute(
+            self._load_sql,
+            (zoid,),
+            prepare=True,
+        )
+        row = cur.fetchone()
 
-        if row is None:
-            raise POSKeyError(oid)
+    if row is None:
+        raise POSKeyError(oid)
 
-        record = {
-            "@cls": [row["class_mod"], row["class_name"]],
-            "@s": _unsanitize_from_pg(row["state"]),
-        }
-        data = zodb_json_codec.encode_zodb_record(record)
-        tid = p64(row["tid"])
-        self._serial_cache[(oid, tid)] = data
-        self._load_cache.set(zoid, data, tid)
-        shared.set(zoid, data, tid, self._polled_tid)
+    record = {
+        "@cls": [row["class_mod"], row["class_name"]],
+        "@s": _unsanitize_from_pg(row["state"]),
+    }
+    data = zodb_json_codec.encode_zodb_record(record)
+    tid = p64(row["tid"])
+    self._serial_cache[(oid, tid)] = data
+    self._load_cache.set(zoid, data, tid)
+    shared.set(zoid, data, tid, self._polled_tid)
 
-        # Prefetch refs if the expression yielded a non-NULL array
-        refs = row.get("refs") if isinstance(row, dict) else None
-        if refs:
-            ref_oids = [
-                p64(ref_zoid)
-                for ref_zoid in refs
-                if self._load_cache.get(ref_zoid) is None
-            ]
-            if ref_oids:
-                self.load_multiple(ref_oids)
+    # Prefetch refs if the expression yielded a non-NULL array
+    refs = row.get("refs") if isinstance(row, dict) else None
+    if refs:
+        ref_oids = [
+            p64(ref_zoid) for ref_zoid in refs if self._load_cache.get(ref_zoid) is None
+        ]
+        if ref_oids:
+            self.load_multiple(ref_oids)
 
-        # Record for cache warmer (#48)
-        warmer = self._main._warmer
-        if warmer and warmer.recording:
-            warmer.record(zoid)
+    # Record for cache warmer (#48)
+    warmer = self._main._warmer
+    if warmer and warmer.recording:
+        warmer.record(zoid)
 
-        return data, tid
+    return data, tid
 ```
 
 Key change: the L2 check now goes through `self._main._shared_cache.get()` instead of `self._main._warmer.get()`, and after a PG load the shared cache is populated via `shared.set()`. The warmer still receives `record()` for pattern learning.
@@ -845,6 +851,7 @@ class TestLoadMultipleUsesSharedCache:
             assert len(result) == 5
 
             from ZODB.utils import u64
+
             shared = instance._main._shared_cache
             for oid in oids:
                 assert shared.get(u64(oid), instance._polled_tid) is not None
@@ -878,6 +885,7 @@ class TestLoadMultipleUsesSharedCache:
             assert len(result) == 5
             # All 5 should now be in L1 (promoted from shared)
             from ZODB.utils import u64
+
             for oid in oids:
                 assert instance2._load_cache.get(u64(oid)) is not None
         finally:
@@ -1016,6 +1024,7 @@ class TestPollInvalidatesShared:
         try:
             instance2 = conn2._storage
             from ZODB.utils import u64
+
             shared = instance2._main._shared_cache
             # poll_invalidations fired on conn2.open() — c0 should be gone
             assert shared.get(u64(zoid), instance2._polled_tid) is None
@@ -1047,33 +1056,32 @@ Expected: FAIL — `poll_invalidations` does not yet call `shared.poll_advance`.
 In `src/zodb_pgjsonb/instance.py`, in the `poll_invalidations` method (starts around line 156), replace the result-collection block (lines 188-206) with:
 
 ```python
-        result = []
-        changed_zoids = []
-        if self._polled_tid is not None and new_tid != self._polled_tid:
-            with self._conn.cursor() as cur:
-                cur.execute(
-                    "SELECT DISTINCT zoid FROM object_state "
-                    "WHERE tid > %s AND tid <= %s",
-                    (self._polled_tid, new_tid),
-                )
-                rows = cur.fetchall()
-            warmer = self._main._warmer
-            for r in rows:
-                zoid = r["zoid"]
-                result.append(p64(zoid))
-                changed_zoids.append(zoid)
-                self._load_cache.invalidate(zoid)
-                if warmer:
-                    warmer.invalidate(zoid)
+result = []
+changed_zoids = []
+if self._polled_tid is not None and new_tid != self._polled_tid:
+    with self._conn.cursor() as cur:
+        cur.execute(
+            "SELECT DISTINCT zoid FROM object_state WHERE tid > %s AND tid <= %s",
+            (self._polled_tid, new_tid),
+        )
+        rows = cur.fetchall()
+    warmer = self._main._warmer
+    for r in rows:
+        zoid = r["zoid"]
+        result.append(p64(zoid))
+        changed_zoids.append(zoid)
+        self._load_cache.invalidate(zoid)
+        if warmer:
+            warmer.invalidate(zoid)
 
-        # Advance the process-wide shared cache atomically with the
-        # invalidation set.  Called even when changed_zoids is empty
-        # so the consensus_tid reaches the latest observed state
-        # (#63 — correctness-critical on first poll).
-        self._main._shared_cache.poll_advance(new_tid, changed_zoids)
+# Advance the process-wide shared cache atomically with the
+# invalidation set.  Called even when changed_zoids is empty
+# so the consensus_tid reaches the latest observed state
+# (#63 — correctness-critical on first poll).
+self._main._shared_cache.poll_advance(new_tid, changed_zoids)
 
-        self._polled_tid = new_tid
-        return result
+self._polled_tid = new_tid
+return result
 ```
 
 - [ ] **Step 4: Run tests to verify they pass**
@@ -1136,10 +1144,7 @@ class TestWarmerPopulatesSharedCache:
         )
 
         def load_multiple_fn(oids):
-            return {
-                oid: (b"data-" + oid, p64(50))
-                for oid in oids
-            }
+            return {oid: (b"data-" + oid, p64(50)) for oid in oids}
 
         # Prime consensus so set() is accepted
         storage._shared_cache.poll_advance(new_tid=100, changed_zoids=[])
@@ -1276,8 +1281,7 @@ class CacheWarmer:
         try:
             with self._conn.cursor() as cur:
                 cur.execute(
-                    "SELECT zoid FROM cache_warm_stats "
-                    "ORDER BY score DESC LIMIT %(n)s",
+                    "SELECT zoid FROM cache_warm_stats ORDER BY score DESC LIMIT %(n)s",
                     {"n": self._target_count},
                 )
                 return [row["zoid"] for row in cur.fetchall()]
@@ -1327,32 +1331,29 @@ class CacheWarmer:
 In `src/zodb_pgjsonb/storage.py`, in `PGJsonbStorage.__init__` around line 376, replace:
 
 ```python
-            self._warmer = CacheWarmer(
-                self._conn, target_count=target, decay=cache_warm_decay
-            )
+self._warmer = CacheWarmer(self._conn, target_count=target, decay=cache_warm_decay)
 ```
 
 with:
 
 ```python
-            def _current_max_tid():
-                try:
-                    with self._conn.cursor() as cur:
-                        cur.execute(
-                            "SELECT COALESCE(MAX(tid), 0) AS t FROM transaction_log"
-                        )
-                        row = cur.fetchone()
-                        return row["t"] if row else 0
-                except Exception:
-                    return 0
+def _current_max_tid():
+    try:
+        with self._conn.cursor() as cur:
+            cur.execute("SELECT COALESCE(MAX(tid), 0) AS t FROM transaction_log")
+            row = cur.fetchone()
+            return row["t"] if row else 0
+    except Exception:
+        return 0
 
-            self._warmer = CacheWarmer(
-                self._conn,
-                target_count=target,
-                shared_cache=self._shared_cache,
-                load_current_tid_fn=_current_max_tid,
-                decay=cache_warm_decay,
-            )
+
+self._warmer = CacheWarmer(
+    self._conn,
+    target_count=target,
+    shared_cache=self._shared_cache,
+    load_current_tid_fn=_current_max_tid,
+    decay=cache_warm_decay,
+)
 ```
 
 - [ ] **Step 5: Remove warmer.get() and warmer.invalidate() call sites from instance.py**
@@ -1364,25 +1365,24 @@ In `poll_invalidations()` (already rewritten in Task 8), remove the `warmer.inva
 The final `poll_invalidations` loop becomes:
 
 ```python
-        result = []
-        changed_zoids = []
-        if self._polled_tid is not None and new_tid != self._polled_tid:
-            with self._conn.cursor() as cur:
-                cur.execute(
-                    "SELECT DISTINCT zoid FROM object_state "
-                    "WHERE tid > %s AND tid <= %s",
-                    (self._polled_tid, new_tid),
-                )
-                rows = cur.fetchall()
-            for r in rows:
-                zoid = r["zoid"]
-                result.append(p64(zoid))
-                changed_zoids.append(zoid)
-                self._load_cache.invalidate(zoid)
+result = []
+changed_zoids = []
+if self._polled_tid is not None and new_tid != self._polled_tid:
+    with self._conn.cursor() as cur:
+        cur.execute(
+            "SELECT DISTINCT zoid FROM object_state WHERE tid > %s AND tid <= %s",
+            (self._polled_tid, new_tid),
+        )
+        rows = cur.fetchall()
+    for r in rows:
+        zoid = r["zoid"]
+        result.append(p64(zoid))
+        changed_zoids.append(zoid)
+        self._load_cache.invalidate(zoid)
 
-        self._main._shared_cache.poll_advance(new_tid, changed_zoids)
-        self._polled_tid = new_tid
-        return result
+self._main._shared_cache.poll_advance(new_tid, changed_zoids)
+self._polled_tid = new_tid
+return result
 ```
 
 - [ ] **Step 6: Run tests to verify they pass**
@@ -1467,9 +1467,12 @@ class TestCacheConfigMigration:
             storage = storageFromString(zconf)
             try:
                 assert storage._shared_cache._max_bytes == 128 * 1_000_000
-                dep = [w for w in wlist
-                       if issubclass(w.category, DeprecationWarning)
-                       and "cache_local_mb" in str(w.message)]
+                dep = [
+                    w
+                    for w in wlist
+                    if issubclass(w.category, DeprecationWarning)
+                    and "cache_local_mb" in str(w.message)
+                ]
                 assert dep, "expected DeprecationWarning for cache_local_mb"
             finally:
                 storage.close()
@@ -1682,18 +1685,19 @@ If the test currently looks like:
 it becomes:
 
 ```python
-    from zodb_pgjsonb.storage import SharedLoadCache
-    shared = SharedLoadCache(max_mb=4)
-    w = CacheWarmer(
-        conn=storage._conn,
-        target_count=5,
-        shared_cache=shared,
-        load_current_tid_fn=lambda: 100,
-        decay=0.5,
-    )
-    ...
-    # Count entries via the shared cache
-    assert len(shared._cache) == expected
+from zodb_pgjsonb.storage import SharedLoadCache
+
+shared = SharedLoadCache(max_mb=4)
+w = CacheWarmer(
+    conn=storage._conn,
+    target_count=5,
+    shared_cache=shared,
+    load_current_tid_fn=lambda: 100,
+    decay=0.5,
+)
+...
+# Count entries via the shared cache
+assert len(shared._cache) == expected
 ```
 
 - [ ] **Step 5: Verify the sweep is complete**
@@ -1902,9 +1906,9 @@ This plan shipped as #63 with a **coarse read gate**: `SharedLoadCache.get()` re
 
 ```python
 # get(): after fetching the entry
-if u64(entry[1]) > polled_tid:   # cached version newer than the reader's snapshot
-    return None                  # miss → PostgreSQL returns the correct older version
-return entry                     # entry_tid <= polled_tid → exactly the reader's version
+if u64(entry[1]) > polled_tid:  # cached version newer than the reader's snapshot
+    return None  # miss → PostgreSQL returns the correct older version
+return entry  # entry_tid <= polled_tid → exactly the reader's version
 ```
 
 A lagging reader now keeps hitting L2 for every object unchanged since its snapshot and misses only objects genuinely newer than it.

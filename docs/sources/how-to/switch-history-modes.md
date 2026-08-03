@@ -39,7 +39,9 @@ All undo history is permanently deleted.
    ```python
    from zodb_pgjsonb.storage import PGJsonbStorage
 
-   storage = PGJsonbStorage(dsn="dbname=zodb user=zodb host=localhost", history_preserving=True)
+   storage = PGJsonbStorage(
+       dsn="dbname=zodb user=zodb host=localhost", history_preserving=True
+   )
    counts = storage.convert_to_history_free()
    print(counts)
    storage.close()
@@ -76,9 +78,13 @@ If you upgraded from an older version that used dual-write mode (writing the sam
 ```python
 from zodb_pgjsonb.storage import PGJsonbStorage
 
-storage = PGJsonbStorage(dsn="dbname=zodb user=zodb host=localhost", history_preserving=True)
+storage = PGJsonbStorage(
+    dsn="dbname=zodb user=zodb host=localhost", history_preserving=True
+)
 deleted_objects, deleted_blobs = storage.compact_history()
-print(f"Removed {deleted_objects} object_history rows, {deleted_blobs} blob_history rows")
+print(
+    f"Removed {deleted_objects} object_history rows, {deleted_blobs} blob_history rows"
+)
 storage.close()
 ```
 

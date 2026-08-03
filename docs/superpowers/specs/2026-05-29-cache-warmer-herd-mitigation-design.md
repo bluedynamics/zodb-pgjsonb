@@ -84,8 +84,8 @@ else:
 `CacheWarmer.warm()` currently issues a single `SELECT ... WHERE zoid = ANY(...)` for the full `target` set, materializing the entire result in one round trip. Change to batched fetches:
 
 ```python
-batch_size = cache_warm_batch_size           # default 500
-batch_pause = cache_warm_batch_pause         # default 0.5 seconds
+batch_size = cache_warm_batch_size  # default 500
+batch_pause = cache_warm_batch_pause  # default 0.5 seconds
 for chunk in chunked(top_zoids, batch_size):
     results = load_multiple_fn(chunk_p64)
     for oid, (data, tid_bytes) in results.items():
@@ -160,8 +160,8 @@ Six new ZConfig keys (all `default` values per A1/A2/A3/B2b above):
 Constants in `cache_warmer.py` (not `startup_locks.py` — different concern, different lifetime):
 
 ```python
-WARMER_LOCK_NS = 0x5A4442   # shared "ZDB" namespace
-WARMER_SLOT_BASE = 100      # slot keys are WARMER_SLOT_BASE + i for i in 1..concurrency
+WARMER_LOCK_NS = 0x5A4442  # shared "ZDB" namespace
+WARMER_SLOT_BASE = 100  # slot keys are WARMER_SLOT_BASE + i for i in 1..concurrency
 ```
 
 The slot keys start at 100 to leave a clear gap from `STARTUP_DDL_LOCK_KEY = 1`. There is no hard upper bound — operators who set `cache-warm-concurrency=9999` simply use keys `101..10099`. Future lock kinds should pick a base well above the largest expected `concurrency` (e.g., `100_000+`).

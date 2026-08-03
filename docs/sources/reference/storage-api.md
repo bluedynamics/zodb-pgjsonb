@@ -309,9 +309,7 @@ existing data.
   prefetches for cataloged content objects:
 
   ```python
-  storage.register_prefetch_refs_expr(
-      "CASE WHEN idx IS NOT NULL THEN refs END"
-  )
+  storage.register_prefetch_refs_expr("CASE WHEN idx IS NOT NULL THEN refs END")
   ```
 
   Non-content objects (BTrees, PersistentMappings, etc.) have
@@ -344,6 +342,7 @@ existing data.
   ```python
   def create_my_index(dsn):
       import psycopg
+
       with psycopg.connect(dsn, autocommit=True) as conn:
           conn.execute("SET lock_timeout = '30s'")
           conn.execute(
@@ -351,6 +350,7 @@ existing data.
               "ON object_state ((idx->>'my_field')) "
               "WHERE idx IS NOT NULL"
           )
+
 
   storage.defer_startup_action(create_my_index, "my_plugin_indexes")
   ```

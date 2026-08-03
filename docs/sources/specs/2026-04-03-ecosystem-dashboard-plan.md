@@ -71,9 +71,7 @@ def _render_card(entry: dict) -> str:
             f'target="_blank" rel="noopener">PyPI</a>'
         )
     if docs:
-        links.append(
-            f'<a href="{docs}" target="_blank" rel="noopener">Docs</a>'
-        )
+        links.append(f'<a href="{docs}" target="_blank" rel="noopener">Docs</a>')
     links_html = " · ".join(links)
 
     pypi_version = ""
@@ -87,8 +85,7 @@ def _render_card(entry: dict) -> str:
     icon_html = ""
     if icon:
         icon_html = (
-            f'<img class="eco-card-icon" src="{icon}" alt="{name}" '
-            f'loading="lazy" />'
+            f'<img class="eco-card-icon" src="{icon}" alt="{name}" loading="lazy" />'
         )
 
     return f"""<div class="eco-card" data-repo="{repo}">
@@ -748,37 +745,39 @@ This is the Ecosystem dropdown entry that goes into every conf.py. Adapt the exi
 The dropdown definition (same for all 4 packages):
 
 ```python
-{
-    "title": "Ecosystem",
-    "url": "https://bluedynamics.github.io/zodb-pgjsonb/ecosystem.html",
-    "children": [
-        {
-            "title": "Dashboard",
-            "url": "https://bluedynamics.github.io/zodb-pgjsonb/ecosystem.html",
-            "summary": "Overview of all packages",
-        },
-        {
-            "title": "zodb-pgjsonb",
-            "url": "https://bluedynamics.github.io/zodb-pgjsonb/",
-            "summary": "PostgreSQL JSONB storage",
-        },
-        {
-            "title": "zodb-json-codec",
-            "url": "https://bluedynamics.github.io/zodb-json-codec/",
-            "summary": "Rust pickle↔JSON transcoder",
-        },
-        {
-            "title": "plone-pgcatalog",
-            "url": "https://bluedynamics.github.io/plone-pgcatalog/",
-            "summary": "PostgreSQL-backed catalog",
-        },
-        {
-            "title": "plone-pgthumbor",
-            "url": "https://bluedynamics.github.io/plone-pgthumbor/",
-            "summary": "Thumbor image scaling",
-        },
-    ],
-},
+(
+    {
+        "title": "Ecosystem",
+        "url": "https://bluedynamics.github.io/zodb-pgjsonb/ecosystem.html",
+        "children": [
+            {
+                "title": "Dashboard",
+                "url": "https://bluedynamics.github.io/zodb-pgjsonb/ecosystem.html",
+                "summary": "Overview of all packages",
+            },
+            {
+                "title": "zodb-pgjsonb",
+                "url": "https://bluedynamics.github.io/zodb-pgjsonb/",
+                "summary": "PostgreSQL JSONB storage",
+            },
+            {
+                "title": "zodb-json-codec",
+                "url": "https://bluedynamics.github.io/zodb-json-codec/",
+                "summary": "Rust pickle↔JSON transcoder",
+            },
+            {
+                "title": "plone-pgcatalog",
+                "url": "https://bluedynamics.github.io/plone-pgcatalog/",
+                "summary": "PostgreSQL-backed catalog",
+            },
+            {
+                "title": "plone-pgthumbor",
+                "url": "https://bluedynamics.github.io/plone-pgthumbor/",
+                "summary": "Thumbor image scaling",
+            },
+        ],
+    },
+)
 ```
 
 - [ ] **Step 2: Update zodb-pgjsonb conf.py**
