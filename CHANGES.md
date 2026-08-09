@@ -1,5 +1,12 @@
 # Changelog
 
+## unreleased
+
+- Add `cloud-vinyl` and `plone.observability` to the ecosystem dashboard
+  (`docs/sources/ecosystem.md`) and to the ecosystem navigation dropdown in the
+  docs. `cloud-vinyl` joins the existing *Deployment* group; `plone.observability`
+  introduces a new *Observability* group.
+
 ## 1.16.1
 
 ### Bug fixes
