@@ -2,6 +2,11 @@
 
 ## unreleased
 
+- Bump `hynek/build-and-inspect-python-package` from v2 to v3.0.1. Hatchling now
+  emits `Metadata-Version: 2.5`, which the Twine bundled in v2 rejects with
+  `InvalidDistribution: '2.5' is not a valid metadata version` — the release
+  build failed before uploading anything. v3 ships Twine 7, which supports it.
+
 - Add `cloud-vinyl` and `plone.observability` to the ecosystem dashboard
   (`docs/sources/ecosystem.md`) and to the ecosystem navigation dropdown in the
   docs. `cloud-vinyl` joins the existing *Deployment* group; `plone.observability`
