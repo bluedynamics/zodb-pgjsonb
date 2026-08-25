@@ -2,6 +2,19 @@
 
 ## unreleased
 
+- **Fix packer crash `KeyError: 0` on any pack that deletes blobs (#108).**
+  `pack()` read the `RETURNING s3_key` rows with tuple indexing (`row[0]`),
+  but the storage's admin connection is opened with `row_factory=dict_row` —
+  the first deleted blob row raised `KeyError: 0`. Because the admin
+  connection runs in autocommit, the `DELETE`s had already committed at that
+  point: the pack completed on the database side while the collected S3 keys
+  were lost, orphaning every deleted blob's S3 object with no remaining record
+  of its key. `pack()` now opens its cursor with an explicit `dict_row`
+  factory and reads `row["s3_key"]`, so it works regardless of how the
+  caller's connection was configured. The packer tests now run against both
+  tuple- and dict-row connections, and the deprecated `blob_history` cleanup
+  paths gained coverage.
+
 - Bump `hynek/build-and-inspect-python-package` from v2 to v3.0.1. Hatchling now
   emits `Metadata-Version: 2.5`, which the Twine bundled in v2 rejects with
   `InvalidDistribution: '2.5' is not a valid metadata version` — the release

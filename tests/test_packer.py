@@ -6,6 +6,8 @@ coverage gaps: HP-without-pack_tid paths and S3 key collection.
 Requires PostgreSQL on localhost:5433.
 """
 
+from psycopg.rows import dict_row
+from psycopg.rows import tuple_row
 from tests.conftest import DSN
 from zodb_pgjsonb.packer import pack
 from zodb_pgjsonb.schema import install_schema
@@ -16,11 +18,17 @@ import pytest
 
 pytestmark = pytest.mark.db
 
+# pack() receives the storage's admin connection, which is opened with
+# row_factory=dict_row (storage.py).  Run every packer test against both
+# factories so the code cannot silently depend on one of them (#108).
+_ROW_FACTORIES = [tuple_row, dict_row]
+_ROW_FACTORY_IDS = ["tuple_row", "dict_row"]
 
-@pytest.fixture
-def hp_conn():
+
+@pytest.fixture(params=_ROW_FACTORIES, ids=_ROW_FACTORY_IDS)
+def hp_conn(request):
     """Fresh HP schema + raw psycopg connection."""
-    conn = psycopg.connect(DSN)
+    conn = psycopg.connect(DSN, row_factory=request.param)
     with conn.cursor() as cur:
         cur.execute(
             "DROP TABLE IF EXISTS "
@@ -34,10 +42,10 @@ def hp_conn():
     conn.close()
 
 
-@pytest.fixture
-def hf_conn():
+@pytest.fixture(params=_ROW_FACTORIES, ids=_ROW_FACTORY_IDS)
+def hf_conn(request):
     """Fresh HF schema + raw psycopg connection."""
-    conn = psycopg.connect(DSN)
+    conn = psycopg.connect(DSN, row_factory=request.param)
     with conn.cursor() as cur:
         cur.execute(
             "DROP TABLE IF EXISTS "
@@ -107,8 +115,9 @@ class TestPackerHPWithoutPackTid:
         assert deleted_blobs == 1  # orphan blob removed from blob_state
         assert s3_keys == ["orphan/blob.dat"]  # s3_key collected
 
-        # Verify history tables are clean
-        with hp_conn.cursor() as cur:
+        # Verify history tables are clean (explicit tuple_row: the fixture
+        # connection's row factory is parametrized)
+        with hp_conn.cursor(row_factory=tuple_row) as cur:
             cur.execute("SELECT COUNT(*) FROM object_history WHERE zoid = 99")
             assert cur.fetchone()[0] == 0
             cur.execute("SELECT COUNT(*) FROM blob_state WHERE zoid = 99")
@@ -194,7 +203,86 @@ class TestPackerS3KeyCollection:
         # The old blob_state revision (tid1) should be deleted, its s3_key collected
         assert "blobs/root-v1.dat" in s3_keys
         # The current revision (tid2) should survive
-        with hp_conn.cursor() as cur:
+        with hp_conn.cursor(row_factory=tuple_row) as cur:
             cur.execute("SELECT s3_key FROM blob_state WHERE zoid = 0")
             remaining = [r[0] for r in cur.fetchall()]
         assert "blobs/root-v2.dat" in remaining
+
+
+_LEGACY_BLOB_HISTORY_DDL = (
+    "CREATE TABLE blob_history ("
+    "  zoid BIGINT NOT NULL,"
+    "  tid BIGINT NOT NULL,"
+    "  blob_size BIGINT NOT NULL,"
+    "  data BYTEA,"
+    "  s3_key TEXT,"
+    "  PRIMARY KEY (zoid, tid)"
+    ")"
+)
+
+
+class TestPackerLegacyBlobHistory:
+    """S3 key collection from the deprecated blob_history table.
+
+    New schemas no longer create blob_history, but pack() still cleans it
+    up on old databases.  Both collection sites must work regardless of
+    the connection's row factory (#108).
+    """
+
+    def test_hp_unreachable_blob_history_s3_keys_collected(self, hp_conn):
+        """blob_history rows of unreachable objects: keys are collected."""
+        with hp_conn.cursor() as cur:
+            tid = _seed_root_and_orphan(cur)
+            cur.execute(_LEGACY_BLOB_HISTORY_DDL)
+            cur.execute(
+                "INSERT INTO blob_history (zoid, tid, blob_size, s3_key) "
+                "VALUES (99, %s, 100, 'legacy/orphan-99.dat')",
+                (tid,),
+            )
+        hp_conn.commit()
+
+        _deleted_objects, _deleted_blobs, s3_keys = pack(
+            hp_conn, pack_time=None, history_preserving=True
+        )
+
+        assert "legacy/orphan-99.dat" in s3_keys
+
+    def test_hp_old_blob_history_revisions_s3_keys_collected(self, hp_conn):
+        """Superseded blob_history revisions of reachable objects: keys collected."""
+        from ZODB.utils import p64
+
+        tid1 = 10
+        tid2 = 20
+        with hp_conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO transaction_log (tid) VALUES (%s), (%s)",
+                (tid1, tid2),
+            )
+            # Root object — reachable
+            cur.execute(
+                "INSERT INTO object_state "
+                "(zoid, tid, class_mod, class_name, state, state_size, refs) "
+                "VALUES (0, %s, 'persistent.mapping', 'PersistentMapping', "
+                "'{}', 2, '{}')",
+                (tid2,),
+            )
+            cur.execute(_LEGACY_BLOB_HISTORY_DDL)
+            # Two legacy revisions for root; the older one is superseded
+            cur.execute(
+                "INSERT INTO blob_history (zoid, tid, blob_size, s3_key) "
+                "VALUES (0, %s, 100, 'legacy/root-v1.dat'), "
+                "(0, %s, 200, 'legacy/root-v2.dat')",
+                (tid1, tid2),
+            )
+        hp_conn.commit()
+
+        _deleted_objects, _deleted_blobs, s3_keys = pack(
+            hp_conn, pack_time=p64(tid2), history_preserving=True
+        )
+
+        assert "legacy/root-v1.dat" in s3_keys
+        # The newest revision at pack time survives
+        with hp_conn.cursor(row_factory=tuple_row) as cur:
+            cur.execute("SELECT s3_key FROM blob_history WHERE zoid = 0")
+            remaining = [r[0] for r in cur.fetchall()]
+        assert "legacy/root-v2.dat" in remaining
