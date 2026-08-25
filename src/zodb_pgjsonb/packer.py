@@ -6,6 +6,7 @@ server-side recursive CTE query. No data leaves PostgreSQL during pack.
 """
 
 from .storage import _table_exists
+from psycopg.rows import dict_row
 from ZODB.utils import u64
 
 import logging
@@ -37,6 +38,13 @@ _NOT_REACHABLE = (
 )
 
 
+def _collect_s3_keys(cur, s3_keys):
+    """Append the non-NULL s3_key of every fetched RETURNING row."""
+    for row in cur.fetchall():
+        if row["s3_key"]:
+            s3_keys.append(row["s3_key"])
+
+
 def pack(conn, pack_time=None, history_preserving=False):
     """Remove unreachable objects and their blobs.
 
@@ -56,7 +64,10 @@ def pack(conn, pack_time=None, history_preserving=False):
     s3_keys = []
     pack_tid = u64(pack_time) if pack_time is not None else None
 
-    with conn.cursor() as cur:
+    # Explicit row factory: pack() must not depend on how the caller's
+    # connection was opened — the storage's admin connection uses dict_row,
+    # a raw psycopg.connect() defaults to tuple rows (#108).
+    with conn.cursor(row_factory=dict_row) as cur:
         # Phase 1: Find reachable objects
         cur.execute(f"SELECT zoid INTO TEMP reachable_oids FROM ({REACHABLE_QUERY}) q")
         cur.execute("CREATE INDEX ON reachable_oids (zoid)")
@@ -88,9 +99,7 @@ def pack(conn, pack_time=None, history_preserving=False):
                 f"DELETE FROM blob_state b WHERE {not_reachable_bs} RETURNING s3_key"
             )
         deleted_blobs = cur.rowcount
-        for row in cur.fetchall():
-            if row[0]:
-                s3_keys.append(row[0])
+        _collect_s3_keys(cur, s3_keys)
         logger.info("Pack: deleted %d unreachable blobs", deleted_blobs)
 
         # Phase 4: History cleanup (history-preserving mode only)
@@ -124,9 +133,7 @@ def pack(conn, pack_time=None, history_preserving=False):
                         f"WHERE {not_reachable_bh} "
                         "RETURNING s3_key"
                     )
-                for row in cur.fetchall():
-                    if row[0]:
-                        s3_keys.append(row[0])
+                _collect_s3_keys(cur, s3_keys)
 
             # Remove old revisions for reachable objects before pack_time
             if pack_tid is not None:
@@ -168,9 +175,7 @@ def pack(conn, pack_time=None, history_preserving=False):
                     (pack_tid, pack_tid),
                 )
                 deleted_blob_revisions += cur.rowcount
-                for row in cur.fetchall():
-                    if row[0]:
-                        s3_keys.append(row[0])
+                _collect_s3_keys(cur, s3_keys)
 
                 # Clean old blob_history revisions (backward compat)
                 if _table_exists(cur, "blob_history"):
@@ -189,9 +194,7 @@ def pack(conn, pack_time=None, history_preserving=False):
                         "RETURNING s3_key",
                         (pack_tid, pack_tid),
                     )
-                    for row in cur.fetchall():
-                        if row[0]:
-                            s3_keys.append(row[0])
+                    _collect_s3_keys(cur, s3_keys)
 
         # Phase 5: Clean up transaction_log entries at or before pack_time
         # that are no longer referenced by object_state (FK constraint).
