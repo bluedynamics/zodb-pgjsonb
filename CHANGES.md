@@ -1,6 +1,8 @@
 # Changelog
 
-## unreleased
+## 1.16.2
+
+### Bug fixes
 
 - **Fix packer crash `KeyError: 0` on any pack that deletes blobs (#108).**
   `pack()` read the `RETURNING s3_key` rows with tuple indexing (`row[0]`),
@@ -20,10 +22,23 @@
   `InvalidDistribution: '2.5' is not a valid metadata version` — the release
   build failed before uploading anything. v3 ships Twine 7, which supports it.
 
+### Documentation
+
 - Add `cloud-vinyl` and `plone.observability` to the ecosystem dashboard
   (`docs/sources/ecosystem.md`) and to the ecosystem navigation dropdown in the
   docs. `cloud-vinyl` joins the existing *Deployment* group; `plone.observability`
   introduces a new *Observability* group.
+
+- **Make the benchmark harness variance-aware.**  Each cell is now reported as
+  `median ±CV%` (coefficient of variation over the pooled samples) so noisy rows
+  are obvious instead of hidden behind a single number, and a new `--runs K` flag
+  pools several independent runs (each re-does its own setup, so it is safe for
+  the write benchmarks).  On a shared/desktop machine a CV of 10–40% is normal;
+  the `benchmarks/README.md` documents running on a quiet machine and comparing
+  ratios rather than absolute values.  (Investigating apparent slowdowns showed
+  no regression: current storage numbers match zodb-pgjsonb 1.13.1 on the same
+  machine, and the only consistent cost is the ~20 µs connection-checkout
+  liveness probe added with the 1.14.2 pool-leak fix.)  #99
 
 ## 1.16.1
 
@@ -88,17 +103,6 @@
   the subset failed with a `ZConfig.DataConversionError`.  The instance home now
   lives in the run's temp directory, so the Plone subset runs regardless of
   checkout layout.
-
-- **Make the benchmark harness variance-aware.**  Each cell is now reported as
-  `median ±CV%` (coefficient of variation over the pooled samples) so noisy rows
-  are obvious instead of hidden behind a single number, and a new `--runs K` flag
-  pools several independent runs (each re-does its own setup, so it is safe for
-  the write benchmarks).  On a shared/desktop machine a CV of 10–40% is normal;
-  the `benchmarks/README.md` documents running on a quiet machine and comparing
-  ratios rather than absolute values.  (Investigating apparent slowdowns showed
-  no regression: current storage numbers match zodb-pgjsonb 1.13.1 on the same
-  machine, and the only consistent cost is the ~20 µs connection-checkout
-  liveness probe added with the 1.14.2 pool-leak fix.)
 
 ## 1.15.0
 
