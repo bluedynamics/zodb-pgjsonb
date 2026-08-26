@@ -64,6 +64,33 @@ class PGJsonbConformanceHF(StorageTestBase, BasicStorage, SynchronizedStorage):
         clean_db()
         self._storage = PGJsonbStorage(DSN)
 
+    def _spawn_optional_readers(self, run_in_thread, update_attempts, results):
+        """Spawn getTid/lastInvalidations readers when the storage has them.
+
+        Returns the number of spawned reader threads.
+        """
+        spawned = 0
+
+        if hasattr(self._storage, "getTid"):
+            spawned += 1
+
+            @run_in_thread
+            def getTid():
+                update_attempts()
+                results["getTid"] = self._storage.getTid(ZERO)
+
+        if hasattr(self._storage, "lastInvalidations"):
+            spawned += 1
+
+            @run_in_thread
+            def lastInvalidations():
+                update_attempts()
+                invals = self._storage.lastInvalidations(1)
+                if invals:
+                    results["lastInvalidations"] = invals[0][0]
+
+        return spawned
+
     def test_tid_ordering_w_commit(self):
         """Override: original uses raw bytes b'x'/b'y' as data.
 
@@ -119,25 +146,9 @@ class PGJsonbConformanceHF(StorageTestBase, BasicStorage, SynchronizedStorage):
             results["load"] = utils.load_current(self._storage, ZERO)[1]
             results["lastTransaction"] = self._storage.lastTransaction()
 
-        expected_attempts = 1
-
-        if hasattr(self._storage, "getTid"):
-            expected_attempts += 1
-
-            @run_in_thread
-            def getTid():
-                update_attempts()
-                results["getTid"] = self._storage.getTid(ZERO)
-
-        if hasattr(self._storage, "lastInvalidations"):
-            expected_attempts += 1
-
-            @run_in_thread
-            def lastInvalidations():
-                update_attempts()
-                invals = self._storage.lastInvalidations(1)
-                if invals:
-                    results["lastInvalidations"] = invals[0][0]
+        expected_attempts = 1 + self._spawn_optional_readers(
+            run_in_thread, update_attempts, results
+        )
 
         with attempts_cond:
             while len(attempts) < expected_attempts:

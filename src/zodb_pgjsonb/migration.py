@@ -558,20 +558,8 @@ class CopyTransactionsMixin:
                 total_missing_blobs,
             )
 
-    def _copyTransactionsFrom_parallel(
-        self, other, num_workers, start_tid=None, blob_mode="inline"
-    ):
-        """Parallel copy — N worker threads write to PG concurrently.
-
-        The main thread reads from the source storage, decodes pickles,
-        and dispatches pre-decoded transaction dicts to worker threads.
-        OID ordering is guaranteed: if a transaction touches an OID that
-        is still being written by a worker, the main thread waits for
-        that worker to finish before dispatching.
-        """
-        from concurrent.futures import ThreadPoolExecutor
-        from concurrent.futures import wait as futures_wait
-
+    def _effective_worker_count(self, num_workers):
+        """Clamp to the instance pool size, reserving one conn for the watermark."""
         pool_max = self._instance_pool.max_size
         max_workers = max(pool_max - 1, 1)  # reserve 1 for watermark
         if num_workers > max_workers:
@@ -582,46 +570,32 @@ class CopyTransactionsMixin:
                 pool_max,
                 max_workers,
             )
-            num_workers = max_workers
+            return max_workers
+        return num_workers
 
-        total_oids = 0
-        with contextlib.suppress(TypeError):
-            total_oids = len(other)
-        logger.info(
-            "Copying transactions with %d parallel workers (total OIDs: %s) ...",
-            num_workers,
-            f"{total_oids:,}" if total_oids else "unknown",
-        )
+    def _make_write_worker(self, watermark, progress, dispatch_sem, blob_sink):
+        """Build the thread-local write worker for the parallel copy.
 
+        Returns (write_worker, worker_conns).  Each worker thread lazily
+        takes one PG connection from the instance pool; *worker_conns*
+        collects them so the caller can return them to the pool.
+        """
         extra_columns = self._get_extra_columns()
         hp = self._history_preserving
         processors = list(self._state_processors)
 
-        # ── Setup ──────────────────────────────────────────────────
-        wm_conn = self._instance_pool.getconn()
-        try:
-            watermark = WatermarkTracker(wm_conn, start_tid)
-        except BaseException:
-            self._instance_pool.putconn(wm_conn)
-            raise
-
-        blob_sink = _create_blob_sink(blob_mode, self._s3_client)
-        progress = ProgressTracker(total_oids)
-
         # Thread-local PG connections — one per worker thread.
-        _local = threading.local()
+        local = threading.local()
         worker_conns = []
-        _conn_lock = threading.Lock()
+        conn_lock = threading.Lock()
 
         def _get_worker_conn():
-            if not hasattr(_local, "conn"):
+            if not hasattr(local, "conn"):
                 conn = self._instance_pool.getconn()
-                _local.conn = conn
-                with _conn_lock:
+                local.conn = conn
+                with conn_lock:
                     worker_conns.append(conn)
-            return _local.conn
-
-        _dispatch_sem = threading.BoundedSemaphore(num_workers * 2)
+            return local.conn
 
         def _write_worker(txn_data):
             try:
@@ -646,7 +620,50 @@ class CopyTransactionsMixin:
                 progress.record_error()
                 raise
             finally:
-                _dispatch_sem.release()
+                dispatch_sem.release()
+
+        return _write_worker, worker_conns
+
+    def _copyTransactionsFrom_parallel(
+        self, other, num_workers, start_tid=None, blob_mode="inline"
+    ):
+        """Parallel copy — N worker threads write to PG concurrently.
+
+        The main thread reads from the source storage, decodes pickles,
+        and dispatches pre-decoded transaction dicts to worker threads.
+        OID ordering is guaranteed: if a transaction touches an OID that
+        is still being written by a worker, the main thread waits for
+        that worker to finish before dispatching.
+        """
+        from concurrent.futures import ThreadPoolExecutor
+        from concurrent.futures import wait as futures_wait
+
+        num_workers = self._effective_worker_count(num_workers)
+
+        total_oids = 0
+        with contextlib.suppress(TypeError):
+            total_oids = len(other)
+        logger.info(
+            "Copying transactions with %d parallel workers (total OIDs: %s) ...",
+            num_workers,
+            f"{total_oids:,}" if total_oids else "unknown",
+        )
+
+        # ── Setup ──────────────────────────────────────────────────
+        wm_conn = self._instance_pool.getconn()
+        try:
+            watermark = WatermarkTracker(wm_conn, start_tid)
+        except BaseException:
+            self._instance_pool.putconn(wm_conn)
+            raise
+
+        blob_sink = _create_blob_sink(blob_mode, self._s3_client)
+        progress = ProgressTracker(total_oids)
+
+        _dispatch_sem = threading.BoundedSemaphore(num_workers * 2)
+        _write_worker, worker_conns = self._make_write_worker(
+            watermark, progress, _dispatch_sem, blob_sink
+        )
 
         # ── Dispatch loop ──────────────────────────────────────────
         in_flight = {}  # zoid → Future
