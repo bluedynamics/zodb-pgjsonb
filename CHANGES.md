@@ -1,5 +1,11 @@
 # Changelog
 
+## unreleased
+
+- Enable ruff's cyclomatic-complexity check (`C901`, mccabe) with
+  `max-complexity = 15`. `src/` and `tests/` pass as-is; `benchmarks/` is
+  exempted via per-file-ignores (CLI harness code, legitimately branchy).
+
 ## 1.16.2
 
 ### Bug fixes
