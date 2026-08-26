@@ -2,6 +2,14 @@
 
 ## unreleased
 
+- Lower ruff's C901 max-complexity threshold from 15 to 13 as part of the
+  ecosystem-wide complexity ratchet, refactoring the three functions above
+  the new limit: `_copyTransactionsFrom_parallel` (15 → 10, worker clamp and
+  the thread-local write worker become dedicated methods), `_compute_undo`
+  (14 → 3, per-object undo split into simple/cascading/conflict helpers with
+  the duplicated restore/delete entry dicts deduplicated), and the
+  `test_tid_ordering_w_commit` override (14 → 9, optional getTid /
+  lastInvalidations readers extracted). Behavior is unchanged.
 - Enable ruff's cyclomatic-complexity check (`C901`, mccabe) with
   `max-complexity = 15`. `src/` and `tests/` pass as-is; `benchmarks/` is
   exempted via per-file-ignores (CLI harness code, legitimately branchy).
