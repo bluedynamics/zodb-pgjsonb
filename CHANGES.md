@@ -2,6 +2,10 @@
 
 ## unreleased
 
+- Pin ruff to 0.16.7 in the QA workflow (and bump the `ruff-pre-commit` rev to
+  match) instead of running unpinned `uvx ruff`, so ruff releases no longer
+  change CI behavior on unrelated PRs. Part of the ecosystem-wide alignment
+  (bluedynamics/plone-pgcatalog#217).
 - Lower ruff's C901 max-complexity threshold from 15 to 13 as part of the
   ecosystem-wide complexity ratchet, refactoring the three functions above
   the new limit: `_copyTransactionsFrom_parallel` (15 → 10, worker clamp and
