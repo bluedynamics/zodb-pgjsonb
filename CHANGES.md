@@ -2,6 +2,12 @@
 
 ## unreleased
 
+- Add `plone.registryfromenviron` to the ecosystem dashboard under
+  *Tools & Libraries*: it overrides `plone.registry` values from environment
+  variables, which makes registry configuration 12-factor friendly. The same
+  card was added to the duplicated dashboard in plone.observability, so both
+  copies stay identical.
+
 - Pin ruff to 0.16.7 in the QA workflow (and bump the `ruff-pre-commit` rev to
   match) instead of running unpinned `uvx ruff`, so ruff releases no longer
   change CI behavior on unrelated PRs. Part of the ecosystem-wide alignment

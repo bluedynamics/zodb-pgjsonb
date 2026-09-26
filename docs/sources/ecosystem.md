@@ -73,4 +73,9 @@ layout: landing
   group: Tools & Libraries
   description: Cookiecutter template for Zope 5 WSGI instances
 
+- repo: bluedynamics/plone-registryfromenviron
+  pypi: plone.registryfromenviron
+  group: Tools & Libraries
+  description: Override plone.registry values from environment variables
+
 ```
