@@ -224,7 +224,7 @@ runs. `ZODB_PGJSONB_FORCE_DDL=1` forces a full re-apply.
 | blob-temp-dir | auto | Temporary blob directory |
 | blob-threshold | 100KB | S3 tiering threshold |
 | s3-bucket-name | none | S3 bucket (enables tiering) |
-| s3-endpoint-url | none | S3 endpoint (MinIO, Ceph) |
+| s3-endpoint-url | none | S3 endpoint (Garage, Ceph) |
 | s3-region | none | AWS region |
 | s3-access-key | none | AWS access key |
 | s3-secret-key | none | AWS secret key |

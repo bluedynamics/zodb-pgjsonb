@@ -11,7 +11,7 @@ Each tutorial takes you from start to finish, building practical skills along th
 :link: quickstart-docker
 :link-type: doc
 
-Run a Plone 6 site backed by PostgreSQL JSONB and MinIO in 10 minutes using Docker Compose.
+Run a Plone 6 site backed by PostgreSQL JSONB and Garage in 10 minutes using Docker Compose.
 :::
 
 :::{grid-item-card} Migrate a Plone site from FileStorage

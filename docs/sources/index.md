@@ -72,7 +72,7 @@ ZODB sees pickle bytes at its boundaries; PostgreSQL sees queryable JSON interna
 ## Quick start
 
 1. {doc}`Install zodb-pgjsonb <how-to/install>`
-2. {doc}`Run the Docker quickstart <tutorials/quickstart-docker>` (Plone + PostgreSQL + MinIO in 5 minutes)
+2. {doc}`Run the Docker quickstart <tutorials/quickstart-docker>` (Plone + PostgreSQL + Garage in 5 minutes)
 3. {doc}`Migrate an existing site <tutorials/migrate-from-filestorage>`
 
 ```{toctree}

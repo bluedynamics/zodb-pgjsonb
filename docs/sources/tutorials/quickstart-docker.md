@@ -4,7 +4,7 @@
 
 ## What we will build
 
-In this tutorial we will run a Plone 6 site whose entire ZODB lives in PostgreSQL JSONB, with large blobs tiered to MinIO (S3-compatible storage).
+In this tutorial we will run a Plone 6 site whose entire ZODB lives in PostgreSQL JSONB, with large blobs tiered to [Garage](https://garagehq.deuxfleurs.fr/) (S3-compatible storage).
 We will create content in Plone, then query it directly with SQL using `psql`.
 
 By the end we will have a working Plone instance backed by zodb-pgjsonb and the ability to inspect every ZODB object as queryable JSON.
@@ -30,15 +30,15 @@ All remaining commands assume we are inside the `example/` directory.
 docker compose up -d
 ```
 
-This starts three services:
+This starts two services:
 
-| Service    | Port | Purpose                     | Credentials             |
-|------------|------|-----------------------------|-------------------------|
-| PostgreSQL | 5433 | ZODB object storage (JSONB) | user=zodb password=zodb |
-| MinIO API  | 9000 | S3-compatible blob storage  | minioadmin / minioadmin |
-| MinIO UI   | 9001 | Web console for blobs       | minioadmin / minioadmin |
+| Service      | Port | Purpose                     | Credentials                      |
+|--------------|------|-----------------------------|----------------------------------|
+| PostgreSQL   | 5433 | ZODB object storage (JSONB) | user=zodb password=zodb          |
+| Garage S3    | 3900 | S3-compatible blob storage  | access/secret key in `zope.conf` |
+| Garage admin | 3903 | Garage admin API            | -                                |
 
-A one-shot container creates the `zodb-blobs` bucket automatically.
+Garage runs in single-node mode and creates the `zodb-blobs` bucket and its access key on startup.
 
 Wait a few seconds, then verify that PostgreSQL is healthy:
 
@@ -46,13 +46,12 @@ Wait a few seconds, then verify that PostgreSQL is healthy:
 docker compose ps
 ```
 
-We should see all services in a `healthy` or `exited (0)` state:
+We should see both services running:
 
 ```text
 NAME                  STATUS
 example-postgres-1    Up (healthy)
-example-minio-1       Up (healthy)
-example-createbucket  Exited (0)
+example-garage-1      Up
 ```
 
 ## Step 3: install Python dependencies
@@ -100,11 +99,12 @@ The `zope.conf` file configures the `<pgjsonb>` storage section:
         blob-temp-dir ./instance/var/blobtemp
         blob-cache-dir ./instance/var/blobcache
 
-        # S3 tiered blob storage (MinIO)
+        # S3 tiered blob storage (Garage)
         s3-bucket-name zodb-blobs
-        s3-endpoint-url http://localhost:9000
-        s3-access-key minioadmin
-        s3-secret-key minioadmin
+        s3-endpoint-url http://localhost:3900
+        s3-region garage
+        s3-access-key GK0123456789abcdef01234567
+        s3-secret-key 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
         s3-use-ssl false
         blob-threshold 100KB
     </pgjsonb>
@@ -112,7 +112,7 @@ The `zope.conf` file configures the `<pgjsonb>` storage section:
 ```
 
 Blobs smaller than 100 KB stay in PostgreSQL as `bytea`.
-Blobs larger than 100 KB are uploaded to MinIO.
+Blobs larger than 100 KB are uploaded to Garage.
 
 ## Step 5: start Zope
 
@@ -197,7 +197,7 @@ We should see our "Hello PostgreSQL" page in the results:
 ```sql
 SELECT
     CASE
-        WHEN s3_key IS NOT NULL THEN 'S3 (MinIO)'
+        WHEN s3_key IS NOT NULL THEN 'S3 (Garage)'
         ELSE 'PostgreSQL bytea'
     END AS storage,
     count(*) AS count,
@@ -206,13 +206,17 @@ FROM blob_state
 GROUP BY 1;
 ```
 
-If we uploaded an image larger than 100 KB, we should see at least one row for "S3 (MinIO)".
+If we uploaded an image larger than 100 KB, we should see at least one row for "S3 (Garage)".
 
-### Browse blobs in MinIO
+### Check blobs in Garage
 
-Open <http://localhost:9001> and log in with **minioadmin / minioadmin**.
-Navigate to the **zodb-blobs** bucket.
-We should see the uploaded image stored as an S3 object.
+Garage has no web console, so we ask its CLI for the bucket contents:
+
+```bash
+docker compose exec garage /garage bucket info zodb-blobs
+```
+
+The `Objects` and `Size` lines should count the uploaded image.
 
 ## Step 9: start pgAdmin (optional)
 
@@ -250,7 +254,7 @@ Omit `-v` to keep the data volumes for next time.
 ## What we learned
 
 - zodb-pgjsonb stores ZODB object state as queryable JSONB in PostgreSQL
-- Blobs are tiered between PostgreSQL `bytea` (small) and S3/MinIO (large)
+- Blobs are tiered between PostgreSQL `bytea` (small) and S3/Garage (large)
 - Every ZODB object is directly queryable with standard SQL and JSONB operators
 - The `<pgjsonb>` ZConfig section plugs into any standard Zope/Plone deployment
 

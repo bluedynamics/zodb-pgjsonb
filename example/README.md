@@ -1,7 +1,7 @@
 # zodb-pgjsonb Example Setup
 
 Try out **zodb-pgjsonb** with a full Plone 6 site backed by PostgreSQL JSONB
-and MinIO for S3 blob tiering.
+and [Garage](https://garagehq.deuxfleurs.fr/) for S3 blob tiering.
 
 ## Prerequisites
 
@@ -20,13 +20,14 @@ docker compose up -d
 
 This starts:
 
-| Service    | Port  | Purpose                              | Credentials                        |
-|------------|-------|--------------------------------------|------------------------------------|
-| PostgreSQL | 5433  | ZODB object storage (JSONB)          | user=zodb password=zodb db=zodb    |
-| MinIO API  | 9000  | S3-compatible blob storage           | minioadmin / minioadmin            |
-| MinIO UI   | 9001  | Web console for browsing blobs       | minioadmin / minioadmin            |
+| Service      | Port  | Purpose                              | Credentials                        |
+|--------------|-------|--------------------------------------|------------------------------------|
+| PostgreSQL   | 5433  | ZODB object storage (JSONB)          | user=zodb password=zodb db=zodb    |
+| Garage S3    | 3900  | S3-compatible blob storage           | access/secret key in `zope.conf`   |
+| Garage admin | 3903  | Garage admin API                     | -                                  |
 
-The `zodb-blobs` bucket is created automatically.
+Garage starts in single-node mode and creates the `zodb-blobs` bucket and
+its access key automatically. Its configuration is in `garage.toml`.
 
 ### 2. Create a Python virtual environment
 
@@ -144,7 +145,7 @@ WHERE state @> '{"@ref": "0000000000000001"}'::jsonb;
 ```sql
 SELECT
     CASE
-        WHEN s3_key IS NOT NULL THEN 'S3 (MinIO)'
+        WHEN s3_key IS NOT NULL THEN 'S3 (Garage)'
         ELSE 'PostgreSQL bytea'
     END AS storage,
     count(*) AS count,
@@ -156,13 +157,16 @@ GROUP BY 1;
 ## S3 Blob Tiering
 
 Blobs smaller than `blob-threshold` (default 100KB) are stored directly
-in PostgreSQL as bytea. Larger blobs are uploaded to MinIO/S3.
+in PostgreSQL as bytea. Larger blobs are uploaded to Garage/S3.
 
 To see it in action:
 
 1. Upload an image larger than 100KB in Plone
-2. Open the MinIO console at http://localhost:9001
-3. Browse the `zodb-blobs` bucket to see the uploaded file
+2. Check the object count and size of the `zodb-blobs` bucket:
+
+   ```bash
+   docker compose exec garage /garage bucket info zodb-blobs
+   ```
 
 The blob metadata is always in PostgreSQL (in `blob_state`), so you can
 query which blobs are in S3:
@@ -188,7 +192,7 @@ The `<pgjsonb>` section in `zope.conf` supports these keys:
 | `pool-max-size`      | 10      | Maximum connections in pool                          |
 | `blob-threshold`     | 100KB   | Blobs larger than this go to S3 (if configured)      |
 | `s3-bucket-name`     | *none*  | S3 bucket name (enables S3 tiering)                  |
-| `s3-endpoint-url`    | *none*  | S3 endpoint (for MinIO, Ceph, etc.)                  |
+| `s3-endpoint-url`    | *none*  | S3 endpoint (for Garage, Ceph, etc.)                 |
 | `s3-region`          | *none*  | AWS region name                                      |
 | `s3-access-key`      | *none*  | AWS access key (uses boto3 chain if omitted)         |
 | `s3-secret-key`      | *none*  | AWS secret key (uses boto3 chain if omitted)         |
