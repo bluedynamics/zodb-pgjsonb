@@ -475,3 +475,139 @@ class TestDeferredDDLOnReadPath:
                 instance.release()
         finally:
             storage.close()
+
+
+# ── Per-processor write semantics (#120) ───────────────────────────
+
+
+class PendingProcessor:
+    """Fake shaped like plone.pgcatalog's CatalogStateProcessor.
+
+    Data arrives out of band (``pending``, keyed by zoid) and is popped
+    on use, so a later plain write of the same object finds nothing and
+    returns None.  A dict answer may omit columns (they must become NULL);
+    ``{}`` clears all of this processor's columns.
+    """
+
+    def __init__(self, *columns):
+        self.columns = [
+            c if isinstance(c, ExtraColumn) else ExtraColumn(c, f"%({c})s")
+            for c in columns
+        ]
+        self.pending = {}
+
+    def get_extra_columns(self):
+        return list(self.columns)
+
+    def process(self, zoid, class_mod, class_name, state):
+        return self.pending.pop(zoid, None)
+
+
+_PP_COLUMNS = ("a_one", "a_two", "b_one")
+
+
+def _pp_storage(storage_factory=PGJsonbStorage, **kw):
+    clean_db()
+    s = storage_factory(DSN, **kw)
+    for col in _PP_COLUMNS:
+        s._conn.execute(f"ALTER TABLE object_state ADD COLUMN IF NOT EXISTS {col} TEXT")
+    s._conn.commit()
+    return s
+
+
+def _pp_row(zoid):
+    with psycopg.connect(DSN, row_factory=dict_row) as pg, pg.cursor() as cur:
+        cur.execute(
+            "SELECT a_one, a_two, b_one FROM object_state WHERE zoid = %s",
+            (zoid,),
+        )
+        return cur.fetchone()
+
+
+@pytest.fixture
+def two_processors():
+    """ZODB.DB over a storage with processor A (a_one, a_two) and B (b_one)."""
+    s = _pp_storage()
+    proc_a = PendingProcessor("a_one", "a_two")
+    proc_b = PendingProcessor("b_one")
+    s.register_state_processor(proc_a)
+    s.register_state_processor(proc_b)
+    database = ZODB.DB(s)
+    yield database, proc_a, proc_b
+    database.close()
+    s.close()
+
+
+def _commit_root(database, value):
+    """Write the root object (zoid 0) once.
+
+    Set ``proc.pending[0]`` before calling to make a processor answer.
+    """
+    conn = database.open()
+    conn.root()["v"] = value
+    txn.commit()
+    conn.close()
+
+
+class TestPerProcessorWriteSemantics:
+    """A processor's None leaves its columns alone; a dict writes all of them."""
+
+    def _seed(self, database, proc_a, proc_b):
+        proc_a.pending[0] = {"a_one": "x", "a_two": "y"}
+        proc_b.pending[0] = {"b_one": "z"}
+        _commit_root(database, 1)
+        assert _pp_row(0) == {"a_one": "x", "a_two": "y", "b_one": "z"}
+
+    def test_none_keeps_stored_columns(self, two_processors):
+        database, proc_a, proc_b = two_processors
+        self._seed(database, proc_a, proc_b)
+        _commit_root(database, 2)  # plain write, nobody answers
+        assert _pp_row(0) == {"a_one": "x", "a_two": "y", "b_one": "z"}
+
+    def test_mixed_answers_touch_only_the_answering_processor(self, two_processors):
+        database, proc_a, proc_b = two_processors
+        self._seed(database, proc_a, proc_b)
+        proc_a.pending[0] = {"a_one": "x2", "a_two": "y2"}
+        _commit_root(database, 2)
+        assert _pp_row(0) == {"a_one": "x2", "a_two": "y2", "b_one": "z"}
+
+    def test_missing_key_in_answer_becomes_null(self, two_processors):
+        database, proc_a, proc_b = two_processors
+        self._seed(database, proc_a, proc_b)
+        proc_a.pending[0] = {"a_one": "x2"}
+        _commit_root(database, 2)
+        assert _pp_row(0) == {"a_one": "x2", "a_two": None, "b_one": "z"}
+
+    def test_empty_dict_clears_only_that_processors_columns(self, two_processors):
+        database, proc_a, proc_b = two_processors
+        self._seed(database, proc_a, proc_b)
+        proc_a.pending[0] = {}
+        _commit_root(database, 2)
+        assert _pp_row(0) == {"a_one": None, "a_two": None, "b_one": "z"}
+
+    def test_explicit_none_values_clear(self, two_processors):
+        """The uncatalog-sentinel shape: every column explicitly None."""
+        database, proc_a, proc_b = two_processors
+        self._seed(database, proc_a, proc_b)
+        proc_a.pending[0] = {"a_one": None, "a_two": None}
+        _commit_root(database, 2)
+        assert _pp_row(0) == {"a_one": None, "a_two": None, "b_one": "z"}
+
+    def test_new_object_without_answer_gets_defaults(self, two_processors):
+        from persistent.mapping import PersistentMapping
+
+        database, _proc_a, _proc_b = two_processors
+        conn = database.open()
+        child = PersistentMapping()
+        conn.root()["child"] = child
+        txn.commit()
+        zoid = int.from_bytes(child._p_oid, "big")
+        conn.close()
+        assert _pp_row(zoid) == {"a_one": None, "a_two": None, "b_one": None}
+
+    def test_process_state_reports_answering_processors(self, two_processors):
+        database, proc_a, _proc_b = two_processors
+        storage = database.storage
+        proc_a.pending[7] = {}
+        assert storage._process_state(7, "m", "C", "{}") == {0: {}}
+        assert storage._process_state(7, "m", "C", "{}") is None

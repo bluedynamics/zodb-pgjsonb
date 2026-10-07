@@ -557,8 +557,10 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
                 else:
                     writes.append(obj)
 
-            extra_columns = self._main._get_extra_columns()
-            _batch_write_objects(cur, writes, tid_int, hp, extra_columns=extra_columns)
+            processor_columns = self._main._get_processor_columns()
+            _batch_write_objects(
+                cur, writes, tid_int, hp, processor_columns=processor_columns
+            )
             _batch_delete_objects(cur, deletes, tid_int, hp)
             if self._s3_client is not None:
                 from zodb_pgjsonb.blob_sink import InlineBlobSink
