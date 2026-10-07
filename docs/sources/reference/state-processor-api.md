@@ -76,12 +76,20 @@ ExtraColumn(
 ExtraColumn(
     name="searchable_text",
     value_expr="to_tsvector('simple'::regconfig, %(searchable_text)s)",
-    update_expr="to_tsvector('simple'::regconfig, EXCLUDED.searchable_text)",
+)
+
+ExtraColumn(
+    name="first_seen",
+    value_expr="%(first_seen)s",
+    # Keep the first stored value on later writes.
+    update_expr="COALESCE(object_state.first_seen, EXCLUDED.first_seen)",
 )
 ```
 
 The `name` field is validated against the pattern `^[a-zA-Z_][a-zA-Z0-9_]*$`.
 A `ValueError` is raised if the name does not match.
+
+In the `ON CONFLICT ... SET` clause, `EXCLUDED.{name}` holds the value already computed by `value_expr`; `object_state.{name}` is the stored value.
 
 ### Security
 

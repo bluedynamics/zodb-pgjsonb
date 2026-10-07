@@ -549,6 +549,33 @@ def _commit_root(database, value):
     conn.close()
 
 
+class TestUpdateExpr:
+    """Test that ExtraColumn.update_expr is honoured in ON CONFLICT."""
+
+    def test_update_expr_used_on_conflict(self):
+        s = _pp_storage()
+        proc = PendingProcessor(
+            ExtraColumn(
+                "a_one", "%(a_one)s", "COALESCE(EXCLUDED.a_one, object_state.a_one)"
+            ),
+            "a_two",
+        )
+        s.register_state_processor(proc)
+        database = ZODB.DB(s)
+        try:
+            proc.pending[0] = {"a_one": "first", "a_two": "first"}
+            _commit_root(database, 1)
+            proc.pending[0] = {"a_one": None, "a_two": None}
+            _commit_root(database, 2)
+            row = _pp_row(0)
+        finally:
+            database.close()
+            s.close()
+        # update_expr keeps the old value; a_two uses the default EXCLUDED.a_two
+        assert row["a_one"] == "first"
+        assert row["a_two"] is None
+
+
 class TestPerProcessorWriteSemantics:
     """A processor's None leaves its columns alone; a dict writes all of them."""
 

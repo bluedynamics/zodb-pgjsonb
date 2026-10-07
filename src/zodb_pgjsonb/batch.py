@@ -74,7 +74,9 @@ def _upsert_group(cur, columns, params_list):
     cols = _BASE_COLS + [ec.name for ec in columns]
     vals = _BASE_VALS + [ec.value_expr for ec in columns]
     update_parts = [f"{c} = EXCLUDED.{c}" for c in _BASE_COLS[1:]]
-    update_parts += [f"{ec.name} = EXCLUDED.{ec.name}" for ec in columns]
+    update_parts += [
+        f"{ec.name} = {ec.update_expr or f'EXCLUDED.{ec.name}'}" for ec in columns
+    ]
     cur.executemany(
         f"INSERT INTO object_state ({', '.join(cols)}) "
         f"VALUES ({', '.join(vals)}) "
