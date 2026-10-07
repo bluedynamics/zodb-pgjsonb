@@ -766,8 +766,17 @@ class PGJsonbStorage(CopyTransactionsMixin, ConflictResolvingStorage, BaseStorag
           advisory lock — when it has not changed since the last apply (#78).
 
         ``process`` may modify *state* in-place (e.g. pop annotation keys).
-        It returns a dict of ``{column_name: value}`` to be written as extra
-        columns alongside the object, or *None* when no extra data applies.
+        Its return value decides what happens to **this processor's**
+        columns for the object:
+
+        - *None*: the columns are left untouched (a new row gets the
+          column defaults).
+        - a dict ``{column_name: value}``: all of this processor's
+          columns are written; columns missing from the dict become NULL.
+        - ``{}``: all of this processor's columns are set to NULL.
+
+        Other processors' columns are only affected by their own answers.
+        If two processors declare the same column, the later one wins.
 
         **Security:** Processors have full SQL access via ``ExtraColumn.value_expr``.
         Only register processors from trusted, audited sources.
@@ -1004,13 +1013,27 @@ class PGJsonbStorage(CopyTransactionsMixin, ConflictResolvingStorage, BaseStorag
             )
 
     def _process_state(self, zoid, class_mod, class_name, state):
-        """Run all registered state processors, return merged extra data."""
-        extra = {}
-        for proc in self._state_processors:
+        """Run all registered state processors.
+
+        Returns ``{processor_position: result}`` for every processor whose
+        ``process()`` did not return *None* (an empty dict counts as an
+        answer), or *None* when no processor answered.  The batch writer
+        writes exactly the columns of the processors that answered, so a
+        processor returning *None* leaves its stored columns untouched
+        (#120).
+        """
+        answers = {}
+        for pos, proc in enumerate(self._state_processors):
             result = proc.process(zoid, class_mod, class_name, state)
-            if result:
-                extra.update(result)
-        return extra or None
+            if result is not None:
+                answers[pos] = result
+        return answers or None
+
+    def _get_processor_columns(self):
+        """Extra columns per processor, aligned with ``_state_processors``."""
+        if not self._state_processors:
+            return None
+        return [list(proc.get_extra_columns()) for proc in self._state_processors]
 
     def _get_extra_columns(self):
         """Collect extra column definitions from all state processors."""
@@ -1250,8 +1273,10 @@ class PGJsonbStorage(CopyTransactionsMixin, ConflictResolvingStorage, BaseStorag
                 else:
                     writes.append(obj)
 
-            extra_columns = self._get_extra_columns()
-            _batch_write_objects(cur, writes, tid_int, hp, extra_columns=extra_columns)
+            processor_columns = self._get_processor_columns()
+            _batch_write_objects(
+                cur, writes, tid_int, hp, processor_columns=processor_columns
+            )
             _batch_delete_objects(cur, deletes, tid_int, hp)
             if self._s3_client is not None:
                 from zodb_pgjsonb.blob_sink import InlineBlobSink

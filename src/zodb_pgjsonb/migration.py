@@ -580,7 +580,7 @@ class CopyTransactionsMixin:
         takes one PG connection from the instance pool; *worker_conns*
         collects them so the caller can return them to the pool.
         """
-        extra_columns = self._get_extra_columns()
+        processor_columns = self._get_processor_columns()
         hp = self._history_preserving
         processors = list(self._state_processors)
 
@@ -604,7 +604,7 @@ class CopyTransactionsMixin:
                     conn,
                     txn_data,
                     hp,
-                    extra_columns,
+                    processor_columns,
                     processors,
                     blob_sink=blob_sink,
                     blob_threshold=self._blob_threshold,

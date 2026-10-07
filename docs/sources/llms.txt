@@ -165,10 +165,12 @@ atomically alongside object state:
 class ExtraColumn:
     name: str              # SQL column name
     value_expr: str        # SQL expression for INSERT
-    update_expr: str | None  # Optional ON CONFLICT expression
+    update_expr: str | None  # Optional ON CONFLICT expression; EXCLUDED.{name} = value computed by value_expr
 
 class IStateProcessor:
     def get_extra_columns(self) -> list[ExtraColumn]: ...
+    # process() return: None = leave this processor's columns untouched,
+    # dict = write all its columns (missing keys -> NULL), {} = set all to NULL
     def process(self, zoid, class_mod, class_name, state) -> dict | None: ...
     def get_schema_sql(self) -> str | None: ...   # Optional DDL
     def finalize(self, cursor) -> None: ...        # Optional post-vote hook

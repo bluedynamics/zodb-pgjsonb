@@ -475,3 +475,283 @@ class TestDeferredDDLOnReadPath:
                 instance.release()
         finally:
             storage.close()
+
+
+# ── Per-processor write semantics (#120) ───────────────────────────
+
+
+class PendingProcessor:
+    """Fake shaped like plone.pgcatalog's CatalogStateProcessor.
+
+    Data arrives out of band (``pending``, keyed by zoid) and is popped
+    on use, so a later plain write of the same object finds nothing and
+    returns None.  A dict answer may omit columns (they must become NULL);
+    ``{}`` clears all of this processor's columns.
+    """
+
+    def __init__(self, *columns):
+        self.columns = [
+            c if isinstance(c, ExtraColumn) else ExtraColumn(c, f"%({c})s")
+            for c in columns
+        ]
+        self.pending = {}
+
+    def get_extra_columns(self):
+        return list(self.columns)
+
+    def process(self, zoid, class_mod, class_name, state):
+        return self.pending.pop(zoid, None)
+
+
+_PP_COLUMNS = ("a_one", "a_two", "b_one")
+
+
+def _pp_storage(storage_factory=PGJsonbStorage, **kw):
+    clean_db()
+    s = storage_factory(DSN, **kw)
+    for col in _PP_COLUMNS:
+        s._conn.execute(f"ALTER TABLE object_state ADD COLUMN IF NOT EXISTS {col} TEXT")
+    s._conn.commit()
+    return s
+
+
+def _pp_row(zoid):
+    with psycopg.connect(DSN, row_factory=dict_row) as pg, pg.cursor() as cur:
+        cur.execute(
+            "SELECT a_one, a_two, b_one FROM object_state WHERE zoid = %s",
+            (zoid,),
+        )
+        return cur.fetchone()
+
+
+@pytest.fixture
+def two_processors():
+    """ZODB.DB over a storage with processor A (a_one, a_two) and B (b_one)."""
+    s = _pp_storage()
+    proc_a = PendingProcessor("a_one", "a_two")
+    proc_b = PendingProcessor("b_one")
+    s.register_state_processor(proc_a)
+    s.register_state_processor(proc_b)
+    database = ZODB.DB(s)
+    yield database, proc_a, proc_b
+    database.close()
+    s.close()
+
+
+def _commit_root(database, value):
+    """Write the root object (zoid 0) once.
+
+    Set ``proc.pending[0]`` before calling to make a processor answer.
+    """
+    conn = database.open()
+    conn.root()["v"] = value
+    txn.commit()
+    conn.close()
+
+
+class TestUpdateExpr:
+    """Test that ExtraColumn.update_expr is honoured in ON CONFLICT."""
+
+    def test_update_expr_used_on_conflict(self):
+        s = _pp_storage()
+        proc = PendingProcessor(
+            ExtraColumn(
+                "a_one", "%(a_one)s", "COALESCE(EXCLUDED.a_one, object_state.a_one)"
+            ),
+            "a_two",
+        )
+        s.register_state_processor(proc)
+        database = ZODB.DB(s)
+        try:
+            proc.pending[0] = {"a_one": "first", "a_two": "first"}
+            _commit_root(database, 1)
+            proc.pending[0] = {"a_one": None, "a_two": None}
+            _commit_root(database, 2)
+            row = _pp_row(0)
+        finally:
+            database.close()
+            s.close()
+        # update_expr keeps the old value; a_two uses the default EXCLUDED.a_two
+        assert row["a_one"] == "first"
+        assert row["a_two"] is None
+
+
+class TestPerProcessorWriteSemantics:
+    """A processor's None leaves its columns alone; a dict writes all of them."""
+
+    def _seed(self, database, proc_a, proc_b):
+        proc_a.pending[0] = {"a_one": "x", "a_two": "y"}
+        proc_b.pending[0] = {"b_one": "z"}
+        _commit_root(database, 1)
+        assert _pp_row(0) == {"a_one": "x", "a_two": "y", "b_one": "z"}
+
+    def test_none_keeps_stored_columns(self, two_processors):
+        database, proc_a, proc_b = two_processors
+        self._seed(database, proc_a, proc_b)
+        _commit_root(database, 2)  # plain write, nobody answers
+        assert _pp_row(0) == {"a_one": "x", "a_two": "y", "b_one": "z"}
+
+    def test_mixed_answers_touch_only_the_answering_processor(self, two_processors):
+        database, proc_a, proc_b = two_processors
+        self._seed(database, proc_a, proc_b)
+        proc_a.pending[0] = {"a_one": "x2", "a_two": "y2"}
+        _commit_root(database, 2)
+        assert _pp_row(0) == {"a_one": "x2", "a_two": "y2", "b_one": "z"}
+
+    def test_missing_key_in_answer_becomes_null(self, two_processors):
+        database, proc_a, proc_b = two_processors
+        self._seed(database, proc_a, proc_b)
+        proc_a.pending[0] = {"a_one": "x2"}
+        _commit_root(database, 2)
+        assert _pp_row(0) == {"a_one": "x2", "a_two": None, "b_one": "z"}
+
+    def test_empty_dict_clears_only_that_processors_columns(self, two_processors):
+        database, proc_a, proc_b = two_processors
+        self._seed(database, proc_a, proc_b)
+        proc_a.pending[0] = {}
+        _commit_root(database, 2)
+        assert _pp_row(0) == {"a_one": None, "a_two": None, "b_one": "z"}
+
+    def test_explicit_none_values_clear(self, two_processors):
+        """The uncatalog-sentinel shape: every column explicitly None."""
+        database, proc_a, proc_b = two_processors
+        self._seed(database, proc_a, proc_b)
+        proc_a.pending[0] = {"a_one": None, "a_two": None}
+        _commit_root(database, 2)
+        assert _pp_row(0) == {"a_one": None, "a_two": None, "b_one": "z"}
+
+    def test_new_object_without_answer_gets_defaults(self, two_processors):
+        from persistent.mapping import PersistentMapping
+
+        database, _proc_a, _proc_b = two_processors
+        conn = database.open()
+        child = PersistentMapping()
+        conn.root()["child"] = child
+        txn.commit()
+        zoid = int.from_bytes(child._p_oid, "big")
+        conn.close()
+        assert _pp_row(zoid) == {"a_one": None, "a_two": None, "b_one": None}
+
+    def test_process_state_reports_answering_processors(self, two_processors):
+        database, proc_a, _proc_b = two_processors
+        storage = database.storage
+        proc_a.pending[7] = {}
+        assert storage._process_state(7, "m", "C", "{}") == {0: {}}
+        assert storage._process_state(7, "m", "C", "{}") is None
+
+
+class TestWritePathsKeepColumns:
+    def _db(self, **kw):
+        s = _pp_storage(**kw)
+        proc = PendingProcessor("a_one", "a_two")
+        s.register_state_processor(proc)
+        return s, ZODB.DB(s), proc
+
+    def test_history_preserving_plain_write(self):
+        s, database, proc = self._db(history_preserving=True)
+        try:
+            proc.pending[0] = {"a_one": "x", "a_two": "y"}
+            _commit_root(database, 1)
+            _commit_root(database, 2)
+            with psycopg.connect(DSN) as pg, pg.cursor() as cur:
+                cur.execute("SELECT count(*) FROM object_history WHERE zoid = 0")
+                history_rows = cur.fetchone()[0]
+        finally:
+            database.close()
+            s.close()
+        assert _pp_row(0)["a_one"] == "x"
+        assert history_rows >= 2
+
+    def test_undo_does_not_null_columns(self):
+        """Interim behaviour: undo keeps the current values (#121 makes it exact)."""
+        s, database, proc = self._db(history_preserving=True)
+        try:
+            proc.pending[0] = {"a_one": "x", "a_two": "y"}
+            _commit_root(database, 1)
+            _commit_root(database, 2)
+            database.undo(s.lastTransaction())
+            txn.commit()
+        finally:
+            database.close()
+            s.close()
+        assert _pp_row(0) == {"a_one": "x", "a_two": "y", "b_one": None}
+
+    def test_conflict_resolution_keeps_columns(self):
+        from BTrees.Length import Length
+
+        s, database, proc = self._db()
+        try:
+            conn1 = database.open()
+            conn1.root()["len"] = Length()
+            txn.commit()
+            length = conn1.root()["len"]
+            zoid = int.from_bytes(length._p_oid, "big")
+            proc.pending[zoid] = {"a_one": "x", "a_two": "y"}
+            length.change(1)
+            txn.commit()
+
+            tm2 = txn.TransactionManager()
+            conn2 = database.open(transaction_manager=tm2)
+            conn2.root()["len"].change(1)  # conn2 reads the current state
+            length.change(1)
+            txn.commit()  # conn1 wins
+            tm2.commit()  # conn2 conflicts, Length resolves it
+            conn1.close()
+            conn2.close()
+        finally:
+            database.close()
+            s.close()
+        assert _pp_row(zoid) == {"a_one": "x", "a_two": "y", "b_one": None}
+
+
+class TestBatchWriterDirect:
+    """_batch_write_objects with hand-built entries: grouping and duplicates."""
+
+    def _entry(self, zoid, extra=None, state="{}"):
+        e = {
+            "zoid": zoid,
+            "class_mod": "m",
+            "class_name": "C",
+            "state": state,
+            "state_size": 2,
+            "refs": [],
+        }
+        if extra is not None:
+            e["_extra"] = extra
+        return e
+
+    def test_mixed_groups_and_duplicates(self):
+        from zodb_pgjsonb.batch import _batch_write_objects
+
+        s = _pp_storage()
+        s.close()
+        cols = [
+            [ExtraColumn("a_one", "%(a_one)s"), ExtraColumn("a_two", "%(a_two)s")],
+            [ExtraColumn("b_one", "%(b_one)s")],
+        ]
+        with psycopg.connect(DSN) as pg, pg.cursor() as cur:
+            cur.execute("INSERT INTO transaction_log (tid) VALUES (1), (2)")
+            cur.execute(
+                "INSERT INTO object_state "
+                "(zoid, tid, class_mod, class_name, state, state_size, refs, "
+                " a_one, a_two, b_one) "
+                "VALUES (10, 1, 'm', 'C', '{}', 2, '{}', 'old', 'old', 'old'), "
+                "       (11, 1, 'm', 'C', '{}', 2, '{}', 'old', 'old', 'old')"
+            )
+            _batch_write_objects(
+                cur,
+                [
+                    self._entry(10),  # nobody answers
+                    self._entry(11, {1: {"b_one": "first"}}),
+                    self._entry(12, {0: {"a_one": "new"}}),  # new row
+                    self._entry(11, {0: {}, 1: {"b_one": "last"}}),  # duplicate, wins
+                    self._entry(13, {0: {"a_one": "kept"}}),
+                    self._entry(13),  # later duplicate does not erase the answer
+                ],
+                tid_int=2,
+                processor_columns=cols,
+            )
+        assert _pp_row(10) == {"a_one": "old", "a_two": "old", "b_one": "old"}
+        assert _pp_row(11) == {"a_one": None, "a_two": None, "b_one": "last"}
+        assert _pp_row(12) == {"a_one": "new", "a_two": None, "b_one": None}
+        assert _pp_row(13) == {"a_one": "kept", "a_two": None, "b_one": None}

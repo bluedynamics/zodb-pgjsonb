@@ -22,8 +22,71 @@ def _write_txn_log(cur, tid_int, user, desc, ext, idempotent=False):
     )
 
 
+_BASE_COLS = [
+    "zoid",
+    "tid",
+    "class_mod",
+    "class_name",
+    "state",
+    "state_size",
+    "refs",
+]
+_BASE_VALS = [f"%({c})s" for c in _BASE_COLS]
+
+
+def _base_params(obj, tid_int):
+    return {
+        "zoid": obj["zoid"],
+        "tid": tid_int,
+        "class_mod": obj["class_mod"],
+        "class_name": obj["class_name"],
+        "state": (
+            Json(obj["state"], dumps=lambda s: s)
+            if isinstance(obj["state"], str)
+            else Json(obj["state"])
+        ),
+        "state_size": obj["state_size"],
+        "refs": obj["refs"],
+    }
+
+
+def _extra_columns_for(answers, processor_columns):
+    """Return ``(columns, values)`` to write for one object.
+
+    *answers* maps processor position to the dict its ``process()``
+    returned.  Every column of an answering processor is written, keys
+    missing from its dict as NULL.  Columns of processors that did not
+    answer are left out, so ON CONFLICT keeps their stored values.  If two
+    processors declare the same column, the later one wins.
+    """
+    columns = {}
+    values = {}
+    for pos in sorted(answers):
+        result = answers[pos]
+        for ec in processor_columns[pos]:
+            columns[ec.name] = ec
+            values[ec.name] = result.get(ec.name)
+    return tuple(columns.values()), values
+
+
+def _upsert_group(cur, columns, params_list):
+    """Upsert *params_list* with the base columns plus *columns*."""
+    cols = _BASE_COLS + [ec.name for ec in columns]
+    vals = _BASE_VALS + [ec.value_expr for ec in columns]
+    update_parts = [f"{c} = EXCLUDED.{c}" for c in _BASE_COLS[1:]]
+    update_parts += [
+        f"{ec.name} = {ec.update_expr or f'EXCLUDED.{ec.name}'}" for ec in columns
+    ]
+    cur.executemany(
+        f"INSERT INTO object_state ({', '.join(cols)}) "
+        f"VALUES ({', '.join(vals)}) "
+        f"ON CONFLICT (zoid) DO UPDATE SET {', '.join(update_parts)}",
+        params_list,
+    )
+
+
 def _batch_write_objects(
-    cur, objects, tid_int, history_preserving=False, extra_columns=None
+    cur, objects, tid_int, history_preserving=False, processor_columns=None
 ):
     """Write multiple objects in batch using executemany (pipelined).
 
@@ -31,9 +94,12 @@ def _batch_write_objects(
     all statements in a single network round-trip instead of waiting for
     each individual result.
 
-    When *extra_columns* is provided (a list of :class:`ExtraColumn`),
-    additional columns are included in the ``object_state`` INSERT.
-    History tables always use the base columns only.
+    *processor_columns* (from ``_get_processor_columns()``) lists the
+    extra columns per state processor.  Each object's ``_extra`` (from
+    ``_process_state()``) says which processors answered; only their
+    columns are written for that object.  Objects are grouped by the
+    resulting column set, one executemany per group.  History tables
+    always use the base columns only.
     """
     # SECURITY NOTE: Table names (object_state, object_history) are string
     # constants, not user input.  If table names are ever made configurable,
@@ -41,47 +107,29 @@ def _batch_write_objects(
     if not objects:
         return
 
-    # ── Base columns (always present) ────────────────────────────
-    base_cols = [
-        "zoid",
-        "tid",
-        "class_mod",
-        "class_name",
-        "state",
-        "state_size",
-        "refs",
-    ]
-    base_vals = [
-        "%(zoid)s",
-        "%(tid)s",
-        "%(class_mod)s",
-        "%(class_name)s",
-        "%(state)s",
-        "%(state_size)s",
-        "%(refs)s",
-    ]
-
-    # ── Build params list ────────────────────────────────────────
-    params_list = []
+    # One row per zoid; grouping below would otherwise reorder duplicates.
+    # The last queued entry's state wins (as with the former single
+    # executemany), but processor answers are merged: a processor that
+    # answered in an earlier entry keeps its answer unless the later entry
+    # answers again.  New dicts, the caller's entries stay untouched.
+    merged = {}
     for obj in objects:
-        params = {
-            "zoid": obj["zoid"],
-            "tid": tid_int,
-            "class_mod": obj["class_mod"],
-            "class_name": obj["class_name"],
-            "state": (
-                Json(obj["state"], dumps=lambda s: s)
-                if isinstance(obj["state"], str)
-                else Json(obj["state"])
-            ),
-            "state_size": obj["state_size"],
-            "refs": obj["refs"],
-        }
-        if extra_columns:
-            obj_extra = obj.get("_extra") or {}
-            for ec in extra_columns:
-                params[ec.name] = obj_extra.get(ec.name)
-        params_list.append(params)
+        earlier = merged.get(obj["zoid"])
+        if earlier is not None and "_extra" in earlier:
+            obj = {**obj, "_extra": {**earlier["_extra"], **obj.get("_extra", {})}}
+        merged[obj["zoid"]] = obj
+    objects = list(merged.values())
+
+    groups = {}  # column names -> (columns, params_list)
+    for obj in objects:
+        params = _base_params(obj, tid_int)
+        answers = obj.get("_extra")
+        columns = ()
+        if answers and processor_columns:
+            columns, values = _extra_columns_for(answers, processor_columns)
+            params.update(values)
+        key = tuple(ec.name for ec in columns)
+        groups.setdefault(key, (columns, []))[1].append(params)
 
     # ── History: preserve old versions before overwrite ──────────
     if history_preserving:
@@ -95,28 +143,8 @@ def _batch_write_objects(
             (zoid_list,),
         )
 
-    # ── object_state INSERT with extra columns ───────────────────
-    if extra_columns:
-        cols = base_cols + [ec.name for ec in extra_columns]
-        vals = base_vals + [ec.value_expr for ec in extra_columns]
-        update_parts = []
-        for c in cols[1:]:  # skip zoid (PK)
-            update_parts.append(f"{c} = EXCLUDED.{c}")
-    else:
-        cols = base_cols
-        vals = base_vals
-        update_parts = [f"{c} = EXCLUDED.{c}" for c in cols[1:]]
-
-    cols_str = ", ".join(cols)
-    vals_str = ", ".join(vals)
-    update_str = ", ".join(update_parts)
-
-    cur.executemany(
-        f"INSERT INTO object_state ({cols_str}) "
-        f"VALUES ({vals_str}) "
-        f"ON CONFLICT (zoid) DO UPDATE SET {update_str}",
-        params_list,
-    )
+    for columns, params_list in groups.values():
+        _upsert_group(cur, columns, params_list)
 
 
 def _batch_delete_objects(cur, zoids, tid_int, history_preserving=False):
@@ -230,7 +258,7 @@ def _write_prepared_transaction(
     conn,
     txn_data,
     history_preserving,
-    extra_columns,
+    processor_columns,
     processors,
     blob_sink=None,
     blob_threshold=102_400,
@@ -264,7 +292,7 @@ def _write_prepared_transaction(
                 txn_data["objects"],
                 tid_int,
                 history_preserving,
-                extra_columns=extra_columns,
+                processor_columns=processor_columns,
             )
             _batch_write_blobs(
                 cur,
