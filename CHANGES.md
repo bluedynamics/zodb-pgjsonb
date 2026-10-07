@@ -1,6 +1,8 @@
 # Changelog
 
-## unreleased
+## 1.17.0
+
+### Bug fixes
 
 - **Fix: a plain object write no longer wipes state-processor columns
   (#120).** The batch writer wrote every registered extra column for every
@@ -15,8 +17,11 @@
   fix stay wiped; plone.pgcatalog ships a repair
   (bluedynamics/plone-pgcatalog#244). Undo still restores processor
   columns incorrectly (#121), but no longer sets them to `NULL`.
+
 - `ExtraColumn.update_expr` is now used in the `ON CONFLICT` clause. It
   was documented but ignored.
+
+### Documentation
 
 - Add `plone.registryfromenviron` to the ecosystem dashboard under
   *Tools & Libraries*: it overrides `plone.registry` values from environment
@@ -24,10 +29,13 @@
   card was added to the duplicated dashboard in plone.observability, so both
   copies stay identical.
 
+### Internal
+
 - Pin ruff to 0.16.7 in the QA workflow (and bump the `ruff-pre-commit` rev to
   match) instead of running unpinned `uvx ruff`, so ruff releases no longer
   change CI behavior on unrelated PRs. Part of the ecosystem-wide alignment
   (bluedynamics/plone-pgcatalog#217).
+
 - Lower ruff's C901 max-complexity threshold from 15 to 13 as part of the
   ecosystem-wide complexity ratchet, refactoring the three functions above
   the new limit: `_copyTransactionsFrom_parallel` (15 → 10, worker clamp and
@@ -36,6 +44,7 @@
   the duplicated restore/delete entry dicts deduplicated), and the
   `test_tid_ordering_w_commit` override (14 → 9, optional getTid /
   lastInvalidations readers extracted). Behavior is unchanged.
+
 - Enable ruff's cyclomatic-complexity check (`C901`, mccabe) with
   `max-complexity = 15`. `src/` and `tests/` pass as-is; `benchmarks/` is
   exempted via per-file-ignores (CLI harness code, legitimately branchy).
