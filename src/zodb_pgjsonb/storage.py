@@ -766,8 +766,17 @@ class PGJsonbStorage(CopyTransactionsMixin, ConflictResolvingStorage, BaseStorag
           advisory lock — when it has not changed since the last apply (#78).
 
         ``process`` may modify *state* in-place (e.g. pop annotation keys).
-        It returns a dict of ``{column_name: value}`` to be written as extra
-        columns alongside the object, or *None* when no extra data applies.
+        Its return value decides what happens to **this processor's**
+        columns for the object:
+
+        - *None*: the columns are left untouched (a new row gets the
+          column defaults).
+        - a dict ``{column_name: value}``: all of this processor's
+          columns are written; columns missing from the dict become NULL.
+        - ``{}``: all of this processor's columns are set to NULL.
+
+        Other processors' columns are only affected by their own answers.
+        If two processors declare the same column, the later one wins.
 
         **Security:** Processors have full SQL access via ``ExtraColumn.value_expr``.
         Only register processors from trusted, audited sources.

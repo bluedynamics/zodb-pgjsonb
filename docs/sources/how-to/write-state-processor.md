@@ -66,6 +66,7 @@ ExtraColumn(name, value_expr, update_expr=None)
   Use raw `%(name)s` for simple values or wrap in SQL functions like `to_tsvector('simple'::regconfig, %(name)s)`.
 - **update_expr**: optional expression for ON CONFLICT UPDATE.
   Defaults to `EXCLUDED.{name}` when set to `None`.
+  In it, `EXCLUDED.{name}` holds the value already computed by `value_expr`, and `object_state.{name}` the stored value.
 
 ## Implement the process method
 
@@ -76,7 +77,9 @@ The `process` method receives four arguments:
 - **class_name**: Python class name (for example, `Document`).
 - **state**: the decoded JSON state as a Python dict.
 
-Return a dict mapping column names to values, or return `None` to skip writing extra columns for this object.
+Return `None` when you have nothing to say about this object: your columns keep their stored values.
+Return a dict to write your columns: every column you declared is written, and columns missing from the dict become `NULL`.
+Return `{}` to clear all your columns.
 The `process` method may modify `state` in place (for example, to pop annotation keys that should not be stored in the JSONB column).
 
 ## Provide optional DDL via get_schema_sql

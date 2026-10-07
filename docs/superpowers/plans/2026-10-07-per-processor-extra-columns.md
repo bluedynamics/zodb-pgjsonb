@@ -216,28 +216,29 @@ Expected: `test_new_object_without_answer_gets_defaults` PASSES; the other six F
 Replace `_process_state`:
 
 ```python
-    def _process_state(self, zoid, class_mod, class_name, state):
-        """Run all registered state processors.
+def _process_state(self, zoid, class_mod, class_name, state):
+    """Run all registered state processors.
 
-        Returns ``{processor_position: result}`` for every processor whose
-        ``process()`` did not return *None* (an empty dict counts as an
-        answer), or *None* when no processor answered.  The batch writer
-        writes exactly the columns of the processors that answered, so a
-        processor returning *None* leaves its stored columns untouched
-        (#120).
-        """
-        answers = {}
-        for pos, proc in enumerate(self._state_processors):
-            result = proc.process(zoid, class_mod, class_name, state)
-            if result is not None:
-                answers[pos] = result
-        return answers or None
+    Returns ``{processor_position: result}`` for every processor whose
+    ``process()`` did not return *None* (an empty dict counts as an
+    answer), or *None* when no processor answered.  The batch writer
+    writes exactly the columns of the processors that answered, so a
+    processor returning *None* leaves its stored columns untouched
+    (#120).
+    """
+    answers = {}
+    for pos, proc in enumerate(self._state_processors):
+        result = proc.process(zoid, class_mod, class_name, state)
+        if result is not None:
+            answers[pos] = result
+    return answers or None
 
-    def _get_processor_columns(self):
-        """Extra columns per processor, aligned with ``_state_processors``."""
-        if not self._state_processors:
-            return None
-        return [list(proc.get_extra_columns()) for proc in self._state_processors]
+
+def _get_processor_columns(self):
+    """Extra columns per processor, aligned with ``_state_processors``."""
+    if not self._state_processors:
+        return None
+    return [list(proc.get_extra_columns()) for proc in self._state_processors]
 ```
 
 Keep `_get_extra_columns()` as is. All call sites of `_process_state` (`store`, `restore`, undo in `storage.py` and `instance.py`, `conflict.py`, `migration.py`) keep `if extra: entry["_extra"] = extra` unchanged: the new return value is truthy exactly when some processor answered.
@@ -368,17 +369,13 @@ In `_write_prepared_transaction`, rename the parameter `extra_columns` to `proce
 `storage.py` `_vote()` and `instance.py` `tpc_vote()`:
 
 ```python
-            processor_columns = self._get_processor_columns()          # storage.py
-            _batch_write_objects(
-                cur, writes, tid_int, hp, processor_columns=processor_columns
-            )
+processor_columns = self._get_processor_columns()  # storage.py
+_batch_write_objects(cur, writes, tid_int, hp, processor_columns=processor_columns)
 ```
 
 ```python
-            processor_columns = self._main._get_processor_columns()    # instance.py
-            _batch_write_objects(
-                cur, writes, tid_int, hp, processor_columns=processor_columns
-            )
+processor_columns = self._main._get_processor_columns()  # instance.py
+_batch_write_objects(cur, writes, tid_int, hp, processor_columns=processor_columns)
 ```
 
 `migration.py` `_make_write_worker()`: replace `extra_columns = self._get_extra_columns()` with `processor_columns = self._get_processor_columns()` and pass `processor_columns` positionally where `extra_columns` was passed to `_write_prepared_transaction`.
@@ -617,10 +614,10 @@ class TestBatchWriterDirect:
             _batch_write_objects(
                 cur,
                 [
-                    self._entry(10),                                 # nobody answers
+                    self._entry(10),  # nobody answers
                     self._entry(11, {1: {"b_one": "first"}}),
-                    self._entry(12, {0: {"a_one": "new"}}),           # new row
-                    self._entry(11, {0: {}, 1: {"b_one": "last"}}),   # duplicate, wins
+                    self._entry(12, {0: {"a_one": "new"}}),  # new row
+                    self._entry(11, {0: {}, 1: {"b_one": "last"}}),  # duplicate, wins
                 ],
                 tid_int=2,
                 processor_columns=cols,

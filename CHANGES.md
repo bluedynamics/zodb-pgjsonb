@@ -2,6 +2,22 @@
 
 ## unreleased
 
+- **Fix: a plain object write no longer wipes state-processor columns
+  (#120).** The batch writer wrote every registered extra column for every
+  object, so a processor that returned `None` ("nothing to say about this
+  object") got its columns overwritten with `NULL`. With plone.pgcatalog
+  this silently uncataloged content whenever an object was written without
+  a full reindex, for example when opening the edit form (edit lock), on
+  the sharing tab, or on a write followed by a partial reindex. Now the
+  rule is per processor: `None` leaves its columns untouched, a dict
+  writes all its columns (missing keys as `NULL`), `{}` clears them. This
+  also holds with several registered processors. Rows wiped before this
+  fix stay wiped; plone.pgcatalog ships a repair
+  (bluedynamics/plone-pgcatalog#244). Undo still restores processor
+  columns incorrectly (#121), but no longer sets them to `NULL`.
+- `ExtraColumn.update_expr` is now used in the `ON CONFLICT` clause. It
+  was documented but ignored.
+
 - Add `plone.registryfromenviron` to the ecosystem dashboard under
   *Tools & Libraries*: it overrides `plone.registry` values from environment
   variables, which makes registry configuration 12-factor friendly. The same

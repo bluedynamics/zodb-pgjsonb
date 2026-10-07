@@ -24,8 +24,12 @@ A processor must implement the following methods:
   `state` is a JSON string (the decoded object state, pre-sanitization).
   The method may modify `state` in-place (for example, pop annotation keys
   to prevent them from being persisted).
-  Returns a dict of `{column_name: value}` for extra columns, or `None`
-  when no extra data applies to this object.
+  The return value decides what happens to this processor's columns for the object:
+
+  - `None`: the columns are left untouched (a new row gets the column defaults).
+  - A dict of `{column_name: value}`: all of this processor's columns are written; columns missing from the dict become `NULL`.
+  - `{}`: all of this processor's columns are set to `NULL`.
+
   Called during `store()` after pickle-to-JSON decoding for every object
   in the transaction.
 
@@ -118,8 +122,9 @@ a ZODB write transaction:
 
 3. **Vote** (`tpc_vote()`):
    `get_extra_columns()` is called to collect column definitions.
-   All objects (with extra column data) are written in a batched
-   `executemany()` call.
+   Objects are grouped by the set of columns to write (the columns of every processor that answered)
+   and written with one batched `executemany()` per group.
+   A processor that returned `None` has its columns left out of the statement, so their stored values stay.
    After all writes, `finalize(cursor)` is called on each processor
    that implements it.
 
