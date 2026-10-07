@@ -2,6 +2,21 @@
 
 ## unreleased
 
+- **Fix: storing an object without state-processor data wiped its extra
+  columns.** `_batch_write_objects()` upserted every object of a transaction
+  with all registered extra columns (`col = EXCLUDED.col`), so an object for
+  which `process()` returned `None` ("no extra data") had its existing extra
+  columns overwritten with `NULL`. With plone.pgcatalog this removed content
+  from the catalog whenever a cataloged object was stored without a full
+  reindex in the same transaction: opening the Classic UI edit form (lock),
+  the live search rendering thumbnails (image scale annotation), the display
+  menu, `api.content.transition()`, renaming or moving a folder. Rows without
+  processor data now keep their extra column values (`CASE WHEN … THEN
+  EXCLUDED.col ELSE object_state.col END`); new rows still get `NULL`, and
+  clearing a column remains possible with an explicit `{column: None}`
+  result. This matches the documented `process()` contract. Same mechanism as
+  bluedynamics/plone-pgcatalog#30, which only fixed the undo path.
+
 - Add `plone.registryfromenviron` to the ecosystem dashboard under
   *Tools & Libraries*: it overrides `plone.registry` values from environment
   variables, which makes registry configuration 12-factor friendly. The same

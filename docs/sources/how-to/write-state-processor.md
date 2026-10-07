@@ -77,6 +77,7 @@ The `process` method receives four arguments:
 - **state**: the decoded JSON state as a Python dict.
 
 Return a dict mapping column names to values, or return `None` to skip writing extra columns for this object.
+Returning `None` keeps the values already stored in the extra columns; return `{column_name: None}` to clear them.
 The `process` method may modify `state` in place (for example, to pop annotation keys that should not be stored in the JSONB column).
 
 ## Provide optional DDL via get_schema_sql

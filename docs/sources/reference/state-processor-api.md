@@ -26,6 +26,8 @@ A processor must implement the following methods:
   to prevent them from being persisted).
   Returns a dict of `{column_name: value}` for extra columns, or `None`
   when no extra data applies to this object.
+  `None` leaves the extra columns of an existing row unchanged (a new row
+  gets `NULL`); to clear columns, return them explicitly with `None` values.
   Called during `store()` after pickle-to-JSON decoding for every object
   in the transaction.
 

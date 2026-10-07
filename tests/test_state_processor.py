@@ -237,6 +237,71 @@ class TestStateProcessorWritePath:
         # Should be NULL — the abort prevented the write
         assert row["test_label"] is None
 
+    def test_store_without_processor_data_keeps_extra_column(self, db):
+        """Re-store with no processor data → existing extra column is kept.
+
+        ``process()`` returning None means "no extra data", not "clear":
+        clearing is an explicit ``{column: None}`` (see
+        TestNullSentinelProcessor).  Regression: plone.pgcatalog's columns
+        were wiped whenever a cataloged object was stored without being
+        reindexed (lock, image scale annotation, workflow transition, ...).
+        """
+        conn = db.open()
+        root = conn.root()
+        root["title"] = "v1"
+        root._test_extra = "my-label"
+        txn.commit()
+
+        del root._test_extra
+        root["title"] = "v2"
+        txn.commit()
+
+        zoid = int.from_bytes(root._p_oid, "big")
+        pg = psycopg.connect(DSN, row_factory=dict_row)
+        with pg.cursor() as cur:
+            cur.execute(
+                "SELECT test_label, state FROM object_state WHERE zoid = %s",
+                (zoid,),
+            )
+            row = cur.fetchone()
+        pg.close()
+        conn.close()
+
+        assert "v2" in json.dumps(row["state"])  # the object state was written
+        assert row["test_label"] == "my-label"
+
+    def test_mixed_batch_only_updates_objects_with_processor_data(self, db):
+        """One transaction, one object with data, one without (same batch)."""
+        from persistent.mapping import PersistentMapping
+
+        conn = db.open()
+        root = conn.root()
+        root["a"] = a = PersistentMapping()
+        root["b"] = b = PersistentMapping()
+        a._test_extra = "a-v1"
+        b._test_extra = "b-v1"
+        txn.commit()
+
+        del a._test_extra
+        a["changed"] = True
+        b._test_extra = "b-v2"
+        txn.commit()
+
+        zoids = [int.from_bytes(o._p_oid, "big") for o in (a, b)]
+        pg = psycopg.connect(DSN, row_factory=dict_row)
+        with pg.cursor() as cur:
+            cur.execute(
+                "SELECT zoid, test_label, state FROM object_state WHERE zoid = ANY(%s)",
+                (zoids,),
+            )
+            rows = {r["zoid"]: r for r in cur.fetchall()}
+        pg.close()
+        conn.close()
+
+        assert "changed" in json.dumps(rows[zoids[0]]["state"])
+        assert rows[zoids[0]]["test_label"] == "a-v1"
+        assert rows[zoids[1]]["test_label"] == "b-v2"
+
 
 class TestNullSentinelProcessor:
     """Processor that supports None sentinel for clearing columns."""

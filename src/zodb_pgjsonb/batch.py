@@ -7,6 +7,12 @@ import contextlib
 import os
 
 
+# Per-row flag in _batch_write_objects(): did any state processor return
+# data for this object?  Shares the params dict with the ExtraColumn
+# names, so it uses a name no processor column is expected to take.
+_HAS_EXTRA_PARAM = "__pgjsonb_has_extra"
+
+
 def _write_txn_log(cur, tid_int, user, desc, ext, idempotent=False):
     """Write a transaction log entry.
 
@@ -33,6 +39,10 @@ def _batch_write_objects(
 
     When *extra_columns* is provided (a list of :class:`ExtraColumn`),
     additional columns are included in the ``object_state`` INSERT.
+    Objects for which no state processor returned data (no ``_extra``)
+    keep the extra column values of their existing row: ``process()``
+    returning None means "no extra data", not "clear" (clearing is an
+    explicit ``{column: None}``).
     History tables always use the base columns only.
     """
     # SECURITY NOTE: Table names (object_state, object_history) are string
@@ -79,6 +89,7 @@ def _batch_write_objects(
         }
         if extra_columns:
             obj_extra = obj.get("_extra") or {}
+            params[_HAS_EXTRA_PARAM] = bool(obj_extra)
             for ec in extra_columns:
                 params[ec.name] = obj_extra.get(ec.name)
         params_list.append(params)
@@ -99,9 +110,13 @@ def _batch_write_objects(
     if extra_columns:
         cols = base_cols + [ec.name for ec in extra_columns]
         vals = base_vals + [ec.value_expr for ec in extra_columns]
-        update_parts = []
-        for c in cols[1:]:  # skip zoid (PK)
-            update_parts.append(f"{c} = EXCLUDED.{c}")
+        update_parts = [f"{c} = EXCLUDED.{c}" for c in base_cols[1:]]
+        # Rows without processor data keep their existing extra columns.
+        update_parts.extend(
+            f"{ec.name} = CASE WHEN %({_HAS_EXTRA_PARAM})s "
+            f"THEN EXCLUDED.{ec.name} ELSE object_state.{ec.name} END"
+            for ec in extra_columns
+        )
     else:
         cols = base_cols
         vals = base_vals
