@@ -638,3 +638,120 @@ class TestPerProcessorWriteSemantics:
         proc_a.pending[7] = {}
         assert storage._process_state(7, "m", "C", "{}") == {0: {}}
         assert storage._process_state(7, "m", "C", "{}") is None
+
+
+class TestWritePathsKeepColumns:
+    def _db(self, **kw):
+        s = _pp_storage(**kw)
+        proc = PendingProcessor("a_one", "a_two")
+        s.register_state_processor(proc)
+        return s, ZODB.DB(s), proc
+
+    def test_history_preserving_plain_write(self):
+        s, database, proc = self._db(history_preserving=True)
+        try:
+            proc.pending[0] = {"a_one": "x", "a_two": "y"}
+            _commit_root(database, 1)
+            _commit_root(database, 2)
+            with psycopg.connect(DSN) as pg, pg.cursor() as cur:
+                cur.execute("SELECT count(*) FROM object_history WHERE zoid = 0")
+                history_rows = cur.fetchone()[0]
+        finally:
+            database.close()
+            s.close()
+        assert _pp_row(0)["a_one"] == "x"
+        assert history_rows >= 2
+
+    def test_undo_does_not_null_columns(self):
+        """Interim behaviour: undo keeps the current values (#121 makes it exact)."""
+        s, database, proc = self._db(history_preserving=True)
+        try:
+            proc.pending[0] = {"a_one": "x", "a_two": "y"}
+            _commit_root(database, 1)
+            _commit_root(database, 2)
+            database.undo(s.lastTransaction())
+            txn.commit()
+        finally:
+            database.close()
+            s.close()
+        assert _pp_row(0) == {"a_one": "x", "a_two": "y", "b_one": None}
+
+    def test_conflict_resolution_keeps_columns(self):
+        from BTrees.Length import Length
+
+        s, database, proc = self._db()
+        try:
+            conn1 = database.open()
+            conn1.root()["len"] = Length()
+            txn.commit()
+            length = conn1.root()["len"]
+            zoid = int.from_bytes(length._p_oid, "big")
+            proc.pending[zoid] = {"a_one": "x", "a_two": "y"}
+            length.change(1)
+            txn.commit()
+
+            tm2 = txn.TransactionManager()
+            conn2 = database.open(transaction_manager=tm2)
+            conn2.root()["len"].change(1)  # conn2 reads the current state
+            length.change(1)
+            txn.commit()  # conn1 wins
+            tm2.commit()  # conn2 conflicts, Length resolves it
+            conn1.close()
+            conn2.close()
+        finally:
+            database.close()
+            s.close()
+        assert _pp_row(zoid) == {"a_one": "x", "a_two": "y", "b_one": None}
+
+
+class TestBatchWriterDirect:
+    """_batch_write_objects with hand-built entries: grouping and duplicates."""
+
+    def _entry(self, zoid, extra=None, state="{}"):
+        e = {
+            "zoid": zoid,
+            "class_mod": "m",
+            "class_name": "C",
+            "state": state,
+            "state_size": 2,
+            "refs": [],
+        }
+        if extra is not None:
+            e["_extra"] = extra
+        return e
+
+    def test_mixed_groups_and_duplicates(self):
+        from zodb_pgjsonb.batch import _batch_write_objects
+
+        s = _pp_storage()
+        s.close()
+        cols = [
+            [ExtraColumn("a_one", "%(a_one)s"), ExtraColumn("a_two", "%(a_two)s")],
+            [ExtraColumn("b_one", "%(b_one)s")],
+        ]
+        with psycopg.connect(DSN) as pg, pg.cursor() as cur:
+            cur.execute("INSERT INTO transaction_log (tid) VALUES (1), (2)")
+            cur.execute(
+                "INSERT INTO object_state "
+                "(zoid, tid, class_mod, class_name, state, state_size, refs, "
+                " a_one, a_two, b_one) "
+                "VALUES (10, 1, 'm', 'C', '{}', 2, '{}', 'old', 'old', 'old'), "
+                "       (11, 1, 'm', 'C', '{}', 2, '{}', 'old', 'old', 'old')"
+            )
+            _batch_write_objects(
+                cur,
+                [
+                    self._entry(10),  # nobody answers
+                    self._entry(11, {1: {"b_one": "first"}}),
+                    self._entry(12, {0: {"a_one": "new"}}),  # new row
+                    self._entry(11, {0: {}, 1: {"b_one": "last"}}),  # duplicate, wins
+                    self._entry(13, {0: {"a_one": "kept"}}),
+                    self._entry(13),  # later duplicate does not erase the answer
+                ],
+                tid_int=2,
+                processor_columns=cols,
+            )
+        assert _pp_row(10) == {"a_one": "old", "a_two": "old", "b_one": "old"}
+        assert _pp_row(11) == {"a_one": None, "a_two": None, "b_one": "last"}
+        assert _pp_row(12) == {"a_one": "new", "a_two": None, "b_one": None}
+        assert _pp_row(13) == {"a_one": "kept", "a_two": None, "b_one": None}

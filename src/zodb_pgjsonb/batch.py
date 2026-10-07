@@ -107,9 +107,18 @@ def _batch_write_objects(
     if not objects:
         return
 
-    # One row per zoid, the last queued entry wins (as with the former single
-    # executemany); grouping below would otherwise reorder duplicates.
-    objects = list({obj["zoid"]: obj for obj in objects}.values())
+    # One row per zoid; grouping below would otherwise reorder duplicates.
+    # The last queued entry's state wins (as with the former single
+    # executemany), but processor answers are merged: a processor that
+    # answered in an earlier entry keeps its answer unless the later entry
+    # answers again.  New dicts, the caller's entries stay untouched.
+    merged = {}
+    for obj in objects:
+        earlier = merged.get(obj["zoid"])
+        if earlier is not None and "_extra" in earlier:
+            obj = {**obj, "_extra": {**earlier["_extra"], **obj.get("_extra", {})}}
+        merged[obj["zoid"]] = obj
+    objects = list(merged.values())
 
     groups = {}  # column names -> (columns, params_list)
     for obj in objects:
