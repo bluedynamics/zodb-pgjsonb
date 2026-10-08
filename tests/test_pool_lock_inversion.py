@@ -9,6 +9,7 @@ connection) waits for pool_timeout.  Under load the convoy never drains.
 from tests.conftest import clean_db
 from tests.conftest import DSN
 
+import gc
 import pytest
 import threading
 import time
@@ -38,6 +39,30 @@ def _wait_for_pool_waiter(pool, timeout=3.0):
             return
         time.sleep(0.02)
     raise AssertionError("no client started waiting on the pool")
+
+
+def _wait_for_slots_taken(pool, n, timeout=3.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        s = pool.get_stats()
+        if s.get("pool_size", 0) - s.get("pool_available", 0) >= n:
+            return
+        time.sleep(0.02)
+    raise AssertionError(f"{n} pool slots never got checked out")
+
+
+def _forget_failed_openers(db):
+    """Let GC collect the ZODB Connections whose open() timed out.
+
+    psycopg-pool keeps a timed-out waiter queued, with its PoolTimeout and
+    that exception's traceback, until the next connection is returned; the
+    traceback pins the caller's frames and so the half-opened Connection.
+    ZODB's DB.close() raises KeyError on such a Connection.  Releasing the
+    parked Connections returns their pool connections, which drains the
+    stale waiters.
+    """
+    db.pool.setSize(0)
+    gc.collect()
 
 
 def test_new_instance_does_not_check_out():
@@ -203,4 +228,58 @@ def test_instance_recovers_after_failed_poll(monkeypatch):
         assert inst._in_read_txn is True
         inst.release()
     finally:
+        storage.close()
+
+
+def test_burst_beyond_pool_max_recovers():
+    """More concurrent openers than pool slots (piled-up readiness probes
+    after a failover) must not wedge the process (#126)."""
+    import ZODB
+
+    storage = _small_storage(pool_max_size=3, pool_timeout=2.0)
+    db = ZODB.DB(storage, pool_size=7)
+    try:
+        release = threading.Event()
+        close_times = []
+        lock = threading.Lock()
+
+        def holder():
+            c = db.open()
+            c.root()
+            release.wait(10)
+            t0 = time.monotonic()
+            c.close()
+            with lock:
+                close_times.append(time.monotonic() - t0)
+
+        def opener():
+            try:
+                c = db.open()
+                c.root()
+                c.close()
+            except Exception:
+                pass  # PoolTimeout while the burst lasts is fine
+
+        holders = [threading.Thread(target=holder, daemon=True) for _ in range(3)]
+        for t in holders:
+            t.start()
+        _wait_for_slots_taken(storage._instance_pool, 3)
+        openers = [threading.Thread(target=opener, daemon=True) for _ in range(8)]
+        for t in openers:
+            t.start()
+        _wait_for_pool_waiter(storage._instance_pool)
+        release.set()
+        for t in holders + openers:
+            t.join(15)
+        assert not any(t.is_alive() for t in holders + openers)
+        assert max(close_times) < 1.0, f"close() latencies: {close_times}"
+
+        t0 = time.monotonic()
+        c = db.open()
+        c.root()
+        c.close()
+        assert time.monotonic() - t0 < 1.0
+    finally:
+        _forget_failed_openers(db)
+        db.close()
         storage.close()

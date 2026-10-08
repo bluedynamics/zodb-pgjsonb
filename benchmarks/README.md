@@ -121,6 +121,28 @@ It counts `object_state` round-trips (RTT-independent) and wall time for a
 sequential per-object load versus one `prefetch`, with an optional injected
 per-query latency to show how the two scale with network round-trip time.
 
+### Failover reproduction
+
+`failover_repro.py` is not a benchmark. It reproduces #126: a database failover
+that used to wedge every Zope process. It models the production setup in time
+scale (pool-max-size 10, ZODB pool-size 7, three Zope-style worker threads, a
+readiness probe that starts a thread per probe), kills all backends and refuses
+new connections for 30 s, and prints a snapshot every two seconds. It needs a
+PostgreSQL superuser and creates and drops its own database
+`zodb_failover_repro`.
+
+```shell
+REPRO_PG="user=zodb password=zodb host=localhost port=5433" \
+    uv run python benchmarks/failover_repro.py
+```
+
+Healthy: `req_ok` and `probe_ok` reappear within a few seconds of
+`=== database back`, and the thread count returns to its baseline. Wedged
+(1.17.0): `pg_pool size=10 avail=0`, the server shows `idle|COMMIT: 10`, the
+thread count keeps growing, and the final histogram shows one thread in
+`getconn` under `DB.open` while the rest wait in `DB._returnToPool` or
+`DB.open`.
+
 ## Updating the documentation
 
 The numbers in `docs/sources/explanation/performance.md` are produced by this
