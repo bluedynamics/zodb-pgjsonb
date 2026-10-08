@@ -184,8 +184,8 @@ def test_release_returns_pool_slot_when_conn_killed_server_side():
         # until PoolTimeout.  Success here proves the slot was returned.
         instance2 = storage.new_instance()
         try:
-            assert instance2._conn is not None
             assert instance2.poll_invalidations() == []
+            assert instance2._conn is not None
         finally:
             instance2.release()
     finally:
