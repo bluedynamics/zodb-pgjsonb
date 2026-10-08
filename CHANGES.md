@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.17.1 (unreleased)
+## 1.17.1
 
 ### Bug fixes
 
@@ -31,6 +31,12 @@
   every open *or idle* ZODB connection holds a pool connection, so the
   pool must cover ZODB's own `pool-size` plus the worker threads.
 
+- Replace MinIO with [Garage](https://garagehq.deuxfleurs.fr/) in the Docker
+  Compose example and the docs: MinIO is no longer maintained and its images
+  are no longer published on Docker Hub. Garage runs in single-node mode and
+  creates the `zodb-blobs` bucket and its access key on startup, so the
+  `createbucket` bootstrap container is gone.
+
 ### Tests
 
 - Add `benchmarks/failover_repro.py`, a time-scaled reproduction of the
@@ -58,12 +64,6 @@
   was documented but ignored.
 
 ### Documentation
-
-- Replace MinIO with [Garage](https://garagehq.deuxfleurs.fr/) in the Docker
-  Compose example and the docs: MinIO is no longer maintained and its images
-  are no longer published on Docker Hub. Garage runs in single-node mode and
-  creates the `zodb-blobs` bucket and its access key on startup, so the
-  `createbucket` bootstrap container is gone.
 
 - Add `plone.registryfromenviron` to the ecosystem dashboard under
   *Tools & Libraries*: it overrides `plone.registry` values from environment
