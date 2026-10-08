@@ -16,6 +16,15 @@
   on first use, outside the lock, and a failed `poll_invalidations()`
   returns its connection instead of keeping it.
 
+  Known side effect: a `PoolTimeout` now surfaces in ZODB's
+  `Connection.open()` instead of in `Connection.__init__`. ZODB leaves
+  such a half-opened `Connection` behind, and psycopg-pool keeps it
+  reachable until the next connection is returned to the pool. If the
+  process shuts down in that window, `DB.close()` raises `KeyError`
+  (`unregisterSynch` of a never-registered connection). This only
+  affects shutdown; `Connection.open()` not being exception-safe is a
+  ZODB issue.
+
 ### Documentation
 
 - Correct the sizing rule for `pool-max-size` in the production guide:

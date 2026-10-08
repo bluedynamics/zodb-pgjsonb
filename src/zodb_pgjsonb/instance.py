@@ -275,15 +275,16 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
         # and the DDL can acquire ACCESS EXCLUSIVE.  Without this, a
         # read-only request that hits a column added by a state processor
         # (e.g. 'meta') would crash with UndefinedColumn (#105).
-        self._main._apply_pending_ddl()
-
         try:
+            self._main._apply_pending_ddl()
             return self._poll()
         except Exception:
             # Never let an exception escape Connection.open() /
             # newTransaction() with a slot checked out: ZODB strands that
-            # Connection, and the slot stays lost until GC (#126).  The next
-            # use checks out a fresh connection via _ensure_conn().
+            # Connection, and psycopg-pool never reclaims a slot whose
+            # connection is simply dropped, so it would be lost for good
+            # (#126).  The next use checks out a fresh connection via
+            # _ensure_conn().
             self._drop_conn()
             raise
 

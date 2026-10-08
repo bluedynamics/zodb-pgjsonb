@@ -57,9 +57,12 @@ def _forget_failed_openers(db):
     psycopg-pool keeps a timed-out waiter queued, with its PoolTimeout and
     that exception's traceback, until the next connection is returned; the
     traceback pins the caller's frames and so the half-opened Connection.
-    ZODB's DB.close() raises KeyError on such a Connection.  Releasing the
-    parked Connections returns their pool connections, which drains the
-    stale waiters.
+    ZODB's DB.close() raises KeyError on such a Connection (its open() set
+    transaction_manager but never registered it).  The lazy checkout makes
+    this likelier than before, because the PoolTimeout now hits in
+    Connection.open() instead of Connection.__init__; see CHANGES 1.17.1.
+    Releasing the parked Connections returns their pool connections, which
+    drains the stale waiters.
     """
     db.pool.setSize(0)
     gc.collect()
@@ -282,4 +285,31 @@ def test_burst_beyond_pool_max_recovers():
     finally:
         _forget_failed_openers(db)
         db.close()
+        storage.close()
+
+
+def test_failed_pending_ddl_returns_slot(monkeypatch):
+    """A reused instance still holds its slot when poll_invalidations()
+    starts; if applying deferred DDL raises, the slot must come back too.
+    psycopg-pool never reclaims a slot whose connection is just dropped."""
+    import psycopg
+
+    storage = _small_storage(pool_timeout=2.0)
+    try:
+        inst = storage.new_instance()
+        inst.poll_invalidations()  # holds the only slot now
+        inst.afterCompletion()  # like a parked Connection
+
+        def boom():
+            raise psycopg.OperationalError("simulated DDL failure")
+
+        monkeypatch.setattr(storage, "_apply_pending_ddl", boom)
+        with pytest.raises(psycopg.OperationalError):
+            inst.poll_invalidations()
+        assert inst._conn is None
+        pool = storage._instance_pool
+        conn = pool.getconn(timeout=0.5)
+        pool.putconn(conn)
+        inst.release()
+    finally:
         storage.close()

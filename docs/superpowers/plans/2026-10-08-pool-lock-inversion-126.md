@@ -395,7 +395,7 @@ In `poll_invalidations`, move everything from `self._begin_read_txn()` to `self.
         except Exception:
             # Never let an exception escape Connection.open() /
             # newTransaction() with a slot checked out: ZODB strands that
-            # Connection, and the slot stays lost until GC (#126).  The next
+            # Connection, and psycopg-pool never reclaims a dropped slot (#126).  The next
             # use checks out a fresh connection via _ensure_conn().
             self._drop_conn()
             raise
