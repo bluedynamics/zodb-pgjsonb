@@ -45,13 +45,13 @@ class TestIMVCCStorageInterface:
         inst1 = storage.new_instance()
         inst2 = storage.new_instance()
         assert inst1 is not inst2
-        assert inst1._conn is not inst2._conn
+        assert inst1.pg_connection is not inst2.pg_connection
         inst1.release()
         inst2.release()
 
     def test_release_returns_to_pool(self, storage):
         inst = storage.new_instance()
-        pg_conn = inst._conn
+        pg_conn = inst.pg_connection
         assert not pg_conn.closed
         inst.release()
         # Connection returned to pool, not closed
@@ -67,7 +67,7 @@ class TestIMVCCStorageInterface:
     def test_connection_reused_after_release(self, storage):
         """Released connections are reused by new instances."""
         inst1 = storage.new_instance()
-        conn1 = inst1._conn
+        conn1 = inst1.pg_connection
         inst1.release()
         # Pool may reuse the same connection
         inst2 = storage.new_instance()

@@ -2,7 +2,8 @@
 
 Each ZODB Connection gets its own instance via
 PGJsonbStorage.new_instance(), providing per-connection snapshot
-isolation through a separate PostgreSQL connection.
+isolation through a PostgreSQL connection checked out from the pool on
+first use.
 """
 
 from .batch import _batch_delete_objects
@@ -46,16 +47,25 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
     """Per-connection MVCC storage instance.
 
     Created by PGJsonbStorage.new_instance() — each ZODB Connection
-    gets one.  Has its own PG connection (autocommit=True) so reads
-    always see the latest committed data, and writes use explicit
-    BEGIN/COMMIT transactions with advisory locking.
+    gets one.  Holds its own PG connection (autocommit=True, checked out
+    from the pool on first use) so reads always see the latest committed
+    data, and writes use explicit BEGIN/COMMIT transactions with advisory
+    locking.
     """
 
     def __init__(self, main_storage):
         self._main = main_storage
         self._history_preserving = main_storage._history_preserving
         self._instance_pool = main_storage._instance_pool
-        self._conn = self._instance_pool.getconn()
+        # No pool checkout here.  ZODB calls new_instance() while holding
+        # DB._lock (DB.open creates Connections under it).  Blocking in
+        # getconn() there makes every Connection.close(), which needs
+        # DB._lock to return its connection, wait for pool_timeout; under
+        # load that convoy never drains (#126).  _ensure_conn() checks out
+        # on first use, which is poll_invalidations() during
+        # Connection.open(), outside DB._lock.
+        self._conn = None  # None = holds no pool slot
+        self._released = False
         self._polled_tid = None  # None = never polled, int = last seen TID
         self._in_read_txn = False  # True when inside REPEATABLE READ snapshot
         # Plain-int load counters for optional, soft-coupled observability
@@ -103,8 +113,12 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
 
         Shares the same REPEATABLE READ snapshot used for ZODB loads,
         so catalog queries see a consistent point-in-time view.
+        Checked out on first access; ``None`` once the instance has been
+        released, so a late caller cannot check out (and leak) a new slot.
         """
-        return self._conn
+        if self._released:
+            return None
+        return self._ensure_conn()
 
     # ── IMVCCStorage ─────────────────────────────────────────────────
 
@@ -122,6 +136,7 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
         (#81).  Returning a broken connection is safe: the pool discards it
         and opens a replacement.
         """
+        self._released = True
         if self._conn is not None:
             try:
                 self._end_read_txn()
@@ -136,6 +151,26 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
                 self._conn = None
         if os.path.exists(self._blob_temp_dir):
             shutil.rmtree(self._blob_temp_dir, ignore_errors=True)
+
+    def _ensure_conn(self):
+        """Return the pooled connection, checking one out on first use (#126)."""
+        if self._conn is None:
+            self._conn = self._instance_pool.getconn()
+        return self._conn
+
+    def _drop_conn(self):
+        """Return the held connection to the pool and forget it.
+
+        Never raises.  The pool rolls back an open transaction and discards
+        a broken connection, so this is safe in any connection state.
+        """
+        conn, self._conn = self._conn, None
+        self._in_read_txn = False
+        if conn is not None:
+            try:
+                self._instance_pool.putconn(conn)
+            except Exception:
+                logger.warning("returning connection to pool failed", exc_info=True)
 
     def afterCompletion(self):
         """ZODB hook: end any open REPEATABLE READ snapshot.
@@ -192,17 +227,8 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
         pooler/CNPG idle-recycle).  Returning the dead one lets the pool
         discard and replace it; without this the slot would leak (#85).
         """
-        old = self._conn
-        self._conn = None
-        self._in_read_txn = False
-        if old is not None:
-            try:
-                self._instance_pool.putconn(old)
-            except Exception:
-                logger.warning(
-                    "replacing broken connection: putconn failed", exc_info=True
-                )
-        self._conn = self._instance_pool.getconn()
+        self._drop_conn()
+        self._ensure_conn()
 
     def _begin_read_txn(self):
         """Start a REPEATABLE READ snapshot transaction for consistent reads.
@@ -216,8 +242,9 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
         retry once, so the read path self-heals instead of raising — which
         would make ZODB strand the connection and leak its pool slot (#85).
         """
+        conn = self._ensure_conn()
         try:
-            self._conn.execute("BEGIN ISOLATION LEVEL REPEATABLE READ")
+            conn.execute("BEGIN ISOLATION LEVEL REPEATABLE READ")
         except psycopg.OperationalError:
             logger.warning(
                 "read snapshot BEGIN failed (connection closed server-side); "
@@ -248,8 +275,21 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
         # and the DDL can acquire ACCESS EXCLUSIVE.  Without this, a
         # read-only request that hits a column added by a state processor
         # (e.g. 'meta') would crash with UndefinedColumn (#105).
-        self._main._apply_pending_ddl()
+        try:
+            self._main._apply_pending_ddl()
+            return self._poll()
+        except Exception:
+            # Never let an exception escape Connection.open() /
+            # newTransaction() with a slot checked out: ZODB strands that
+            # Connection, and psycopg-pool never reclaims a slot whose
+            # connection is simply dropped, so it would be lost for good
+            # (#126).  The next use checks out a fresh connection via
+            # _ensure_conn().
+            self._drop_conn()
+            raise
 
+    def _poll(self):
+        """Begin the read snapshot and collect invalidations (see above)."""
         # Start a new REPEATABLE READ snapshot immediately.
         # The first query anchors the snapshot — all subsequent queries
         # (invalidation lookups AND load() calls) see this same state.
@@ -317,7 +357,7 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
             return shared_hit
 
         # Miss — go to PG
-        with self._conn.cursor() as cur:
+        with self._ensure_conn().cursor() as cur:
             cur.execute(
                 self._load_sql,
                 (zoid,),
@@ -411,7 +451,7 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
         zoid_list = [zoid for _, zoid in miss_oids]
         zoid_to_oid = {zoid: oid for oid, zoid in miss_oids}
 
-        with self._conn.cursor() as cur:
+        with self._ensure_conn().cursor() as cur:
             cur.execute(
                 "SELECT zoid, tid, class_mod, class_name, state "
                 "FROM object_state WHERE zoid = ANY(%s)",
@@ -442,7 +482,7 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
         zoid = u64(oid)
         tid_int = u64(tid)
 
-        with self._conn.cursor() as cur:
+        with self._ensure_conn().cursor() as cur:
             if self._history_preserving:
                 return _loadBefore_hp(cur, oid, zoid, tid_int)
             return _loadBefore_hf(cur, oid, zoid, tid_int)
@@ -450,7 +490,11 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
     def loadSerial(self, oid, serial):
         """Load a specific revision of an object."""
         return _do_loadSerial(
-            self._conn, self._serial_cache, self._history_preserving, oid, serial
+            self._ensure_conn(),
+            self._serial_cache,
+            self._history_preserving,
+            oid,
+            serial,
         )
 
     # ── Write path ───────────────────────────────────────────────────
@@ -513,8 +557,9 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
         self._tmp = []
         self._blob_tmp = {}
         self._read_conflicts = []
-        self._conn.execute("BEGIN")
-        self._conn.execute("SELECT pg_advisory_xact_lock(0)")
+        conn = self._ensure_conn()
+        conn.execute("BEGIN")
+        conn.execute("SELECT pg_advisory_xact_lock(0)")
         if tid is None:
             self._tid = self._main._new_tid()
         else:
@@ -602,10 +647,11 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
 
     def tpc_abort(self, transaction):
         """Rollback the PG transaction."""
-        try:
-            self._conn.execute("ROLLBACK")
-        except Exception:  # pragma: no cover
-            logger.exception("Error during rollback")
+        if self._conn is not None:  # tpc_begin may have failed to check out
+            try:
+                self._conn.execute("ROLLBACK")
+            except Exception:  # pragma: no cover
+                logger.exception("Error during rollback")
         self._tmp.clear()
         # Clean up queued blob temp files
         for blob_path in self._blob_tmp.values():
@@ -650,7 +696,7 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
         if pending is not None and os.path.exists(pending):
             return pending
         return _materialize_blob(
-            self._conn,
+            self._ensure_conn(),
             self._blob_cache,
             self._s3_client,
             self._blob_temp_dir,
@@ -717,7 +763,7 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
 
         tid_int = u64(transaction_id)
 
-        with self._conn.cursor() as cur:
+        with self._ensure_conn().cursor() as cur:
             undo_data = _compute_undo(cur, tid_int, self, self._tmp)
 
         oid_list = []

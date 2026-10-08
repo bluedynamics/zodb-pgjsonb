@@ -20,7 +20,11 @@ Set `pool-size` and `pool-max-size` based on your expected concurrency:
 - **pool-size**: minimum connections kept open (default: 1).
   Set this to the number of Zope threads for steady-state workloads.
 - **pool-max-size**: maximum connections (default: 10).
-  Set this to at least the number of concurrent Zope threads plus a margin for background tasks like pack.
+  Every *open or idle* ZODB connection holds one pool connection, and
+  ZODB keeps up to its own `pool-size` (Zope default: 7) idle connections
+  around. Size it to at least ZODB `pool-size` + Zope worker threads +
+  cache-warmer concurrency + 2. Multiply by the number of processes when
+  you size PostgreSQL's `max_connections`.
 - **pool-timeout**: seconds to wait for a connection before raising `StorageError` (default: 30.0).
 
 Each ZODB connection gets its own `PGJsonbStorageInstance` with a dedicated PostgreSQL connection from the pool.

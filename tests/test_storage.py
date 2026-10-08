@@ -641,7 +641,7 @@ class TestMainStorageDirectPaths:
         """Instance registerDB() is no-op, close() calls release()."""
         inst = storage.new_instance()
         inst.registerDB(None)  # should not raise
-        assert inst._conn is not None
+        assert inst.pg_connection is not None
         inst.close()
         # After close, connection is returned to pool (set to None)
         assert inst._conn is None

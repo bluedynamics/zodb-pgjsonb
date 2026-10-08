@@ -1,5 +1,41 @@
 # Changelog
 
+## 1.17.1 (unreleased)
+
+### Bug fixes
+
+- **Fix: a database failover could wedge every Zope process
+  permanently (#126).** ZODB creates new connections while holding its
+  `DB._lock`, and the storage instance checked a connection out of the
+  pool right there. When the pool was full, the opening thread waited
+  up to `pool-timeout` while holding the lock, and every thread trying
+  to *return* a connection waited for that lock. After a failover,
+  piled-up readiness probes kept the convoy alive indefinitely: all
+  pool connections sat `idle` (last statement `COMMIT`) and every request
+  failed with `PoolTimeout`. The instance now checks out its connection
+  on first use, outside the lock, and a failed `poll_invalidations()`
+  returns its connection instead of keeping it.
+
+  Known side effect: a `PoolTimeout` now surfaces in ZODB's
+  `Connection.open()` instead of in `Connection.__init__`. ZODB leaves
+  such a half-opened `Connection` behind, and psycopg-pool keeps it
+  reachable until the next connection is returned to the pool. If the
+  process shuts down in that window, `DB.close()` raises `KeyError`
+  (`unregisterSynch` of a never-registered connection). This only
+  affects shutdown; `Connection.open()` not being exception-safe is a
+  ZODB issue.
+
+### Documentation
+
+- Correct the sizing rule for `pool-max-size` in the production guide:
+  every open *or idle* ZODB connection holds a pool connection, so the
+  pool must cover ZODB's own `pool-size` plus the worker threads.
+
+### Tests
+
+- Add `benchmarks/failover_repro.py`, a time-scaled reproduction of the
+  #126 failover wedge, and regression tests for the lock inversion.
+
 ## 1.17.0
 
 ### Bug fixes
