@@ -158,6 +158,20 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
             self._conn = self._instance_pool.getconn()
         return self._conn
 
+    def _drop_conn(self):
+        """Return the held connection to the pool and forget it.
+
+        Never raises.  The pool rolls back an open transaction and discards
+        a broken connection, so this is safe in any connection state.
+        """
+        conn, self._conn = self._conn, None
+        self._in_read_txn = False
+        if conn is not None:
+            try:
+                self._instance_pool.putconn(conn)
+            except Exception:
+                logger.warning("returning connection to pool failed", exc_info=True)
+
     def afterCompletion(self):
         """ZODB hook: end any open REPEATABLE READ snapshot.
 
@@ -213,17 +227,8 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
         pooler/CNPG idle-recycle).  Returning the dead one lets the pool
         discard and replace it; without this the slot would leak (#85).
         """
-        old = self._conn
-        self._conn = None
-        self._in_read_txn = False
-        if old is not None:
-            try:
-                self._instance_pool.putconn(old)
-            except Exception:
-                logger.warning(
-                    "replacing broken connection: putconn failed", exc_info=True
-                )
-        self._conn = self._instance_pool.getconn()
+        self._drop_conn()
+        self._ensure_conn()
 
     def _begin_read_txn(self):
         """Start a REPEATABLE READ snapshot transaction for consistent reads.
@@ -272,6 +277,18 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
         # (e.g. 'meta') would crash with UndefinedColumn (#105).
         self._main._apply_pending_ddl()
 
+        try:
+            return self._poll()
+        except Exception:
+            # Never let an exception escape Connection.open() /
+            # newTransaction() with a slot checked out: ZODB strands that
+            # Connection, and the slot stays lost until GC (#126).  The next
+            # use checks out a fresh connection via _ensure_conn().
+            self._drop_conn()
+            raise
+
+    def _poll(self):
+        """Begin the read snapshot and collect invalidations (see above)."""
         # Start a new REPEATABLE READ snapshot immediately.
         # The first query anchors the snapshot — all subsequent queries
         # (invalidation lookups AND load() calls) see this same state.

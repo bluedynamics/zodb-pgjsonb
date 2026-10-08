@@ -154,3 +154,53 @@ def test_tpc_abort_without_connection_is_quiet(caplog):
             inst.release()
     finally:
         storage.close()
+
+
+def test_failed_poll_returns_slot(monkeypatch):
+    """An exception after checkout must not escape Connection.open() with
+    the slot still held; ZODB strands that Connection (#126)."""
+    import psycopg
+    import zodb_pgjsonb.instance as instance_mod
+
+    storage = _small_storage(pool_timeout=2.0)
+    try:
+        inst = storage.new_instance()
+
+        def boom(conn):
+            raise psycopg.OperationalError("simulated failure after BEGIN")
+
+        monkeypatch.setattr(instance_mod, "_read_max_tid", boom)
+        with pytest.raises(psycopg.OperationalError):
+            inst.poll_invalidations()
+        assert inst._conn is None
+        # pool_max_size=1: the only slot must be free again
+        pool = storage._instance_pool
+        conn = pool.getconn(timeout=0.5)
+        pool.putconn(conn)
+        inst.release()
+    finally:
+        storage.close()
+
+
+def test_instance_recovers_after_failed_poll(monkeypatch):
+    """A parked instance without a connection must work on its next use."""
+    import psycopg
+    import zodb_pgjsonb.instance as instance_mod
+
+    storage = _small_storage(pool_timeout=2.0)
+    try:
+        inst = storage.new_instance()
+        real = instance_mod._read_max_tid
+
+        def boom(conn):
+            raise psycopg.OperationalError("simulated")
+
+        monkeypatch.setattr(instance_mod, "_read_max_tid", boom)
+        with pytest.raises(psycopg.OperationalError):
+            inst.poll_invalidations()
+        monkeypatch.setattr(instance_mod, "_read_max_tid", real)
+        assert inst.poll_invalidations() == []
+        assert inst._in_read_txn is True
+        inst.release()
+    finally:
+        storage.close()
