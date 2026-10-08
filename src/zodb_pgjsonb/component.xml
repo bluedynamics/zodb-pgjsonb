@@ -170,7 +170,7 @@
 
     <key name="s3-endpoint-url" required="no">
       <description>
-        S3 endpoint URL (for MinIO, Ceph, or other S3-compatible stores).
+        S3 endpoint URL (for Garage, Ceph, or other S3-compatible stores).
       </description>
     </key>
 

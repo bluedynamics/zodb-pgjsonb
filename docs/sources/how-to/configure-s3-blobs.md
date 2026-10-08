@@ -42,7 +42,7 @@ Add the S3 keys to your `<pgjsonb>` section in `zope.conf`:
 |---|---|---|
 | `s3-bucket-name` | *none* | S3 bucket name (setting this enables S3 tiering) |
 | `s3-region` | *none* | AWS region name |
-| `s3-endpoint-url` | *none* | S3 endpoint URL (for MinIO, Ceph, or other S3-compatible stores) |
+| `s3-endpoint-url` | *none* | S3 endpoint URL (for Garage, Ceph, or other S3-compatible stores) |
 | `s3-access-key` | *none* | AWS access key ID (uses boto3 credential chain if omitted) |
 | `s3-secret-key` | *none* | AWS secret access key (uses boto3 credential chain if omitted) |
 | `s3-use-ssl` | `true` | Enable SSL for S3 connections |
@@ -83,35 +83,54 @@ The cache uses LRU eviction when the limit is reached.
 
 For production, always configure a blob cache directory to reduce S3 latency and cost.
 
-## Use MinIO for development
+## Use Garage for development
 
-Start a MinIO container:
+[Garage](https://garagehq.deuxfleurs.fr/) is a lightweight S3-compatible store.
+Write a minimal `garage.toml`:
 
-```bash
-docker run -d --name minio \
-  -p 9000:9000 -p 9001:9001 \
-  -e MINIO_ROOT_USER=minioadmin \
-  -e MINIO_ROOT_PASSWORD=minioadmin \
-  minio/minio server /data --console-address ":9001"
+```toml
+metadata_dir = "/var/lib/garage/meta"
+data_dir = "/var/lib/garage/data"
+db_engine = "lmdb"
+replication_factor = 1
+
+rpc_bind_addr = "[::]:3901"
+rpc_public_addr = "127.0.0.1:3901"
+rpc_secret = "<output of: openssl rand -hex 32>"
+
+[s3_api]
+s3_region = "garage"
+api_bind_addr = "[::]:3900"
+root_domain = ".s3.garage.localhost"
 ```
 
-Create a bucket:
+Start a single-node Garage container.
+`--single-node` applies the cluster layout, and `--default-access-key` / `--default-bucket` create the key and the bucket from the `GARAGE_DEFAULT_*` variables:
 
 ```bash
-mc alias set local http://localhost:9000 minioadmin minioadmin
-mc mb local/zodb-blobs
+docker run -d --name garage \
+  -p 3900:3900 \
+  -v "$PWD/garage.toml:/etc/garage.toml:ro" \
+  -e GARAGE_DEFAULT_ACCESS_KEY=GK0123456789abcdef01234567 \
+  -e GARAGE_DEFAULT_SECRET_KEY=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \
+  -e GARAGE_DEFAULT_BUCKET=zodb-blobs \
+  dxflrs/garage:v2.3.0 \
+  /garage server --single-node --default-access-key --default-bucket
 ```
 
-Configure the storage to use MinIO:
+Garage access keys are `GK` followed by 24 hex characters; secret keys are 64 hex characters.
+
+Configure the storage to use Garage:
 
 ```xml
 <pgjsonb>
     dsn dbname=zodb user=zodb host=localhost port=5432
 
     s3-bucket-name zodb-blobs
-    s3-endpoint-url http://localhost:9000
-    s3-access-key minioadmin
-    s3-secret-key minioadmin
+    s3-endpoint-url http://localhost:3900
+    s3-region garage
+    s3-access-key GK0123456789abcdef01234567
+    s3-secret-key 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
     s3-use-ssl false
 
     blob-threshold 100KB

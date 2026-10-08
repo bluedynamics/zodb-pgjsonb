@@ -33,7 +33,7 @@ pip install zodb-pgjsonb          # or: pip install zodb-pgjsonb[s3]
 
 Full documentation: **https://bluedynamics.github.io/zodb-pgjsonb/**
 
-- [Quickstart (Docker)](https://bluedynamics.github.io/zodb-pgjsonb/tutorials/quickstart-docker.html) -- Plone + PostgreSQL + MinIO in 5 minutes
+- [Quickstart (Docker)](https://bluedynamics.github.io/zodb-pgjsonb/tutorials/quickstart-docker.html) -- Plone + PostgreSQL + Garage in 5 minutes
 - [Migration guide](https://bluedynamics.github.io/zodb-pgjsonb/tutorials/migrate-from-filestorage.html) -- migrate from FileStorage or RelStorage
 - [Configuration reference](https://bluedynamics.github.io/zodb-pgjsonb/reference/configuration.html) -- all ZConfig and Python API options
 - [Architecture](https://bluedynamics.github.io/zodb-pgjsonb/explanation/architecture.html) -- design decisions and data flow

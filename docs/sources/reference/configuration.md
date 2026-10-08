@@ -49,7 +49,7 @@ It implements `ZODB.storage`.
 | `blob-threshold` | byte-size | `100KB` | no | Blobs larger than this value are stored in S3 when S3 is configured. Blobs smaller than this remain in PostgreSQL bytea. Set to `0` to send all blobs to S3. Requires `s3-bucket-name`. |
 | `s3-bucket-name` | string | -- | no | S3 bucket name for large blob storage. If omitted, all blobs are stored in PostgreSQL bytea. |
 | `s3-prefix` | string | `""` | no | S3 key prefix for namespace isolation. |
-| `s3-endpoint-url` | string | -- | no | S3 endpoint URL for MinIO, Ceph, or other S3-compatible stores. |
+| `s3-endpoint-url` | string | -- | no | S3 endpoint URL for Garage, Ceph, or other S3-compatible stores. |
 | `s3-region` | string | -- | no | AWS region name. |
 | `s3-access-key` | string | -- | no | AWS access key ID. Uses the boto3 credential chain if omitted. |
 | `s3-secret-key` | string | -- | no | AWS secret access key. Uses the boto3 credential chain if omitted. |
