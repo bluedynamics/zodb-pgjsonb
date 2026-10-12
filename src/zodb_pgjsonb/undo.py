@@ -191,3 +191,52 @@ def _compute_undo(cur, tid_int, storage, pending=None):
         _undo_one_object(cur, obj, tid_int, storage, pending_by_zoid)
         for obj in undone_objects
     ]
+
+
+def notify_undone(cur, processors, tid_int, undo_data):
+    """Call the optional ``undone()`` hook of the state processors.
+
+    Runs before any undo entry is queued or written, on the cursor of the
+    undo's PG transaction, so the processors see the pre-undo database.
+    Exceptions propagate and abort the undo.
+    """
+    restored = [e["zoid"] for e in undo_data if e["action"] != "delete"]
+    deleted = [e["zoid"] for e in undo_data if e["action"] == "delete"]
+    for proc in processors:
+        if hasattr(proc, "undone"):
+            proc.undone(cur, tid_int, restored, deleted)
+
+
+def queue_undo_entries(tmp, undo_data, process_state):
+    """Merge *undo_data* into the pending entry list *tmp*.
+
+    Replaces any prior pending entry for the same zoid (happens when
+    multiple undos target the same objects).  *process_state* is the
+    storage's ``_process_state``; it re-runs the state processors on the
+    restored state, so columns derived from the state alone are recomputed
+    (#30 in plone-pgcatalog).
+
+    Returns ``(tmp, oid_list)``.
+    """
+    oid_list = []
+    for item in undo_data:
+        oid_list.append(p64(item["zoid"]))
+        tmp = [e for e in tmp if e.get("zoid") != item["zoid"]]
+        if item["action"] == "delete":
+            tmp.append({"zoid": item["zoid"], "action": "delete"})
+            continue
+        entry = {
+            "zoid": item["zoid"],
+            "class_mod": item["class_mod"],
+            "class_name": item["class_name"],
+            "state": item["state"],
+            "state_size": item["state_size"],
+            "refs": item["refs"],
+        }
+        extra = process_state(
+            item["zoid"], item["class_mod"], item["class_name"], item["state"]
+        )
+        if extra:
+            entry["_extra"] = extra
+        tmp.append(entry)
+    return tmp, oid_list

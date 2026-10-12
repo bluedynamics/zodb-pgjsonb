@@ -27,6 +27,8 @@ from .startup_locks import startup_ddl_lock
 from .stats import get_blob_histogram as _get_blob_histogram
 from .stats import get_blob_stats as _get_blob_stats
 from .undo import _compute_undo
+from .undo import notify_undone
+from .undo import queue_undo_entries
 from collections import OrderedDict
 from persistent.TimeStamp import TimeStamp
 from psycopg.rows import dict_row
@@ -764,6 +766,17 @@ class PGJsonbStorage(CopyTransactionsMixin, ConflictResolvingStorage, BaseStorag
           version-tagged automatically (``sha256`` of the returned text) so
           the startup schema-version gate skips it — and the startup
           advisory lock — when it has not changed since the last apply (#78).
+
+        - ``finalize(cursor) -> None``
+          Called at the end of the vote, in the writing PG transaction.
+        - ``undone(cursor, tid, restored, deleted) -> None``
+          Called from ``undo()`` once per undone tid (*tid* is an int,
+          *restored* and *deleted* are lists of int zoids), before anything
+          of the undo is queued or written, on the cursor of the undo's PG
+          transaction (so ``object_state`` still shows the pre-undo rows).
+          Undo also re-runs ``process()`` on the restored state; implement
+          ``undone`` when the columns come from elsewhere.  Exceptions abort
+          the undo.
 
         ``process`` may modify *state* in-place (e.g. pop annotation keys).
         Its return value decides what happens to **this processor's**
@@ -1575,43 +1588,12 @@ class PGJsonbStorage(CopyTransactionsMixin, ConflictResolvingStorage, BaseStorag
 
         with self._conn.cursor() as cur:
             undo_data = _compute_undo(cur, tid_int, self, self._tmp)
+            notify_undone(cur, self._state_processors, tid_int, undo_data)
 
-        # Queue the undo data — will be written during _vote.
-        # Replace any prior pending entry for the same zoid
-        # (happens when multiple undos target the same objects).
-        oid_list = []
-        for item in undo_data:
-            oid_bytes = p64(item["zoid"])
-            oid_list.append(oid_bytes)
-            # Remove any existing entry for this zoid
-            self._tmp = [e for e in self._tmp if e.get("zoid") != item["zoid"]]
-            if item["action"] == "delete":
-                self._tmp.append(
-                    {
-                        "zoid": item["zoid"],
-                        "action": "delete",
-                    }
-                )
-            else:
-                entry = {
-                    "zoid": item["zoid"],
-                    "class_mod": item["class_mod"],
-                    "class_name": item["class_name"],
-                    "state": item["state"],
-                    "state_size": item["state_size"],
-                    "refs": item["refs"],
-                }
-                # Run state processors so catalog columns are recomputed
-                # from the restored state, not left as NULL.
-                extra = self._process_state(
-                    item["zoid"],
-                    item["class_mod"],
-                    item["class_name"],
-                    item["state"],
-                )
-                if extra:
-                    entry["_extra"] = extra
-                self._tmp.append(entry)
+        # Queue the undo data, written during vote.
+        self._tmp, oid_list = queue_undo_entries(
+            self._tmp, undo_data, self._process_state
+        )
 
         return self._tid, oid_list
 
