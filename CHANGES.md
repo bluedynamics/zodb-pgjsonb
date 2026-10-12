@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.18.0 (unreleased)
+
+### Documentation
+
+- Design for restoring state-processor columns on undo (#121): an
+  optional `undone()` hook for state processors; plone.pgcatalog hides
+  the affected objects and subtrees fail closed and recatalogs them
+  afterwards. A more precise variant is in the backlog (#130,
+  plone-pgcatalog#268).
+  Design: [docs/superpowers/specs/2026-10-12-undo-processor-columns-design.md](docs/superpowers/specs/2026-10-12-undo-processor-columns-design.md).
+
 ## 1.17.1
 
 ### Bug fixes
