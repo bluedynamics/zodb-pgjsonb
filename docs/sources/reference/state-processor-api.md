@@ -53,6 +53,23 @@ A processor must implement the following methods:
   This hook is useful for operations that depend on the full set of
   written objects (for example, JSONB merges or aggregation queries).
 
+`undone(cursor, tid, restored, deleted) -> None`
+: Called from `undo()` in history-preserving mode, once per undone transaction.
+  Use it when your columns do not derive from the object state alone
+  (undo re-runs `process()` on the restored state, which is enough for processors whose columns do).
+  `tid` is the undone transaction id as an `int`.
+  `restored` is a list of `int` zoids whose previous revision will be written;
+  `deleted` is a list of `int` zoids whose rows will be deleted (created in the undone transaction).
+  The hook runs before anything of the undo is queued or written, on the cursor of the PostgreSQL transaction that will carry the undo (the advisory write lock is held).
+  `object_state` therefore still shows the pre-undo rows, including those of `deleted` zoids and the current `path`-like data of `restored` ones.
+  SQL executed here is atomic with the undo and is rolled back with it.
+  An exception aborts the undo; raise `UndoError` if the processor cannot undo safely.
+  With several processors, each is called with the same cursor and sees the SQL of the ones before it; processors without the method are skipped.
+
+  Only zoids written by the undone transaction are reported.
+  Rows that its `finalize()` changed without writing them are not,
+  so a processor that changes unwritten rows in `finalize()` has to find them itself.
+
 ## ExtraColumn
 
 ```python
@@ -109,7 +126,7 @@ SQL function calls.
 ## Lifecycle
 
 The following sequence describes when each method is called during
-a ZODB write transaction:
+a ZODB write transaction (the undo step only applies to undo transactions):
 
 1. **Registration** (`register_state_processor()`):
    `get_extra_columns()` and `get_schema_sql()` are called.
@@ -128,11 +145,15 @@ a ZODB write transaction:
    After all writes, `finalize(cursor)` is called on each processor
    that implements it.
 
-4. **Finish** (`tpc_finish()`):
+4. **Undo** (`undo()`, history-preserving mode only):
+   after the undo data is computed and before it is queued, `undone(cursor, tid, restored, deleted)` is called once per undone tid on each processor that implements it.
+   The undo is then queued, with `process(...)` re-run on each restored state, and written by the following `tpc_vote()` as in step 3 (including `finalize(cursor)`).
+
+5. **Finish** (`tpc_finish()`):
    The PostgreSQL transaction is committed.
    No processor methods are called.
 
-5. **Abort** (`tpc_abort()`):
+6. **Abort** (`tpc_abort()`):
    The PostgreSQL transaction is rolled back.
    No processor methods are called.
 

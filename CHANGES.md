@@ -2,6 +2,22 @@
 
 ## 1.18.0 (unreleased)
 
+### New features
+
+- **State processors can react to undo (#121).** A processor may implement
+  the optional `undone(cursor, tid, restored, deleted)`. It is called from
+  `undo()` once per undone transaction, before the undo is queued or
+  written, in the undo's PostgreSQL transaction, so `object_state` still
+  shows the pre-undo rows. `tid` and the zoid lists are `int`s; an
+  exception aborts the undo. Processors without the method are unaffected.
+  Documented in the state processor API, together with a documentary
+  `IStateProcessor` in `zodb_pgjsonb.interfaces`.
+
+### Internal
+
+- The undo queueing loop duplicated in `PGJsonbStorage.undo()` and
+  `PGJsonbStorageInstance.undo()` now lives in `undo.py`.
+
 ### Documentation
 
 - Design for restoring state-processor columns on undo (#121): an

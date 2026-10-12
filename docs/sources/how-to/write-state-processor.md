@@ -95,6 +95,25 @@ def get_schema_sql(self):
     return "ALTER TABLE object_state ADD COLUMN IF NOT EXISTS my_col TEXT;"
 ```
 
+## React to undo with undone
+
+In history-preserving mode, undo re-runs `process` on the restored state, which is enough when your columns derive from the state alone.
+If they come from elsewhere, implement the optional `undone` method:
+
+```python
+def undone(self, cursor, tid, restored, deleted):
+    # tid: int; restored, deleted: lists of int zoids
+    cursor.execute(
+        "UPDATE object_state SET my_col = NULL WHERE zoid = ANY(%s)",
+        (restored,),
+    )
+```
+
+It is called once per undone transaction, before the undo is written, in the PostgreSQL transaction that carries the undo.
+`object_state` still shows the pre-undo rows, so the rows of `deleted` zoids can still be read.
+Raise an exception to abort the undo.
+Objects that the undone transaction changed only in `finalize` are not listed in `restored`.
+
 ## Register the processor with the storage
 
 Call `register_state_processor()` on the main `PGJsonbStorage` instance:
