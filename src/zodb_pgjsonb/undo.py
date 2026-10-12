@@ -42,7 +42,7 @@ def _current_state_for(cur, zoid, pending_entry):
     return (row["state"] if row else None), row
 
 
-def _resolve_conflicting_undo(zoid, current_tid, prev, cur_row, storage):
+def _resolve_conflicting_undo(zoid, current_tid, tid_int, prev, cur_row, storage):
     """States genuinely differ — attempt conflict resolution.
 
     Returns a restore entry with the resolved state, or raises UndoError.
@@ -71,8 +71,9 @@ def _resolve_conflicting_undo(zoid, current_tid, prev, cur_row, storage):
         resolved = storage.tryToResolveConflict(
             p64(zoid),
             p64(current_tid),
-            current_data,
+            p64(tid_int),
             pre_undo_data,
+            current_data,
         )
     except ConflictError as err:
         raise UndoError(f"Can't undo: conflict on object {zoid:#x}") from err
@@ -139,7 +140,7 @@ def _undo_one_object(cur, obj, tid_int, storage, pending_by_zoid):
             return _delete_entry(zoid)
         return _restore_entry(zoid, prev)
 
-    return _resolve_conflicting_undo(zoid, current_tid, prev, cur_row, storage)
+    return _resolve_conflicting_undo(zoid, current_tid, tid_int, prev, cur_row, storage)
 
 
 def _compute_undo(cur, tid_int, storage, pending=None):

@@ -13,6 +13,15 @@
   Documented in the state processor API, together with a documentary
   `IStateProcessor` in `zodb_pgjsonb.interfaces`.
 
+### Bug fixes
+
+- **Undo of a transaction whose objects changed again afterwards failed
+  with `ValueError` instead of resolving the conflict.** `undo()` passed
+  the arguments of `tryToResolveConflict` in the wrong order (a pickle
+  where the undone serial belongs), so every undo that needed conflict
+  resolution, for example of a `BTrees.Length` or a BTree bucket changed
+  later, raised. It now passes them as FileStorage does.
+
 ### Internal
 
 - The undo queueing loop duplicated in `PGJsonbStorage.undo()` and

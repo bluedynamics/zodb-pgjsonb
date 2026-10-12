@@ -8,6 +8,7 @@ and history-aware pack.
 Requires PostgreSQL on localhost:5433.
 """
 
+from BTrees.Length import Length
 from persistent.mapping import PersistentMapping
 from tests.conftest import DSN
 from ZODB.interfaces import IStorageUndoable
@@ -323,6 +324,31 @@ class TestUndo:
         conn = hp_db.open()
         root = conn.root()
         assert root["val"] == "original"
+        conn.close()
+
+    def test_undo_resolves_conflict_with_later_change(self, hp_db, hp_storage):
+        """Undo an increment of a Length that changed again afterwards.
+
+        The undo has to go through ``tryToResolveConflict`` with the same
+        arguments FileStorage passes: committed serial, undone serial, the
+        state before the undone transaction, the committed state.
+        """
+        conn = hp_db.open()
+        conn.root()["len"] = Length()
+        txn.commit()
+        length = conn.root()["len"]
+        length.change(5)
+        txn.commit()
+        tid_to_undo = hp_storage.lastTransaction()
+        length.change(1)
+        txn.commit()
+        conn.close()
+
+        hp_db.undo(tid_to_undo)
+        txn.commit()
+
+        conn = hp_db.open()
+        assert conn.root()["len"]() == 1
         conn.close()
 
 
