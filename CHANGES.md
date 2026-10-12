@@ -38,6 +38,12 @@
   plone-pgcatalog#268).
   Design: [docs/superpowers/specs/2026-10-12-undo-processor-columns-design.md](docs/superpowers/specs/2026-10-12-undo-processor-columns-design.md).
 
+- Undo design amended: the subtree rule only fires when the undone
+  transaction changed security or location at a container (conservative
+  option B). In Plone every add and delete writes the container, so the
+  original rule hid a whole site on undo of a delete in the portal root.
+  The hook receives the before/after revisions as `entries`.
+
 ## 1.17.1
 
 ### Bug fixes
