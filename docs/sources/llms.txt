@@ -175,8 +175,9 @@ class IStateProcessor:
     def get_schema_sql(self) -> str | None: ...   # Optional DDL
     def finalize(self, cursor) -> None: ...        # Optional post-vote hook
     # Optional, HP mode: called from undo() once per undone tid, before the undo is written
-    # (object_state still pre-undo, cursor = the undo's PG transaction); tid/zoids are ints
-    def undone(self, cursor, tid, restored, deleted) -> None: ...
+    # (object_state still pre-undo, cursor = the undo's PG transaction); tid/zoids are ints;
+    # entries[zoid] = {"action", "before": rev, "after": rev|None}, rev = class_mod/class_name/state/refs
+    def undone(self, cursor, tid, restored, deleted, entries) -> None: ...
 ```
 
 Used by plone-pgcatalog to write catalog index columns in the same PG transaction.

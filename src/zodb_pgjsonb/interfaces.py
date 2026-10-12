@@ -44,7 +44,7 @@ class IStateProcessor(Interface):
     def finalize(cursor):
         """Optional.  Called at the end of the vote, in the writing PG transaction."""
 
-    def undone(cursor, tid, restored, deleted):
+    def undone(cursor, tid, restored, deleted, entries):
         """Optional.  A transaction is being undone (history-preserving only).
 
         Called from ``undo()`` once per undone tid, before anything of the
@@ -55,6 +55,15 @@ class IStateProcessor(Interface):
         tid:      int, the tid being undone
         restored: list[int], zoids whose previous revision will be written
         deleted:  list[int], zoids whose rows will be deleted (created in tid)
+        entries:  dict[int, dict], per zoid of both lists:
+                  ``{"action": "restore" | "delete", "before": rev,
+                  "after": rev or None}``, where *before* is the revision
+                  the undone tid wrote and *after* the one the undo writes
+                  (None for "delete"); each rev is a dict with
+                  ``class_mod``, ``class_name``, ``state`` (decoded JSON)
+                  and ``refs`` (list[int]).  Read these instead of
+                  ``object_state.state``: with several tids in one undo the
+                  row may hold another tid's revision.
 
         Exceptions abort the undo.  Raise ``UndoError`` if the processor
         cannot undo safely.  Zoids changed only by ``finalize()`` without

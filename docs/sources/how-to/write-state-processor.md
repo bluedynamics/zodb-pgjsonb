@@ -101,8 +101,9 @@ In history-preserving mode, undo re-runs `process` on the restored state, which 
 If they come from elsewhere, implement the optional `undone` method:
 
 ```python
-def undone(self, cursor, tid, restored, deleted):
+def undone(self, cursor, tid, restored, deleted, entries):
     # tid: int; restored, deleted: lists of int zoids
+    # entries[zoid]["before"] / ["after"]: what the tid wrote / what the undo writes
     cursor.execute(
         "UPDATE object_state SET my_col = NULL WHERE zoid = ANY(%s)",
         (restored,),
@@ -112,6 +113,7 @@ def undone(self, cursor, tid, restored, deleted):
 It is called once per undone transaction, before the undo is written, in the PostgreSQL transaction that carries the undo.
 `object_state` still shows the pre-undo rows, so the rows of `deleted` zoids can still be read.
 Raise an exception to abort the undo.
+`entries` gives, per zoid, the revision the undone transaction wrote (`before`) and the one the undo writes (`after`, `None` for a delete), each with `class_mod`, `class_name`, `state` and `refs`.
 Objects that the undone transaction changed only in `finalize` are not listed in `restored`.
 
 ## Register the processor with the storage

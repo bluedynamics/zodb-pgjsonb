@@ -163,7 +163,7 @@ existing data.
 : Undo a transaction by restoring previous object states.
   Returns `(tid, [oid_bytes, ...])` for the new undo transaction.
   Raises `UndoError` in history-free mode.
-  Calls the optional `undone(cursor, tid, restored, deleted)` hook of the registered state processors once per undone transaction, before the undo is queued.
+  Calls the optional `undone(cursor, tid, restored, deleted, entries)` hook of the registered state processors once per undone transaction, before the undo is queued.
 
 ### IStorageIteration methods
 
@@ -522,7 +522,7 @@ Inherits from: `ConflictResolvingStorage`.
 
 `undo(transaction_id: bytes, transaction=None) -> tuple[bytes, list[bytes]]`
 : Undo a transaction using this instance's connection.
-  Calls the optional `undone(cursor, tid, restored, deleted)` hook of the registered state processors once per undone transaction, before the undo is queued.
+  Calls the optional `undone(cursor, tid, restored, deleted, entries)` hook of the registered state processors once per undone transaction, before the undo is queued.
 
 `registerDB(db) -> None`
 : No-op.

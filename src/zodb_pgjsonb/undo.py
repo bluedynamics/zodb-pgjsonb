@@ -5,6 +5,7 @@ from ZODB.POSException import ConflictError
 from ZODB.POSException import UndoError
 from ZODB.utils import p64
 
+import json
 import zodb_json_codec
 
 
@@ -188,10 +189,42 @@ def _compute_undo(cur, tid_int, storage, pending=None):
     if not undone_objects:
         raise UndoError("Transaction has no object changes")
 
-    return [
-        _undo_one_object(cur, obj, tid_int, storage, pending_by_zoid)
-        for obj in undone_objects
-    ]
+    undo_data = []
+    for obj in undone_objects:
+        entry = _undo_one_object(cur, obj, tid_int, storage, pending_by_zoid)
+        # The revision the undone transaction wrote, for the undone() hook.
+        entry["_before"] = obj
+        undo_data.append(entry)
+    return undo_data
+
+
+def _revision(record):
+    """The class, state and refs of an undo record, state as a JSON value.
+
+    States read from the database are already decoded; a state produced by
+    conflict resolution is a JSON string.
+    """
+    state = record["state"]
+    if isinstance(state, str):
+        state = json.loads(state)
+    return {
+        "class_mod": record["class_mod"],
+        "class_name": record["class_name"],
+        "state": state,
+        "refs": list(record["refs"] or ()),
+    }
+
+
+def _undone_entries(undo_data):
+    """Map zoid -> what the undone tid wrote (before) and the undo writes (after)."""
+    return {
+        e["zoid"]: {
+            "action": e["action"],
+            "before": _revision(e["_before"]),
+            "after": None if e["action"] == "delete" else _revision(e),
+        }
+        for e in undo_data
+    }
 
 
 def notify_undone(cur, processors, tid_int, undo_data):
@@ -201,11 +234,14 @@ def notify_undone(cur, processors, tid_int, undo_data):
     undo's PG transaction, so the processors see the pre-undo database.
     Exceptions propagate and abort the undo.
     """
+    hooks = [proc.undone for proc in processors if hasattr(proc, "undone")]
+    if not hooks:
+        return
     restored = [e["zoid"] for e in undo_data if e["action"] != "delete"]
     deleted = [e["zoid"] for e in undo_data if e["action"] == "delete"]
-    for proc in processors:
-        if hasattr(proc, "undone"):
-            proc.undone(cur, tid_int, restored, deleted)
+    entries = _undone_entries(undo_data)
+    for hook in hooks:
+        hook(cur, tid_int, restored, deleted, entries)
 
 
 def queue_undo_entries(tmp, undo_data, process_state):

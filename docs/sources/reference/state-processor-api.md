@@ -53,13 +53,18 @@ A processor must implement the following methods:
   This hook is useful for operations that depend on the full set of
   written objects (for example, JSONB merges or aggregation queries).
 
-`undone(cursor, tid, restored, deleted) -> None`
+`undone(cursor, tid, restored, deleted, entries) -> None`
 : Called from `undo()` in history-preserving mode, once per undone transaction.
   Use it when your columns do not derive from the object state alone
   (undo re-runs `process()` on the restored state, which is enough for processors whose columns do).
   `tid` is the undone transaction id as an `int`.
   `restored` is a list of `int` zoids whose previous revision will be written;
   `deleted` is a list of `int` zoids whose rows will be deleted (created in the undone transaction).
+  `entries` maps every zoid of both lists to `{"action": "restore" | "delete", "before": rev, "after": rev | None}`:
+  `before` is the revision the undone transaction wrote, `after` the revision the undo writes (`None` for a delete).
+  Each `rev` is a dict with `class_mod`, `class_name`, `state` (decoded JSON) and `refs` (list of `int` zoids).
+  Compare `before` and `after` to see what the undone transaction changed; do not read `object_state.state` for that,
+  because with several transactions undone together the row may still hold another transaction's revision.
   The hook runs before anything of the undo is queued or written, on the cursor of the PostgreSQL transaction that will carry the undo (the advisory write lock is held).
   `object_state` therefore still shows the pre-undo rows, including those of `deleted` zoids and the current `path`-like data of `restored` ones.
   SQL executed here is atomic with the undo and is rolled back with it.
@@ -138,7 +143,7 @@ a ZODB write transaction (the undo step only applies to undo transactions):
    The returned dict is attached to the object entry.
 
 3. **Undo** (`undo()`, history-preserving mode only, instead of Store):
-   after the undo data is computed and before it is queued, `undone(cursor, tid, restored, deleted)` is called once per undone tid on each processor that implements it.
+   after the undo data is computed and before it is queued, `undone(cursor, tid, restored, deleted, entries)` is called once per undone tid on each processor that implements it.
    The undo is then queued, with `process(...)` re-run on each restored state, and written by the following Vote.
 
 4. **Vote** (`tpc_vote()`):

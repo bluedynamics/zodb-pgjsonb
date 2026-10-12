@@ -769,9 +769,11 @@ class PGJsonbStorage(CopyTransactionsMixin, ConflictResolvingStorage, BaseStorag
 
         - ``finalize(cursor) -> None``
           Called at the end of the vote, in the writing PG transaction.
-        - ``undone(cursor, tid, restored, deleted) -> None``
+        - ``undone(cursor, tid, restored, deleted, entries) -> None``
           Called from ``undo()`` once per undone tid (*tid* is an int,
-          *restored* and *deleted* are lists of int zoids), before anything
+          *restored* and *deleted* are lists of int zoids, *entries* maps
+          each zoid to the revision the tid wrote and the one the undo
+          writes; see ``IStateProcessor.undone``), before anything
           of the undo is queued or written, on the cursor of the undo's PG
           transaction (so ``object_state`` still shows the pre-undo rows).
           Undo also re-runs ``process()`` on the restored state; implement

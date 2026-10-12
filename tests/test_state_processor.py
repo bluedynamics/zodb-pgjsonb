@@ -776,6 +776,7 @@ class UndoAwareProcessor(PendingProcessor):
         self.calls = []
         self.seen = []  # per call: zoid -> object_state.tid
         self.seen_a_one = []  # per call: zoid -> object_state.a_one
+        self.entries = []  # per call: the entries argument
         self.fail = False
 
     def finalize(self, cursor):
@@ -785,8 +786,9 @@ class UndoAwareProcessor(PendingProcessor):
             )
         self.unwritten = {}
 
-    def undone(self, cursor, tid, restored, deleted):
+    def undone(self, cursor, tid, restored, deleted, entries):
         self.calls.append((tid, list(restored), list(deleted)))
+        self.entries.append(entries)
         cursor.execute(
             "SELECT zoid, tid, a_one FROM object_state WHERE zoid = ANY(%s)",
             (list(restored) + list(deleted),),
@@ -996,3 +998,55 @@ class TestUndoneHook:
             s.close()
         assert proc.calls == [(_tid_int(tid), [0], [])]
         assert _pp_row(child)["a_one"] == "changed"
+
+    def test_entries_carry_both_revisions(self):
+        proc = UndoAwareProcessor("a_one", "a_two")
+        s, database = _hp_undo_db(proc)
+        try:
+            _commit_root(database, "old")
+            child, tid = _commit_with_child(database)
+            database.undo(tid)
+            txn.commit()
+        finally:
+            database.close()
+            s.close()
+        entries = proc.entries[0]
+        assert set(entries) == {0, child}
+        root = entries[0]
+        assert root["action"] == "restore"
+        assert "child" in root["before"]["state"]["data"]
+        assert "child" not in root["after"]["state"]["data"]
+        assert child in root["before"]["refs"]
+        assert child not in root["after"]["refs"]
+        assert root["after"]["class_name"] == "PersistentMapping"
+        assert entries[child]["action"] == "delete"
+        assert entries[child]["after"] is None
+        assert entries[child]["before"]["class_name"] == "PersistentMapping"
+
+    def test_entries_after_is_the_conflict_resolved_state(self):
+        """A resolved undo writes a merged state; ``after`` is that one, decoded."""
+        from BTrees.Length import Length
+
+        proc = UndoAwareProcessor("a_one", "a_two")
+        s, database = _hp_undo_db(proc)
+        try:
+            conn = database.open()
+            conn.root()["len"] = Length()
+            txn.commit()
+            length = conn.root()["len"]
+            zoid = int.from_bytes(length._p_oid, "big")
+            length.change(5)
+            txn.commit()
+            undone_tid = s.lastTransaction()
+            length.change(1)
+            txn.commit()
+            conn.close()
+            database.undo(undone_tid)  # 0 -> 5 undone on top of 6: resolves to 1
+            txn.commit()
+        finally:
+            database.close()
+            s.close()
+        entry = proc.entries[0][zoid]
+        assert entry["action"] == "restore"
+        assert entry["before"]["state"] == 5
+        assert entry["after"]["state"] == 1
