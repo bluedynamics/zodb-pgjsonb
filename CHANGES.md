@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.18.0 (unreleased)
+## 1.18.0
 
 ### New features
 
