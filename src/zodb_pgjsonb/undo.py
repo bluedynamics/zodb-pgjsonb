@@ -5,6 +5,7 @@ from ZODB.POSException import ConflictError
 from ZODB.POSException import UndoError
 from ZODB.utils import p64
 
+import json
 import zodb_json_codec
 
 
@@ -42,7 +43,7 @@ def _current_state_for(cur, zoid, pending_entry):
     return (row["state"] if row else None), row
 
 
-def _resolve_conflicting_undo(zoid, current_tid, prev, cur_row, storage):
+def _resolve_conflicting_undo(zoid, current_tid, tid_int, prev, cur_row, storage):
     """States genuinely differ — attempt conflict resolution.
 
     Returns a restore entry with the resolved state, or raises UndoError.
@@ -71,8 +72,9 @@ def _resolve_conflicting_undo(zoid, current_tid, prev, cur_row, storage):
         resolved = storage.tryToResolveConflict(
             p64(zoid),
             p64(current_tid),
-            current_data,
+            p64(tid_int),
             pre_undo_data,
+            current_data,
         )
     except ConflictError as err:
         raise UndoError(f"Can't undo: conflict on object {zoid:#x}") from err
@@ -139,7 +141,7 @@ def _undo_one_object(cur, obj, tid_int, storage, pending_by_zoid):
             return _delete_entry(zoid)
         return _restore_entry(zoid, prev)
 
-    return _resolve_conflicting_undo(zoid, current_tid, prev, cur_row, storage)
+    return _resolve_conflicting_undo(zoid, current_tid, tid_int, prev, cur_row, storage)
 
 
 def _compute_undo(cur, tid_int, storage, pending=None):
@@ -187,7 +189,91 @@ def _compute_undo(cur, tid_int, storage, pending=None):
     if not undone_objects:
         raise UndoError("Transaction has no object changes")
 
-    return [
-        _undo_one_object(cur, obj, tid_int, storage, pending_by_zoid)
-        for obj in undone_objects
-    ]
+    undo_data = []
+    for obj in undone_objects:
+        entry = _undo_one_object(cur, obj, tid_int, storage, pending_by_zoid)
+        # The revision the undone transaction wrote, for the undone() hook.
+        entry["_before"] = obj
+        undo_data.append(entry)
+    return undo_data
+
+
+def _revision(record):
+    """The class, state and refs of an undo record, state as a JSON value.
+
+    States read from the database are already decoded; a state produced by
+    conflict resolution is a JSON string.
+    """
+    state = record["state"]
+    if isinstance(state, str):
+        state = json.loads(state)
+    return {
+        "class_mod": record["class_mod"],
+        "class_name": record["class_name"],
+        "state": state,
+        "refs": list(record["refs"] or ()),
+    }
+
+
+def _undone_entries(undo_data):
+    """Map zoid -> what the undone tid wrote (before) and the undo writes (after)."""
+    return {
+        e["zoid"]: {
+            "action": e["action"],
+            "before": _revision(e["_before"]),
+            "after": None if e["action"] == "delete" else _revision(e),
+        }
+        for e in undo_data
+    }
+
+
+def notify_undone(cur, processors, tid_int, undo_data):
+    """Call the optional ``undone()`` hook of the state processors.
+
+    Runs before any undo entry is queued or written, on the cursor of the
+    undo's PG transaction, so the processors see the pre-undo database.
+    Exceptions propagate and abort the undo.
+    """
+    hooks = [proc.undone for proc in processors if hasattr(proc, "undone")]
+    if not hooks:
+        return
+    restored = [e["zoid"] for e in undo_data if e["action"] != "delete"]
+    deleted = [e["zoid"] for e in undo_data if e["action"] == "delete"]
+    entries = _undone_entries(undo_data)
+    for hook in hooks:
+        hook(cur, tid_int, restored, deleted, entries)
+
+
+def queue_undo_entries(tmp, undo_data, process_state):
+    """Merge *undo_data* into the pending entry list *tmp*.
+
+    Replaces any prior pending entry for the same zoid (happens when
+    multiple undos target the same objects).  *process_state* is the
+    storage's ``_process_state``; it re-runs the state processors on the
+    restored state, so columns derived from the state alone are recomputed
+    (#30 in plone-pgcatalog).
+
+    Returns ``(tmp, oid_list)``.
+    """
+    oid_list = []
+    for item in undo_data:
+        oid_list.append(p64(item["zoid"]))
+        tmp = [e for e in tmp if e.get("zoid") != item["zoid"]]
+        if item["action"] == "delete":
+            tmp.append({"zoid": item["zoid"], "action": "delete"})
+            continue
+        entry = {
+            "zoid": item["zoid"],
+            "class_mod": item["class_mod"],
+            "class_name": item["class_name"],
+            "state": item["state"],
+            "state_size": item["state_size"],
+            "refs": item["refs"],
+        }
+        extra = process_state(
+            item["zoid"], item["class_mod"], item["class_name"], item["state"]
+        )
+        if extra:
+            entry["_extra"] = extra
+        tmp.append(entry)
+    return tmp, oid_list

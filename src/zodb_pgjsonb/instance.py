@@ -21,6 +21,8 @@ from .storage import _NoopSerialCache
 from .storage import _read_max_tid
 from .storage import LoadCache
 from .undo import _compute_undo
+from .undo import notify_undone
+from .undo import queue_undo_entries
 from ZODB.ConflictResolution import ConflictResolvingStorage
 from ZODB.interfaces import IBlobStorage
 from ZODB.POSException import POSKeyError
@@ -765,41 +767,12 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
 
         with self._ensure_conn().cursor() as cur:
             undo_data = _compute_undo(cur, tid_int, self, self._tmp)
+            notify_undone(cur, self._main._state_processors, tid_int, undo_data)
 
-        oid_list = []
-        for item in undo_data:
-            oid_bytes = p64(item["zoid"])
-            oid_list.append(oid_bytes)
-            # Remove any existing entry for this zoid
-            self._tmp = [e for e in self._tmp if e.get("zoid") != item["zoid"]]
-            if item["action"] == "delete":
-                self._tmp.append(
-                    {
-                        "zoid": item["zoid"],
-                        "action": "delete",
-                    }
-                )
-            else:
-                entry = {
-                    "zoid": item["zoid"],
-                    "class_mod": item["class_mod"],
-                    "class_name": item["class_name"],
-                    "state": item["state"],
-                    "state_size": item["state_size"],
-                    "refs": item["refs"],
-                }
-                # Run state processors so catalog columns (path, idx,
-                # searchable_text, etc.) are recomputed from the restored
-                # state, not left as NULL (#30 in plone-pgcatalog).
-                extra = self._main._process_state(
-                    item["zoid"],
-                    item["class_mod"],
-                    item["class_name"],
-                    item["state"],
-                )
-                if extra:
-                    entry["_extra"] = extra
-                self._tmp.append(entry)
+        # Queue the undo data, written during vote.
+        self._tmp, oid_list = queue_undo_entries(
+            self._tmp, undo_data, self._main._process_state
+        )
 
         return self._tid, oid_list
 

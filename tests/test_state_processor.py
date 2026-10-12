@@ -10,6 +10,7 @@ Verifies that registered state processors can:
 from psycopg.rows import dict_row
 from tests.conftest import clean_db
 from tests.conftest import DSN
+from ZODB.Connection import TransactionMetaData
 from zodb_pgjsonb.storage import ExtraColumn
 from zodb_pgjsonb.storage import PGJsonbStorage
 
@@ -663,7 +664,7 @@ class TestWritePathsKeepColumns:
         assert history_rows >= 2
 
     def test_undo_does_not_null_columns(self):
-        """Interim behaviour: undo keeps the current values (#121 makes it exact)."""
+        """A processor without ``undone()`` keeps its current column values."""
         s, database, proc = self._db(history_preserving=True)
         try:
             proc.pending[0] = {"a_one": "x", "a_two": "y"}
@@ -755,3 +756,297 @@ class TestBatchWriterDirect:
         assert _pp_row(11) == {"a_one": None, "a_two": None, "b_one": "last"}
         assert _pp_row(12) == {"a_one": "new", "a_two": None, "b_one": None}
         assert _pp_row(13) == {"a_one": "kept", "a_two": None, "b_one": None}
+
+
+# ── Undo hook (#121) ───────────────────────────────────────────────
+
+
+class UndoAwareProcessor(PendingProcessor):
+    """Fake shaped like plone.pgcatalog's processor, plus ``undone()``.
+
+    ``process()`` answers None on undo (data is out of band).  ``finalize()``
+    changes columns of zoids that are not written (like a partial reindex);
+    ``undone()`` records its arguments, what the database looked like at
+    that moment, and NULLs its own columns of the restored zoids.
+    """
+
+    def __init__(self, *columns):
+        super().__init__(*columns)
+        self.unwritten = {}  # zoid -> a_one value applied in finalize()
+        self.calls = []
+        self.seen = []  # per call: zoid -> object_state.tid
+        self.seen_a_one = []  # per call: zoid -> object_state.a_one
+        self.entries = []  # per call: the entries argument
+        self.fail = False
+
+    def finalize(self, cursor):
+        for zoid, value in self.unwritten.items():
+            cursor.execute(
+                "UPDATE object_state SET a_one = %s WHERE zoid = %s", (value, zoid)
+            )
+        self.unwritten = {}
+
+    def undone(self, cursor, tid, restored, deleted, entries):
+        self.calls.append((tid, list(restored), list(deleted)))
+        self.entries.append(entries)
+        cursor.execute(
+            "SELECT zoid, tid, a_one FROM object_state WHERE zoid = ANY(%s)",
+            (list(restored) + list(deleted),),
+        )
+        rows = cursor.fetchall()
+        self.seen.append({r["zoid"]: r["tid"] for r in rows})
+        self.seen_a_one.append({r["zoid"]: r["a_one"] for r in rows})
+        assignments = ", ".join(f"{c.name} = NULL" for c in self.columns)
+        cursor.execute(
+            f"UPDATE object_state SET {assignments} WHERE zoid = ANY(%s)",
+            (list(restored),),
+        )
+        if self.fail:
+            raise RuntimeError("hook failed")
+
+
+class NoHookProcessor(PendingProcessor):
+    """Processor B without ``undone()``."""
+
+
+def _hp_undo_db(*procs):
+    s = _pp_storage(history_preserving=True)
+    for proc in procs:
+        s.register_state_processor(proc)
+    return s, ZODB.DB(s)
+
+
+def _tid_int(tid_bytes):
+    return int.from_bytes(tid_bytes, "big")
+
+
+def _commit_with_child(database, key="child"):
+    """Commit root + a new child; return (child zoid, tid bytes)."""
+    from persistent.mapping import PersistentMapping
+
+    conn = database.open()
+    child = PersistentMapping()
+    conn.root()[key] = child
+    txn.commit()
+    zoid = int.from_bytes(child._p_oid, "big")
+    conn.close()
+    return zoid, database.storage.lastTransaction()
+
+
+def _direct_undo(storage, tid):
+    """Drive the main storage the way a direct caller (tests, tools) does."""
+    t = TransactionMetaData()
+    storage.tpc_begin(t)
+    storage.undo(tid, t)
+    storage.tpc_vote(t)
+    storage.tpc_finish(t)
+
+
+class TestUndoneHook:
+    def test_called_once_per_tid_with_int_lists(self):
+        proc = UndoAwareProcessor("a_one", "a_two")
+        s, database = _hp_undo_db(proc)
+        try:
+            proc.pending[0] = {"a_one": "x", "a_two": "y"}
+            child, tid = _commit_with_child(database)
+            database.undo(tid)
+            txn.commit()
+        finally:
+            database.close()
+            s.close()
+        assert proc.calls == [(_tid_int(tid), [0], [child])]
+        _, restored, deleted = proc.calls[0]
+        assert all(type(z) is int for z in restored + deleted)
+        assert type(proc.calls[0][0]) is int
+
+    def test_order_follows_undo_multiple(self):
+        proc = UndoAwareProcessor("a_one", "a_two")
+        s, database = _hp_undo_db(proc)
+        try:
+            _commit_root(database, 1)
+            _commit_root(database, 2)
+            t2 = s.lastTransaction()
+            _commit_root(database, 3)
+            t3 = s.lastTransaction()
+            database.undoMultiple([t3, t2])
+            txn.commit()
+        finally:
+            database.close()
+            s.close()
+        assert [c[0] for c in proc.calls] == [_tid_int(t3), _tid_int(t2)]
+
+    def test_direct_storage_path(self):
+        proc = UndoAwareProcessor("a_one", "a_two")
+        s, database = _hp_undo_db(proc)
+        try:
+            child, tid = _commit_with_child(database)
+            _direct_undo(s, tid)
+        finally:
+            database.close()
+            s.close()
+        assert proc.calls == [(_tid_int(tid), [0], [child])]
+
+    def test_pre_write_view(self):
+        """Inside the hook object_state still shows the pre-undo rows."""
+        proc = UndoAwareProcessor("a_one", "a_two")
+        s, database = _hp_undo_db(proc)
+        try:
+            child, tid = _commit_with_child(database)
+            database.undo(tid)
+            txn.commit()
+            direct_child, tid2 = _commit_with_child(database, "child2")
+            _direct_undo(s, tid2)
+        finally:
+            database.close()
+            s.close()
+        for seen, undone_tid, zoid in (
+            (proc.seen[0], _tid_int(tid), child),
+            (proc.seen[1], _tid_int(tid2), direct_child),
+        ):
+            assert seen[0] == undone_tid  # restored: still the undone revision
+            assert zoid in seen  # deleted: row still exists
+
+    def test_hook_columns_survive_the_undo_write(self):
+        proc = UndoAwareProcessor("a_one", "a_two")
+        s, database = _hp_undo_db(proc)
+        try:
+            proc.pending[0] = {"a_one": "x", "a_two": "y"}
+            _commit_root(database, 1)
+            _commit_root(database, 2)
+            database.undo(s.lastTransaction())
+            txn.commit()
+        finally:
+            database.close()
+            s.close()
+        # undone() NULLed them; process() answered None, so the write kept that
+        assert _pp_row(0) == {"a_one": None, "a_two": None, "b_one": None}
+
+    def test_raising_hook_aborts_the_whole_undo(self):
+        proc = UndoAwareProcessor("a_one", "a_two")
+        s, database = _hp_undo_db(proc)
+        try:
+            proc.pending[0] = {"a_one": "x", "a_two": "y"}
+            child, tid = _commit_with_child(database)
+            before = s.lastTransaction()
+            proc.fail = True
+            database.undo(tid)
+            with pytest.raises(RuntimeError, match="hook failed"):
+                txn.commit()
+            txn.abort()
+            assert s.lastTransaction() == before
+        finally:
+            database.close()
+            s.close()
+        assert _pp_row(0) == {"a_one": "x", "a_two": "y", "b_one": None}
+        assert _pp_row(child) is not None
+
+    def test_two_processors_one_without_hook(self):
+        proc_a = UndoAwareProcessor("a_one", "a_two")
+        proc_b = NoHookProcessor("b_one")
+        s, database = _hp_undo_db(proc_a, proc_b)
+        try:
+            proc_a.pending[0] = {"a_one": "x", "a_two": "y"}
+            proc_b.pending[0] = {"b_one": "z"}
+            _commit_root(database, 1)
+            _commit_root(database, 2)
+            database.undo(s.lastTransaction())
+            txn.commit()
+        finally:
+            database.close()
+            s.close()
+        assert len(proc_a.calls) == 1
+        assert _pp_row(0) == {"a_one": None, "a_two": None, "b_one": "z"}
+
+    def test_two_processors_both_with_hook_see_each_other(self):
+        """Same cursor, registration order: B sees the SQL of A's hook."""
+        proc_a = UndoAwareProcessor("a_one", "a_two")
+        proc_b = UndoAwareProcessor("b_one")
+        s, database = _hp_undo_db(proc_a, proc_b)
+        try:
+            proc_a.pending[0] = {"a_one": "x", "a_two": "y"}
+            proc_b.pending[0] = {"b_one": "z"}
+            _commit_root(database, 1)
+            database.undo(s.lastTransaction())
+            txn.commit()
+        finally:
+            database.close()
+            s.close()
+        assert len(proc_a.calls) == len(proc_b.calls) == 1
+        assert proc_a.seen_a_one[0][0] == "x"
+        assert proc_b.seen_a_one[0][0] is None
+        assert _pp_row(0) == {"a_one": None, "a_two": None, "b_one": None}
+
+    def test_limitation_unwritten_zoids_are_not_reported(self):
+        """finalize() changes a column of a zoid the transaction did not write.
+
+        The undo reports only the written zoids, so the unwritten one keeps
+        its column change.  This is why recording column history alone
+        (option 1) cannot work, and what the subtree rule has to compensate.
+        """
+        proc = UndoAwareProcessor("a_one", "a_two")
+        s, database = _hp_undo_db(proc)
+        try:
+            child, _ = _commit_with_child(database)
+            proc.unwritten[child] = "changed"
+            _commit_root(database, 9)
+            tid = s.lastTransaction()
+            assert _pp_row(child)["a_one"] == "changed"
+            database.undo(tid)
+            txn.commit()
+        finally:
+            database.close()
+            s.close()
+        assert proc.calls == [(_tid_int(tid), [0], [])]
+        assert _pp_row(child)["a_one"] == "changed"
+
+    def test_entries_carry_both_revisions(self):
+        proc = UndoAwareProcessor("a_one", "a_two")
+        s, database = _hp_undo_db(proc)
+        try:
+            _commit_root(database, "old")
+            child, tid = _commit_with_child(database)
+            database.undo(tid)
+            txn.commit()
+        finally:
+            database.close()
+            s.close()
+        entries = proc.entries[0]
+        assert set(entries) == {0, child}
+        root = entries[0]
+        assert root["action"] == "restore"
+        assert "child" in root["before"]["state"]["data"]
+        assert "child" not in root["after"]["state"]["data"]
+        assert child in root["before"]["refs"]
+        assert child not in root["after"]["refs"]
+        assert root["after"]["class_name"] == "PersistentMapping"
+        assert entries[child]["action"] == "delete"
+        assert entries[child]["after"] is None
+        assert entries[child]["before"]["class_name"] == "PersistentMapping"
+
+    def test_entries_after_is_the_conflict_resolved_state(self):
+        """A resolved undo writes a merged state; ``after`` is that one, decoded."""
+        from BTrees.Length import Length
+
+        proc = UndoAwareProcessor("a_one", "a_two")
+        s, database = _hp_undo_db(proc)
+        try:
+            conn = database.open()
+            conn.root()["len"] = Length()
+            txn.commit()
+            length = conn.root()["len"]
+            zoid = int.from_bytes(length._p_oid, "big")
+            length.change(5)
+            txn.commit()
+            undone_tid = s.lastTransaction()
+            length.change(1)
+            txn.commit()
+            conn.close()
+            database.undo(undone_tid)  # 0 -> 5 undone on top of 6: resolves to 1
+            txn.commit()
+        finally:
+            database.close()
+            s.close()
+        entry = proc.entries[0][zoid]
+        assert entry["action"] == "restore"
+        assert entry["before"]["state"] == 5
+        assert entry["after"]["state"] == 1
