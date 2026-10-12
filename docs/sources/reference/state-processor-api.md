@@ -137,17 +137,17 @@ a ZODB write transaction (the undo step only applies to undo transactions):
    object after pickle-to-JSON decoding.
    The returned dict is attached to the object entry.
 
-3. **Vote** (`tpc_vote()`):
+3. **Undo** (`undo()`, history-preserving mode only, instead of Store):
+   after the undo data is computed and before it is queued, `undone(cursor, tid, restored, deleted)` is called once per undone tid on each processor that implements it.
+   The undo is then queued, with `process(...)` re-run on each restored state, and written by the following Vote.
+
+4. **Vote** (`tpc_vote()`):
    `get_extra_columns()` is called to collect column definitions.
    Objects are grouped by the set of columns to write (the columns of every processor that answered)
    and written with one batched `executemany()` per group.
    A processor that returned `None` has its columns left out of the statement, so their stored values stay.
    After all writes, `finalize(cursor)` is called on each processor
    that implements it.
-
-4. **Undo** (`undo()`, history-preserving mode only):
-   after the undo data is computed and before it is queued, `undone(cursor, tid, restored, deleted)` is called once per undone tid on each processor that implements it.
-   The undo is then queued, with `process(...)` re-run on each restored state, and written by the following `tpc_vote()` as in step 3 (including `finalize(cursor)`).
 
 5. **Finish** (`tpc_finish()`):
    The PostgreSQL transaction is committed.

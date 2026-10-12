@@ -774,7 +774,8 @@ class UndoAwareProcessor(PendingProcessor):
         super().__init__(*columns)
         self.unwritten = {}  # zoid -> a_one value applied in finalize()
         self.calls = []
-        self.seen = []
+        self.seen = []  # per call: zoid -> object_state.tid
+        self.seen_a_one = []  # per call: zoid -> object_state.a_one
         self.fail = False
 
     def finalize(self, cursor):
@@ -787,12 +788,15 @@ class UndoAwareProcessor(PendingProcessor):
     def undone(self, cursor, tid, restored, deleted):
         self.calls.append((tid, list(restored), list(deleted)))
         cursor.execute(
-            "SELECT zoid, tid FROM object_state WHERE zoid = ANY(%s)",
+            "SELECT zoid, tid, a_one FROM object_state WHERE zoid = ANY(%s)",
             (list(restored) + list(deleted),),
         )
-        self.seen.append({r["zoid"]: r["tid"] for r in cursor.fetchall()})
+        rows = cursor.fetchall()
+        self.seen.append({r["zoid"]: r["tid"] for r in rows})
+        self.seen_a_one.append({r["zoid"]: r["a_one"] for r in rows})
+        assignments = ", ".join(f"{c.name} = NULL" for c in self.columns)
         cursor.execute(
-            "UPDATE object_state SET a_one = NULL, a_two = NULL WHERE zoid = ANY(%s)",
+            f"UPDATE object_state SET {assignments} WHERE zoid = ANY(%s)",
             (list(restored),),
         )
         if self.fail:
@@ -952,11 +956,13 @@ class TestUndoneHook:
         assert _pp_row(0) == {"a_one": None, "a_two": None, "b_one": "z"}
 
     def test_two_processors_both_with_hook_see_each_other(self):
+        """Same cursor, registration order: B sees the SQL of A's hook."""
         proc_a = UndoAwareProcessor("a_one", "a_two")
         proc_b = UndoAwareProcessor("b_one")
         s, database = _hp_undo_db(proc_a, proc_b)
         try:
             proc_a.pending[0] = {"a_one": "x", "a_two": "y"}
+            proc_b.pending[0] = {"b_one": "z"}
             _commit_root(database, 1)
             database.undo(s.lastTransaction())
             txn.commit()
@@ -964,6 +970,9 @@ class TestUndoneHook:
             database.close()
             s.close()
         assert len(proc_a.calls) == len(proc_b.calls) == 1
+        assert proc_a.seen_a_one[0][0] == "x"
+        assert proc_b.seen_a_one[0][0] is None
+        assert _pp_row(0) == {"a_one": None, "a_two": None, "b_one": None}
 
     def test_limitation_unwritten_zoids_are_not_reported(self):
         """finalize() changes a column of a zoid the transaction did not write.
