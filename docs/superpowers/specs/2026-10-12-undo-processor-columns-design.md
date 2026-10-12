@@ -3,7 +3,9 @@
 **Date:** 2026-10-12
 **Issues:** [zodb-pgjsonb#121](https://github.com/bluedynamics/zodb-pgjsonb/issues/121) (storage),
 [plone-pgcatalog#265](https://github.com/bluedynamics/plone-pgcatalog/issues/265) (catalog)
-**Status:** Accepted 2026-10-12 (option 3a, all decisions below settled)
+**Status:** Accepted 2026-10-12 (option 3a, all decisions below settled);
+amended the same day: the subtree rule only fires on a security or location
+change at the root (conservative option B, see "Amendment" below)
 **Spans two repos:** zodb-pgjsonb (Part A) and plone.pgcatalog (Part B)
 **Depends on:** zodb-pgjsonb#120 / PR #123 (per-processor write semantics, released in 1.17.0)
 
@@ -141,16 +143,16 @@ Cases the issue misses:
 
 - **Undo of a delete.** `manage_delObjects` uncatalogs the object and its
   descendants (NULL columns, each written with `_p_changed`,
-  `catalog.py:695-699`) and writes the parent's bucket. Undo restores all of
+  `catalog.py:695-699`) and writes the parent's bucket and the parent itself
+  (its `modification_date`; see "Amendment"). Undo restores all of
   them, `process()` returns `None`, the rows stay NULL: the content is back in
   the tree but invisible. Not a regression (same before 1.17.0), not security
   relevant, but the most common real-world use of undo, and the one case where
   the rows carry no usable `path` for a follow-up.
-- **Undo of an add.** The created rows are deleted. Children added in later
-  transactions into a BTree folder do not rewrite the folder, so the undo
-  succeeds and leaves their rows (path, `idx`) behind as dangling catalog
-  entries. ZCatalog has the same dangling brains after such an undo; parity,
-  but worth documenting.
+- **Undo of an add.** The created rows are deleted. *Corrected during
+  implementation:* a child added in a later transaction makes ZODB refuse the
+  undo (`UndoError`, the added folder was written again), so dangling child
+  rows cannot occur.
 - **Undo of a reorder.** Only the ordering annotations are written, the folder
   is not, so no cataloged object is among the undone zoids; the gopip ranks
   keep the undone order. Not security relevant; `maintenance.resync_gopip`
@@ -226,7 +228,7 @@ fully, the subtree below them gets its security recomputed*.
 ### The hook
 
 ```python
-def undone(self, cursor, tid, restored, deleted):
+def undone(self, cursor, tid, restored, deleted, entries):
     """A transaction is being undone.
 
     cursor:   cursor on the connection of the undo's PG transaction (same
@@ -234,6 +236,11 @@ def undone(self, cursor, tid, restored, deleted):
     tid:      int, the tid being undone
     restored: list[int], zoids whose previous revision will be written
     deleted:  list[int], zoids whose rows will be deleted (created in tid)
+    entries:  dict[int, dict] per zoid: {"action", "before": rev,
+              "after": rev or None}; before = revision the tid wrote,
+              after = revision the undo writes; rev = class_mod,
+              class_name, state (decoded JSON), refs (added in the
+              amendment, needed by the conservative subtree rule)
     """
 ```
 
@@ -346,7 +353,8 @@ too; it stays empty there.
    `searchable_text`, extra idx columns, backend columns). Everything in such
    a row belongs to the undone transaction or is derived from it, so all of it
    is suspect. Deleted zoids need no hiding; their rows go away at vote.
-3. Subtree rule: for every restored zoid that had a path in step 1, hide
+3. Subtree rule (narrowed by the amendment: only for roots whose security
+   or location changed): for every restored zoid that had a path in step 1, hide
    `allowed_roles` of the rows below it (`path LIKE p || '/%' AND idx IS NOT
    NULL`; the root itself is covered by step 2) and queue a `security` row
    per such row with its current path as hint. Both are single statements per
@@ -501,7 +509,11 @@ expiry is the extension if it ever matters.
 - `docs/move-optimization.md:226-231` ("after undo of a move, catalog columns
   are stale, a rebuild is needed") becomes wrong and is updated.
 
-### Observation outside this design, to verify separately
+### Observation outside this design (confirmed)
+
+*Confirmed 2026-10-12, and not specific to zodb-pgjsonb: FileStorage hangs the
+same way. Filed as zopefoundation/ZODB#430; fail-fast guard here:
+zodb-pgjsonb#132.*
 
 A Zope transaction that has both dirty objects in its `Connection` and an undo
 joined commits through two storage instances (the Connection's and
@@ -563,13 +575,14 @@ test wants the follow-up. Assertions read `object_state` directly, as
    recataloged with the old title and `searchable_text`.
 5. **Edit of a container** with children: the subtree rule hides the
    children's `allowed_roles` although the edit did not touch security; the
-   follow-up restores them. Documents the accepted 3a cost.
+   follow-up restores them. Documents the accepted cost (the conservative
+   rule of the amendment still triggers on a title change).
 6. **Undo of a delete**: `manage_delObjects`, undo; before the follow-up the
    row is NULL; after it the object is cataloged at its path (exercises the
    referrer walk, the hint is NULL).
-7. **Undo of an add** with a child added in a later transaction: the add's
-   rows are gone, no queue leftover, the child's dangling row behaviour is
-   whatever the decision below says.
+7. **Undo of an add** with a child added in a later transaction: ZODB
+   refuses the undo (see the corrected case above); a plain undo of an add
+   removes the rows and leaves no queue rows.
 8. **Several tids in one `undoMultiple`** (sharing then edit on the same
    folder, undone together in both orders).
 9. **Budget**: `limit=1` on a subtree of three; after one run two rows remain
@@ -638,6 +651,50 @@ Why deferred: 3a is enough for the security requirement; the effects log is
 new state on the write path and couples every future `finalize` side effect
 to undo; and undo is used rarely and works poorly on busy multi-user
 databases regardless of the catalog.
+
+## Amendment 2026-10-12: conservative subtree rule (option B)
+
+**Finding during implementation.** In Plone 6.1 every add, delete and
+cut/paste writes the container object itself (`modification_date`; a first
+child also creates `__annotations__` and `cmf_uid`), not only its BTree
+bucket. Under 3a, undoing any of these applies the subtree rule to the whole
+container; in the portal root that hides the security data of the entire
+site until the follow-up has drained it, and beyond the budget anonymous
+navigation and search stay empty. Undo of a delete is the most common use of
+undo, so this is not an acceptable cost.
+
+**Decision (maintainer, 2026-10-12): conservative option B.** A restored
+root still gets fully hidden and recataloged. The subtree rule (`allowed_roles
+= NULL` below it, `security` queue rows) fires only when the hook sees, from
+`entries`:
+
+- a difference between `before` and `after` in any top-level state key other
+  than `modification_date` and `cmf_uid` (this covers `__ac_local_roles__`,
+  `__ac_local_roles_block__`, all `_*_Permission` attributes, `__annotations__`
+  creation, and also harmless keys such as `title`, which is the conservative
+  part), or a class change;
+- a location change: the root's `id` differs, or for some undone zoid the
+  membership of the root in `before.refs` differs from `after.refs` (a
+  cross-container move with the same id writes the moved object with an
+  identical state, so only the referrers show it);
+- anything it cannot decide (missing entry, non-dict state): then the full
+  rule applies.
+
+Deleted roots keep the full rule (decision 6). Why `entries` and not
+`object_state`: with several tids in one `undoMultiple` the row holds another
+tid's revision, and a conflict-resolved state exists only in the storage.
+
+A precise variant (trigger only on the security keys, guarded by a check
+that no add-on `ILocalRoleProvider` or `allowedRolesAndUsers` indexer is
+registered) was analysed and deferred; sharing, workflow and moves still pay
+the full subtree, and making those cheaper is separate follow-up work.
+
+Gaps that 3a already had and this rule keeps: `ILocalRoleProvider` add-ons
+storing roles in a separate persistent object; permission or local-role
+changes on the Zope root or other non-cataloged ancestors; workflow
+transitions without a permission change (stale `review_state` only); and
+after the follow-up has run, the undo itself can no longer be undone (the
+follow-up writes the objects).
 
 ## Decisions
 
