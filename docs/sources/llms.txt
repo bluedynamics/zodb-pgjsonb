@@ -236,6 +236,11 @@ runs. `ZODB_PGJSONB_FORCE_DDL=1` forces a full re-apply.
 | s3-secret-key | none | AWS secret key |
 | s3-use-ssl | true | Enable SSL for S3 |
 | s3-prefix | "" | S3 key prefix |
+| s3-connect-timeout | zodb-s3blobs default (60) | S3 upload connect timeout (seconds) |
+| s3-read-timeout | zodb-s3blobs default (300) | S3 upload read timeout (seconds) |
+| s3-download-connect-timeout | zodb-s3blobs default (5) | S3 download connect timeout (seconds) |
+| s3-download-read-timeout | zodb-s3blobs default (10) | S3 download read timeout (seconds) |
+| s3-download-max-attempts | zodb-s3blobs default (2) | S3 download attempts |
 | blob-cache-dir | none | Local cache for S3 blobs |
 | blob-cache-size | 1GB | Max local cache size |
 

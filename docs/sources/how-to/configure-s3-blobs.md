@@ -47,6 +47,11 @@ Add the S3 keys to your `<pgjsonb>` section in `zope.conf`:
 | `s3-secret-key` | *none* | AWS secret access key (uses boto3 credential chain if omitted) |
 | `s3-use-ssl` | `true` | Enable SSL for S3 connections |
 | `s3-prefix` | *empty* | S3 key prefix for namespace isolation |
+| `s3-connect-timeout` | *zodb-s3blobs default* | Connect timeout (seconds) for uploads, deletes and listings |
+| `s3-read-timeout` | *zodb-s3blobs default* | Socket read timeout (seconds) for uploads, deletes and listings |
+| `s3-download-connect-timeout` | *zodb-s3blobs default* | Connect timeout (seconds) for downloads and HEAD requests |
+| `s3-download-read-timeout` | *zodb-s3blobs default* | Socket read timeout (seconds) for downloads and HEAD requests |
+| `s3-download-max-attempts` | *zodb-s3blobs default* | Total attempts per download and HEAD request |
 
 ### Blob storage keys
 
@@ -82,6 +87,22 @@ Set `blob-cache-size` to the maximum disk space for the cache.
 The cache uses LRU eviction when the limit is reached.
 
 For production, always configure a blob cache directory to reduce S3 latency and cost.
+
+## Tune S3 timeouts
+
+The timeout keys are passed to zodb-s3blobs only when set.
+Leave them unset unless you have a reason; zodb-s3blobs' defaults and the reasoning behind them are documented in its README.
+
+Downloads and uploads have separate settings because they block different things:
+
+- **Downloads** happen when a blob is not in the local cache, inside the request that needs it, while the request's PostgreSQL transaction is open.
+  zodb-pgjsonb sets `idle_in_transaction_session_timeout` to 60 seconds (environment variable `ZODB_PGJSONB_IDLE_IN_XACT_TIMEOUT_MS`).
+  A download that takes longer than that in total ends the request with `IdleInTransactionSessionTimeout`, whatever the S3 timeouts are.
+  Keep the download worst case below it: roughly `2 × s3-download-max-attempts × (s3-download-connect-timeout + s3-download-read-timeout)`.
+- **Uploads** happen in `tpc_vote` while the commit lock is held, so a stalled upload blocks every other writer until `s3-read-timeout` expires.
+  Some providers answer uploads under concurrent load only after more than a minute, which is why the upload default is long.
+
+The read timeouts are inactivity timeouts per socket operation, not limits on the total transfer time.
 
 ## Use Garage for development
 

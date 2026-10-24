@@ -224,6 +224,66 @@ class TestZConfig:
             finally:
                 storage.close()
 
+    def _open_with_fake_s3(self, extra_lines=""):
+        """Open a <pgjsonb> storage with S3 and return the S3Client mock."""
+        import sys
+        import types
+        import unittest.mock
+        import ZODB.config
+
+        clean_db()
+        config_text = f"""\
+        %import zodb_pgjsonb
+        <pgjsonb>
+            dsn {DSN}
+            s3-bucket-name my-bucket
+            {extra_lines}
+        </pgjsonb>
+        """
+        mock_s3_client_cls = unittest.mock.MagicMock()
+        fake_s3client = types.ModuleType("zodb_s3blobs.s3client")
+        fake_s3client.S3Client = mock_s3_client_cls
+        fake_cache = types.ModuleType("zodb_s3blobs.cache")
+        fake_cache.S3BlobCache = unittest.mock.MagicMock()
+        with unittest.mock.patch.dict(
+            sys.modules,
+            {
+                "zodb_s3blobs": types.ModuleType("zodb_s3blobs"),
+                "zodb_s3blobs.s3client": fake_s3client,
+                "zodb_s3blobs.cache": fake_cache,
+            },
+        ):
+            ZODB.config.storageFromString(config_text).close()
+        return mock_s3_client_cls
+
+    def test_zconfig_s3_timeouts_passed_when_set(self):
+        """S3 timeout keys reach S3Client under its argument names."""
+        mock_s3_client_cls = self._open_with_fake_s3(
+            """s3-connect-timeout 20
+            s3-read-timeout 120
+            s3-download-connect-timeout 3
+            s3-download-read-timeout 7.5
+            s3-download-max-attempts 3"""
+        )
+        kwargs = mock_s3_client_cls.call_args.kwargs
+        assert kwargs["connect_timeout"] == 20
+        assert kwargs["read_timeout"] == 120
+        assert kwargs["download_connect_timeout"] == 3
+        assert kwargs["download_read_timeout"] == 7.5
+        assert kwargs["download_max_attempts"] == 3
+
+    def test_zconfig_s3_timeouts_omitted_when_unset(self):
+        """Unset timeout keys are not passed, so zodb-s3blobs' defaults apply."""
+        mock_s3_client_cls = self._open_with_fake_s3()
+        kwargs = mock_s3_client_cls.call_args.kwargs
+        assert not set(kwargs) & {
+            "connect_timeout",
+            "read_timeout",
+            "download_connect_timeout",
+            "download_read_timeout",
+            "download_max_attempts",
+        }
+
 
 class TestCacheConfigMigration:
     """#63: new cache knobs + cache-local-mb deprecation alias."""
