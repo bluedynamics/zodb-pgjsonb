@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.19.1 (unreleased)
+
+### Documentation
+
+- Move the reasoning behind the S3 timeout keys from the S3 how-to into the
+  architecture explanation, turn the how-to section into concrete steps with a
+  configuration example, mark the keys as added in 1.19, document
+  `ZODB_PGJSONB_IDLE_IN_XACT_TIMEOUT_MS`, and list the `zodb-s3blobs>=1.2.0`
+  requirement in the dependency table.
+
 ## 1.19.0
 
 ### New features
