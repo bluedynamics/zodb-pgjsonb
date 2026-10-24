@@ -13,7 +13,8 @@
   zodb-s3blobs' former 300 s read timeout, past
   `idle_in_transaction_session_timeout`, and end in a 500
   (bluedynamics/zodb-s3blobs#25). zodb-s3blobs 1.2.0 shortens the download
-  timeouts by default; these keys let a deployment tune them.
+  timeouts by default; these keys let a deployment tune them. The `[s3]`
+  extra now requires `zodb-s3blobs>=1.2.0`.
 
 ## 1.18.0
 
