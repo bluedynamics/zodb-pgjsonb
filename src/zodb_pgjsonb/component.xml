@@ -194,6 +194,44 @@
       <description>Enable SSL for S3 connections. Default: true.</description>
     </key>
 
+    <key name="s3-connect-timeout" datatype="float" required="no">
+      <description>
+        Connect timeout in seconds for S3 uploads, deletes and listings.
+        Default: zodb-s3blobs' default (60).
+      </description>
+    </key>
+
+    <key name="s3-read-timeout" datatype="float" required="no">
+      <description>
+        Socket read timeout in seconds for S3 uploads, deletes and listings.
+        Uploads run in tpc_vote under the commit lock, so this also bounds
+        how long a stalled upload blocks other writers.
+        Default: zodb-s3blobs' default (300).
+      </description>
+    </key>
+
+    <key name="s3-download-connect-timeout" datatype="float" required="no">
+      <description>
+        Connect timeout in seconds for S3 blob downloads and HEAD requests.
+        Default: zodb-s3blobs' default (5).
+      </description>
+    </key>
+
+    <key name="s3-download-read-timeout" datatype="float" required="no">
+      <description>
+        Socket read timeout in seconds for S3 blob downloads and HEAD
+        requests. Downloads run in the request that needs the blob, while its
+        PostgreSQL transaction is open. Default: zodb-s3blobs' default (10).
+      </description>
+    </key>
+
+    <key name="s3-download-max-attempts" datatype="integer" required="no">
+      <description>
+        Total attempts per S3 download and HEAD request.
+        Default: zodb-s3blobs' default (2).
+      </description>
+    </key>
+
     <key name="blob-cache-dir" required="no">
       <description>
         Local cache directory for S3 blobs. Uses blob-temp-dir if omitted.

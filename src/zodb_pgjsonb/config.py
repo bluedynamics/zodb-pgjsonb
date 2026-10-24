@@ -3,6 +3,16 @@
 from ZODB.config import BaseConfig
 
 
+# (S3Client argument, ZConfig attribute)
+_S3_TIMEOUT_KEYS = (
+    ("connect_timeout", "s3_connect_timeout"),
+    ("read_timeout", "s3_read_timeout"),
+    ("download_connect_timeout", "s3_download_connect_timeout"),
+    ("download_read_timeout", "s3_download_read_timeout"),
+    ("download_max_attempts", "s3_download_max_attempts"),
+)
+
+
 class PGJsonbStorageFactory(BaseConfig):
     """ZConfig factory — called when Zope parses a <pgjsonb> section."""
 
@@ -41,6 +51,13 @@ class PGJsonbStorageFactory(BaseConfig):
                     "pip install zodb-pgjsonb[s3]"
                 ) from exc
 
+            # Timeouts are passed only when set, so their defaults live in
+            # zodb_s3blobs alone.
+            s3_timeouts = {
+                arg: value
+                for arg, key in _S3_TIMEOUT_KEYS
+                if (value := getattr(config, key, None)) is not None
+            }
             s3_client = S3Client(
                 bucket_name=config.s3_bucket_name,
                 prefix=getattr(config, "s3_prefix", "") or "",
@@ -49,6 +66,7 @@ class PGJsonbStorageFactory(BaseConfig):
                 aws_access_key_id=getattr(config, "s3_access_key", None),
                 aws_secret_access_key=getattr(config, "s3_secret_key", None),
                 use_ssl=getattr(config, "s3_use_ssl", True),
+                **s3_timeouts,
             )
             cache_dir = getattr(config, "blob_cache_dir", None) or config.blob_temp_dir
             cache_size = getattr(config, "blob_cache_size", 1024 * 1024 * 1024)

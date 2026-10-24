@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.19.0 (unreleased)
+
+### New features
+
+- **S3 timeouts and retries are configurable (#136).** New `<pgjsonb>` keys
+  `s3-connect-timeout`, `s3-read-timeout`, `s3-download-connect-timeout`,
+  `s3-download-read-timeout` and `s3-download-max-attempts` are passed to
+  zodb-s3blobs' `S3Client` when set; unset keys keep zodb-s3blobs' defaults.
+  Blob downloads run in the request that needs the blob while its PostgreSQL
+  transaction is open, so a stalled download used to block the request for
+  zodb-s3blobs' former 300 s read timeout, past
+  `idle_in_transaction_session_timeout`, and end in a 500
+  (bluedynamics/zodb-s3blobs#25). zodb-s3blobs 1.2.0 shortens the download
+  timeouts by default; these keys let a deployment tune them. The `[s3]`
+  extra now requires `zodb-s3blobs>=1.2.0`.
+
 ## 1.18.0
 
 ### New features

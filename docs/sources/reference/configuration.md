@@ -54,6 +54,11 @@ It implements `ZODB.storage`.
 | `s3-access-key` | string | -- | no | AWS access key ID. Uses the boto3 credential chain if omitted. |
 | `s3-secret-key` | string | -- | no | AWS secret access key. Uses the boto3 credential chain if omitted. |
 | `s3-use-ssl` | boolean | `true` | no | Enable SSL for S3 connections. |
+| `s3-connect-timeout` | float | (zodb-s3blobs: `60`) | no | Connect timeout in seconds for S3 uploads, deletes and listings. |
+| `s3-read-timeout` | float | (zodb-s3blobs: `300`) | no | Socket read timeout in seconds for S3 uploads, deletes and listings. Uploads run in `tpc_vote` under the commit lock. |
+| `s3-download-connect-timeout` | float | (zodb-s3blobs: `5`) | no | Connect timeout in seconds for S3 blob downloads and HEAD requests. |
+| `s3-download-read-timeout` | float | (zodb-s3blobs: `10`) | no | Socket read timeout in seconds for S3 blob downloads and HEAD requests. |
+| `s3-download-max-attempts` | integer | (zodb-s3blobs: `2`) | no | Total attempts per S3 download and HEAD request. |
 | `blob-cache-dir` | string | (falls back to `blob-temp-dir`) | no | Local cache directory for S3 blobs. Recommended for production to avoid repeated S3 downloads. |
 | `blob-cache-size` | byte-size | `1GB` | no | Maximum size of the local blob cache directory. |
 
