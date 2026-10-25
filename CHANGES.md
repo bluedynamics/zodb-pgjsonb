@@ -4,6 +4,10 @@
 
 ### Documentation
 
+- Fix the write path sequence diagram in the architecture explanation. The
+  `;` in `BEGIN; pg_advisory_xact_lock(0)` ends a Mermaid statement, so the
+  diagram rendered as "Syntax error in text"; it is now written as `#59;`.
+
 - Move the reasoning behind the S3 timeout keys from the S3 how-to into the
   architecture explanation, turn the how-to section into concrete steps with a
   configuration example, mark the keys as added in 1.19, document

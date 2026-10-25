@@ -58,7 +58,7 @@ sequenceDiagram
     SP-->>Inst: extra column values
     Note over Inst: Queue entry in _tmp list
     ZODB->>Inst: tpc_vote(transaction)
-    Inst->>PG: BEGIN; pg_advisory_xact_lock(0)
+    Inst->>PG: BEGIN#59; pg_advisory_xact_lock(0)
     Inst->>PG: Batch conflict check (SELECT WHERE zoid = ANY(...))
     Inst->>PG: executemany INSERT...ON CONFLICT (pipelined)
     Inst->>PG: COMMIT
