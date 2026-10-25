@@ -240,6 +240,26 @@ Blob files use deterministic filenames (`{oid:016x}-{tid:016x}.blob`) as require
 
 When S3 tiering is not configured, all blobs go to PostgreSQL bytea regardless of size.
 
+(blob-downloads-request-path)=
+
+### Blob downloads in the request path
+
+A blob that is not in the local cache is downloaded from S3 by the request that needs it.
+That request holds its PostgreSQL transaction open the whole time, because the transaction is its MVCC snapshot.
+zodb-pgjsonb sets `idle_in_transaction_session_timeout` (60 seconds by default) as a safety net against leaked transactions, so PostgreSQL terminates the session of a request that spends longer than that outside PostgreSQL.
+A download that takes longer in total therefore ends the request with `IdleInTransactionSessionTimeout`, even if it succeeds.
+
+This makes the S3 timeouts part of the request budget.
+A stalled S3 connection is a common case: the first request on it hangs until the read timeout expires, and the retry on a fresh connection succeeds at once.
+zodb-s3blobs 1.2.0 therefore uses short timeouts and few retries for downloads, so that a stall costs seconds instead of minutes.
+The read timeout is an inactivity timeout per socket operation, though, not a limit on the whole download.
+A large blob on a slow link can still exceed the PostgreSQL budget, and neither timeout setting prevents that.
+
+Uploads are different.
+They run in `tpc_vote` while the commit lock is held, so a stalled upload blocks every other writer rather than a single request.
+Some S3 providers answer uploads under concurrent load only after more than a minute, so a short upload timeout would cause spurious failures and retries.
+That is why uploads keep long timeouts and have their own settings.
+
 ## LISTEN/NOTIFY invalidation
 
 ZODB's MVCC protocol requires the storage to report which objects changed since the last poll.

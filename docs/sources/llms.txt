@@ -320,7 +320,7 @@ histogram = storage.get_blob_histogram()
 - **zodb-json-codec**: Rust pickle↔JSON codec (dependency, installed automatically)
 - **plone-pgcatalog**: PostgreSQL-backed catalog using state processor plugin
 - **plone-pgthumbor**: Thumbor image scaling reading from blob_state table
-- **zodb-s3blobs**: S3 blob backend (optional dependency for tiered storage)
+- **zodb-s3blobs>=1.2.0**: S3 blob backend (optional dependency for tiered storage)
 
 ## Documentation Sections
 

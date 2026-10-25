@@ -90,19 +90,32 @@ For production, always configure a blob cache directory to reduce S3 latency and
 
 ## Tune S3 timeouts
 
-The timeout keys are passed to zodb-s3blobs only when set.
-Leave them unset unless you have a reason; zodb-s3blobs' defaults and the reasoning behind them are documented in its README.
+Leave the S3 timeout keys unset to use the zodb-s3blobs defaults.
+Set them only to fix one of the problems below.
+Refer to {doc}`/reference/configuration` for the keys and their defaults, and to {ref}`blob-downloads-request-path` for why downloads and uploads have separate settings.
 
-Downloads and uploads have separate settings because they block different things:
+If blob requests fail with `IdleInTransactionSessionTimeout` while a blob is downloaded from S3, lower the download worst case below `ZODB_PGJSONB_IDLE_IN_XACT_TIMEOUT_MS` (60 seconds by default).
+The worst case is roughly `2 × s3-download-max-attempts × (s3-download-connect-timeout + s3-download-read-timeout)`.
 
-- **Downloads** happen when a blob is not in the local cache, inside the request that needs it, while the request's PostgreSQL transaction is open.
-  zodb-pgjsonb sets `idle_in_transaction_session_timeout` to 60 seconds (environment variable `ZODB_PGJSONB_IDLE_IN_XACT_TIMEOUT_MS`).
-  A download that takes longer than that in total ends the request with `IdleInTransactionSessionTimeout`, whatever the S3 timeouts are.
-  Keep the download worst case below it: roughly `2 × s3-download-max-attempts × (s3-download-connect-timeout + s3-download-read-timeout)`.
-- **Uploads** happen in `tpc_vote` while the commit lock is held, so a stalled upload blocks every other writer until `s3-read-timeout` expires.
-  Some providers answer uploads under concurrent load only after more than a minute, which is why the upload default is long.
+If your S3 provider answers downloads slowly under load and they time out, raise `s3-download-read-timeout`, but keep the worst case below the PostgreSQL idle timeout.
 
-The read timeouts are inactivity timeouts per socket operation, not limits on the total transfer time.
+If uploads time out under concurrent load, raise `s3-read-timeout`.
+If a stalled upload blocks other writers for too long, lower it instead.
+
+Set the keys in the `<pgjsonb>` section:
+
+```xml
+<pgjsonb>
+    dsn dbname=zodb user=zodb host=localhost
+    s3-bucket-name my-zodb-blobs
+    s3-download-read-timeout 15
+    s3-download-max-attempts 2
+    s3-read-timeout 300
+</pgjsonb>
+```
+
+To take a value from the environment, use ZConfig's `$(NAME)` syntax, for example `s3-download-read-timeout $(S3_DOWNLOAD_READ_TIMEOUT)`.
+The plain `$NAME` syntax only expands names defined with `%define`.
 
 ## Use Garage for development
 

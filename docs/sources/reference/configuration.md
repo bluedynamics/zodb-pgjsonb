@@ -55,12 +55,19 @@ It implements `ZODB.storage`.
 | `s3-secret-key` | string | -- | no | AWS secret access key. Uses the boto3 credential chain if omitted. |
 | `s3-use-ssl` | boolean | `true` | no | Enable SSL for S3 connections. |
 | `s3-connect-timeout` | float | (zodb-s3blobs: `60`) | no | Connect timeout in seconds for S3 uploads, deletes and listings. |
-| `s3-read-timeout` | float | (zodb-s3blobs: `300`) | no | Socket read timeout in seconds for S3 uploads, deletes and listings. Uploads run in `tpc_vote` under the commit lock. |
+| `s3-read-timeout` | float | (zodb-s3blobs: `300`) | no | Socket read timeout in seconds for S3 uploads, deletes and listings. |
 | `s3-download-connect-timeout` | float | (zodb-s3blobs: `5`) | no | Connect timeout in seconds for S3 blob downloads and HEAD requests. |
 | `s3-download-read-timeout` | float | (zodb-s3blobs: `10`) | no | Socket read timeout in seconds for S3 blob downloads and HEAD requests. |
 | `s3-download-max-attempts` | integer | (zodb-s3blobs: `2`) | no | Total attempts per S3 download and HEAD request. |
 | `blob-cache-dir` | string | (falls back to `blob-temp-dir`) | no | Local cache directory for S3 blobs. Recommended for production to avoid repeated S3 downloads. |
 | `blob-cache-size` | byte-size | `1GB` | no | Maximum size of the local blob cache directory. |
+
+Unset S3 timeout keys are not passed to `S3Client`, so the zodb-s3blobs defaults shown in parentheses apply.
+The read timeouts are inactivity timeouts per socket operation, not limits on the total transfer time.
+
+```{versionadded} 1.19
+`s3-connect-timeout`, `s3-read-timeout`, `s3-download-connect-timeout`, `s3-download-read-timeout` and `s3-download-max-attempts`.
+```
 
 ## Python constructor
 
@@ -109,12 +116,12 @@ The ZConfig factory (`PGJsonbStorageFactory`) constructs `S3Client` and
 
 ## Environment variables
 
-These variables tune startup-DDL coordination across replicas.
-They are read from the process environment, not from ZConfig.
+The storage reads these variables from the process environment, not from ZConfig.
 
 | Variable | Default | Description |
 |---|---|---|
 | `ZODB_PGJSONB_DDL_LOCK_TIMEOUT` | `15min` | `lock_timeout` applied while acquiring the startup DDL advisory lock. Accepts any PostgreSQL interval literal (for example `30s`, `5min`). On timeout the pending DDL is requeued and retried on the next transaction. |
+| `ZODB_PGJSONB_IDLE_IN_XACT_TIMEOUT_MS` | `60000` | `idle_in_transaction_session_timeout` in milliseconds, set on every pooled PostgreSQL connection. `0` disables the timeout. |
 | `ZODB_PGJSONB_FORCE_DDL` | unset | When set to any non-empty value, bypasses the schema-version gate and forces a full deferred-DDL run under the lock. Use it after a manual index drop or to re-apply DDL that the version markers consider current. |
 
 ```{versionadded} 1.14
@@ -138,7 +145,7 @@ They are read from the process environment, not from ZConfig.
 
 | Package | Extra | Purpose |
 |---|---|---|
-| `zodb-s3blobs` | `s3` | S3 client and blob cache for tiered blob storage. |
+| `zodb-s3blobs>=1.2.0` | `s3` | S3 client and blob cache for tiered blob storage. |
 | `boto3>=1.26` | `s3` | AWS SDK for S3 access. |
 
 Install S3 support with `pip install zodb-pgjsonb[s3]`.
