@@ -31,6 +31,8 @@ from .undo import notify_undone
 from .undo import queue_undo_entries
 from collections import OrderedDict
 from persistent.TimeStamp import TimeStamp
+from psycopg.conninfo import conninfo_to_dict
+from psycopg.conninfo import make_conninfo
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 from ZODB.BaseStorage import BaseStorage
@@ -54,6 +56,7 @@ import contextlib
 import dataclasses
 import hashlib
 import logging
+import math
 import os
 import psycopg
 import re
@@ -91,6 +94,24 @@ def _configure_pool_conn(conn):
         os.environ.get(ENV_IDLE_IN_XACT_TIMEOUT, DEFAULT_IDLE_IN_XACT_TIMEOUT_MS)
     )
     conn.execute(f"SET idle_in_transaction_session_timeout = {timeout_ms}")
+
+
+def _ddl_dsn(dsn, timeout):
+    """Return *dsn* with a ``connect_timeout`` for the startup DDL path (#145).
+
+    The schema-version probe, the advisory lock session and the DDL
+    connections connect directly, outside the pool, so ``pool_timeout``
+    does not bound them.  Without ``connect_timeout`` libpq waits for the
+    OS TCP timeout when the server drops packets, and the poll that
+    applies the DDL hangs with it.  A ``connect_timeout`` in the DSN or
+    ``PGCONNECT_TIMEOUT`` in the environment wins.  libpq treats values
+    below 2 as 2.
+    """
+    if timeout is None or os.environ.get("PGCONNECT_TIMEOUT"):
+        return dsn
+    if "connect_timeout" in conninfo_to_dict(dsn):
+        return dsn
+    return make_conninfo(dsn, connect_timeout=max(2, math.ceil(timeout)))
 
 
 @dataclasses.dataclass
@@ -434,6 +455,8 @@ class PGJsonbStorage(CopyTransactionsMixin, ConflictResolvingStorage, BaseStorag
     ):
         BaseStorage.__init__(self, name)
         self._dsn = dsn
+        # DSN for the direct connections of the startup DDL path (#145).
+        self._ddl_dsn = _ddl_dsn(dsn, pool_timeout)
         self._history_preserving = history_preserving
 
         # Deprecation: cache_local_mb used to be per-instance; now it is
@@ -888,7 +911,7 @@ class PGJsonbStorage(CopyTransactionsMixin, ConflictResolvingStorage, BaseStorag
         """
         own = conn is None
         if own:
-            conn = psycopg.connect(self._dsn, autocommit=True)
+            conn = psycopg.connect(self._ddl_dsn, autocommit=True)
             conn.execute("SET statement_timeout = '5s'")
         try:
             with conn.cursor() as cur:
@@ -946,16 +969,22 @@ class PGJsonbStorage(CopyTransactionsMixin, ConflictResolvingStorage, BaseStorag
         transaction is committed (ACCESS SHARE released).
 
         Each entry is ``(action, name, version)`` where *action* is a SQL
-        string or a callable receiving ``self._dsn``, and *version* is a
-        marker string or ``None``.
+        string or a callable receiving the DSN, and *version* is a marker
+        string or ``None``.  The DSN carries a ``connect_timeout`` (#145).
 
         Uses a double-checked schema-version gate around the session-level
         advisory lock (#78): a cheap marker probe runs *before* the lock so
         replicas whose tagged work is already current bail without ever
         contending for the lock; the check is repeated *inside* the lock in
         case another replica applied while we waited.  ``ZODB_PGJSONB_FORCE_DDL``
-        bypasses both checks and forces a full run.  On lock timeout the
-        pending entries are requeued for the next call.
+        bypasses both checks and forces a full run.
+
+        Nothing is lost while PostgreSQL is unreachable (#144): if taking
+        the lock or the re-check fails, all pending entries are requeued
+        for the next call; an entry that fails with ``OperationalError``
+        under the lock is requeued on its own.  Any other error of an entry
+        (e.g. invalid SQL) drops it until the next startup, so broken DDL
+        does not retry on every poll.
         """
         if not self._pending_ddl:
             return
@@ -987,7 +1016,7 @@ class PGJsonbStorage(CopyTransactionsMixin, ConflictResolvingStorage, BaseStorag
                 return
 
         try:
-            with startup_ddl_lock(self._dsn) as lock_conn:
+            with startup_ddl_lock(self._ddl_dsn) as lock_conn:
                 # Re-check under the lock: another replica may have applied
                 # while we waited.
                 if not force:
@@ -998,26 +1027,7 @@ class PGJsonbStorage(CopyTransactionsMixin, ConflictResolvingStorage, BaseStorag
                             "waiting for the DDL lock — nothing to do",
                         )
                         return
-                for action, name, version in stale:
-                    try:
-                        if callable(action):
-                            action(self._dsn)
-                        else:
-                            with psycopg.connect(
-                                self._dsn, autocommit=True
-                            ) as ddl_conn:
-                                ddl_conn.execute("SET lock_timeout = '30s'")
-                                ddl_conn.execute(action)
-                        if version is not None:
-                            self._mark_schema_applied(lock_conn, name, version)
-                        logger.info("Applied deferred DDL/action from %s", name)
-                    except Exception:
-                        logger.warning(
-                            "Failed to apply deferred DDL from %s "
-                            "(lock timeout or other error — will retry on next startup)",
-                            name,
-                            exc_info=True,
-                        )
+                failed = self._apply_stale_entries(stale, lock_conn)
         except psycopg.errors.LockNotAvailable:
             # Could not acquire the startup lock — requeue pending work
             # so the next tpc_begin / poll_invalidations retries.
@@ -1026,6 +1036,58 @@ class PGJsonbStorage(CopyTransactionsMixin, ConflictResolvingStorage, BaseStorag
                 "Could not acquire startup DDL advisory lock within timeout — "
                 "will retry on next tpc_begin / poll_invalidations",
             )
+        except psycopg.OperationalError:
+            # PostgreSQL unreachable while taking the lock or re-checking
+            # under it.  The queue was already cleared above, so without
+            # the requeue the DDL would be lost until restart (#144).
+            self._pending_ddl = pending + self._pending_ddl
+            logger.warning(
+                "Could not apply startup DDL — "
+                "will retry on next tpc_begin / poll_invalidations",
+                exc_info=True,
+            )
+        except Exception:
+            self._pending_ddl = pending + self._pending_ddl
+            raise
+        else:
+            if failed:
+                self._pending_ddl = failed + self._pending_ddl
+
+    def _apply_stale_entries(self, stale, lock_conn):
+        """Apply *stale* entries under the startup lock.
+
+        Returns the entries that failed with ``OperationalError``
+        (connection lost, ``lock_timeout``), to be requeued (#144).  Other
+        errors are logged and the entry is dropped until the next startup.
+        """
+        failed = []
+        for entry in stale:
+            action, name, version = entry
+            try:
+                if callable(action):
+                    action(self._ddl_dsn)
+                else:
+                    with psycopg.connect(self._ddl_dsn, autocommit=True) as ddl_conn:
+                        ddl_conn.execute("SET lock_timeout = '30s'")
+                        ddl_conn.execute(action)
+                if version is not None:
+                    self._mark_schema_applied(lock_conn, name, version)
+                logger.info("Applied deferred DDL/action from %s", name)
+            except psycopg.OperationalError:
+                failed.append(entry)
+                logger.warning(
+                    "Failed to apply deferred DDL from %s "
+                    "(will retry on next tpc_begin / poll_invalidations)",
+                    name,
+                    exc_info=True,
+                )
+            except Exception:
+                logger.warning(
+                    "Failed to apply deferred DDL from %s (will retry on next startup)",
+                    name,
+                    exc_info=True,
+                )
+        return failed
 
     def _process_state(self, zoid, class_mod, class_name, state):
         """Run all registered state processors.

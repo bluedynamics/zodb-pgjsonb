@@ -1,5 +1,28 @@
 # Changelog
 
+## 1.19.2 (unreleased)
+
+### Bug fixes
+
+- **Fix: deferred startup DDL is no longer lost when PostgreSQL is
+  unreachable (#144).** `_apply_pending_ddl()` cleared its queue before
+  connecting and put it back only when the startup lock timed out. If the
+  lock connection failed, for example during a failover shortly after a pod
+  start, the DDL was dropped until the next restart, and a column added by a
+  state processor could stay missing (#105). Now any failure while connecting
+  or taking the lock requeues the queue for the next transaction or poll. An
+  entry that fails with `OperationalError` under the lock (lost connection,
+  `lock_timeout`) is requeued on its own; other errors still drop it until
+  the next startup.
+
+- **Fix: the startup DDL path connects with a timeout (#145).** The
+  schema-version probe, the advisory lock session and the DDL statements
+  connect directly, outside the pool, and had no `connect_timeout`. A primary
+  that drops packets blocked the poll applying the DDL for the OS TCP timeout.
+  These connections, and the DSN passed to deferred startup actions, now carry
+  `connect_timeout` set to `pool-timeout` (rounded up, at least 2 seconds),
+  unless the DSN or `PGCONNECT_TIMEOUT` already sets one.
+
 ## 1.19.1
 
 ### Bug fixes

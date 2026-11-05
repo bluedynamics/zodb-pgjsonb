@@ -181,6 +181,16 @@ This trades one property for another.
 The gate *trusts the marker* instead of re-checking the live schema, so if someone manually drops an index, the idempotent DDL that would have recreated it is skipped until the version changes.
 That trade is deliberate — skipping the redundant DDL is the entire point — and `ZODB_PGJSONB_FORCE_DDL=1` is the escape hatch when you need a full re-apply.
 
+The deferred work must also survive a database that is briefly unreachable, for example a failover right after a pod starts.
+`_apply_pending_ddl()` takes the queue before it connects, so a failure while connecting or taking the lock puts the whole queue back, and the next transaction or poll retries it (issue #144).
+Under the lock, an entry that fails with `OperationalError` (lost connection, `lock_timeout` on the `ALTER`) is put back on its own.
+Any other error, such as invalid SQL, drops the entry until the next startup, so broken DDL does not retry on every request.
+
+The probe, the lock session and the DDL statements connect directly, outside the pool, so `pool-timeout` does not bound them.
+They connect with `connect_timeout` set to `pool-timeout` instead, unless the DSN or `PGCONNECT_TIMEOUT` sets one (issue #145).
+Deferred callables receive that DSN too.
+Without it, a primary that drops packets would block the poll applying the DDL for the operating system's TCP timeout, often minutes.
+
 ## Connection pool lifecycle
 
 zodb-pgjsonb uses psycopg3's `ConnectionPool` for all database connections.

@@ -37,7 +37,7 @@ It implements `ZODB.storage`.
 | `cache-local-mb` | integer | -- | no | **Deprecated since 1.12.0.** Alias for `cache-shared-mb` that emits a `DeprecationWarning` when set. Use `cache-shared-mb` instead. |
 | `pool-size` | integer | `1` | no | Minimum number of connections in the instance connection pool. Set to `0` for on-demand creation. |
 | `pool-max-size` | integer | `10` | no | Maximum number of connections in the instance connection pool. |
-| `pool-timeout` | float | `30.0` | no | Connection pool acquisition timeout in seconds. Raises `StorageError` if a connection cannot be acquired within this time. |
+| `pool-timeout` | float | `30.0` | no | Connection pool acquisition timeout in seconds. Raises `StorageError` if a connection cannot be acquired within this time. Also the `connect_timeout` (rounded up, at least 2) of the direct connections that apply startup DDL, unless the DSN or `PGCONNECT_TIMEOUT` sets one. |
 | `cache-warm-pct` | integer | `10` | no | Percentage of `cache-shared-mb` to pre-warm at startup from the most-accessed objects. Set to `0` to disable warming. See {ref}`cache-tiers`. |
 | `cache-warm-decay` | float | `0.8` | no | Per-restart decay factor for historical access scores. `0.8` means scores from 10 restarts ago retain 10% of their weight. |
 | `cache-warm-delay` | integer | `15` | no | Baseline delay in seconds before the warmer starts, keeping it out of the pod's cold-start window. Set to `0` to disable. |
@@ -98,7 +98,7 @@ PGJsonbStorage(
 | `cache_local_mb` | `int` | `16` | Per-instance LRU cache size in megabytes. |
 | `pool_size` | `int` | `1` | Minimum pool connections. |
 | `pool_max_size` | `int` | `10` | Maximum pool connections. |
-| `pool_timeout` | `float` | `30.0` | Pool acquisition timeout in seconds. |
+| `pool_timeout` | `float` | `30.0` | Pool acquisition timeout in seconds. Also the `connect_timeout` of the startup DDL connections (see `pool-timeout`). |
 | `s3_client` | `S3Client \| None` | `None` | S3 client instance from `zodb-s3blobs`. |
 | `blob_cache` | `S3BlobCache \| None` | `None` | Local S3 blob cache instance from `zodb-s3blobs`. |
 | `blob_threshold` | `int` | `102400` | Byte threshold for S3 tiering. |
