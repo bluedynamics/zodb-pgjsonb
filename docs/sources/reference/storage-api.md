@@ -338,7 +338,12 @@ existing data.
   This method queues a callable that will be executed during the first
   `tpc_begin()` call, when the read snapshot has been committed and
   locks are released.  The callable receives the DSN string as its
-  only argument and should open its own autocommit connection.
+  only argument and should open its own autocommit connection.  Since
+  v1.19.2 that DSN carries a `connect_timeout` (`pool_timeout`), unless
+  the configured DSN or `PGCONNECT_TIMEOUT` already sets one.  If the
+  callable raises `psycopg.OperationalError`, it is queued again and
+  retried on the next transaction; any other exception drops it until
+  the next startup.
 
   ```python
   def create_my_index(dsn):
