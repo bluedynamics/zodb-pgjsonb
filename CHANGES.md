@@ -2,6 +2,37 @@
 
 ## 1.19.1 (unreleased)
 
+### Bug fixes
+
+- **Fix: a failover no longer strands ZODB connections with their full cache
+  (#142).** ZODB polls in `Connection.open()` and in every
+  `transaction.abort()`. While PostgreSQL was unreachable,
+  `poll_invalidations()` raised `OperationalError` or `PoolTimeout` there.
+  `DB.open()` then never returned the connection, and Zope's publisher
+  skipped `close()` after the failing `abort()`. A connection that is never
+  closed is never freed, so every request in flight during a failover left
+  its connection and its whole object cache in memory, and the process grew
+  with every failover. Now `poll_invalidations()` returns `None` on any
+  `psycopg.OperationalError`, which tells ZODB to invalidate its whole
+  cache. The next access to the instance's PostgreSQL connection, and every
+  `load()` and `load_multiple()` before it consults the shared cache,
+  repeats the poll first, so reads get a fresh snapshot. Other exceptions
+  still propagate. The traceback is logged once per outage, later failures
+  log one line each.
+
+  `OperationalError` covers more than an unreachable server: it includes
+  `PoolTimeout`, `QueryCanceled` (`statement_timeout`), lock and disk
+  errors. A flushed cache is cheaper than a stranded connection in all of
+  them, but it has costs:
+
+  - After a failover each connection reloads its objects once.
+  - If the pool is exhausted under load while PostgreSQL is healthy, the
+    whole object cache is flushed, and the reloads add load while the pool
+    is saturated.
+  - If the poll query itself keeps failing (for example a persistent
+    `QueryCanceled`), every transaction flushes the cache and every read
+    fails.
+
 ### New features
 
 - Declare and test Python 3.15 support: trove classifier and CI test matrix.

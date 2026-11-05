@@ -121,6 +121,28 @@ The first query anchors the snapshot.
 Starting the snapshot *before* querying for changes ensures that all subsequent `load()` calls see the exact same database state as the invalidation queries.
 If the snapshot started after the query, a concurrent commit could land between the poll and the first load, causing an inconsistent view.
 
+### When PostgreSQL is unreachable
+
+ZODB polls in `Connection.open()` and, through `Connection.afterCompletion()`, in every `transaction.abort()` and `commit()`.
+An exception from either place strands the ZODB Connection.
+`DB.open()` never returns it, and Zope's publisher skips `close()` when `abort()` raises.
+A Connection that is never closed is never freed, so it keeps its whole object cache in memory.
+
+So `poll_invalidations()` does not raise on `psycopg.OperationalError`.
+It returns `None`, which by the IMVCCStorage contract makes ZODB invalidate its whole cache.
+The instance clears its load cache and marks the poll as failed.
+The next access to its PostgreSQL connection repeats the poll, and so do `load()` and `load_multiple()` before they consult the shared cache.
+That repeated poll begins a fresh snapshot and advances the TID that gates the shared cache, so reads stay consistent.
+If the poll fails again, the read raises inside the request that needs the data.
+Other exceptions from `poll_invalidations()` still propagate.
+
+`OperationalError` is wider than "server unreachable".
+It also covers an exhausted pool (`PoolTimeout`), a cancelled statement (`QueryCanceled` from `statement_timeout`), and lock or disk errors.
+Flushing the cache is the better outcome in each of these, because the alternative is a stranded Connection that is never freed.
+It is not free, though.
+If the pool is exhausted under load while PostgreSQL is healthy, every affected Connection flushes its whole cache, and the reloads add load while the pool is saturated.
+If the poll query keeps failing, every transaction flushes the cache and every read fails.
+
 ### TID generation
 
 Transaction IDs must be globally unique and monotonically increasing.

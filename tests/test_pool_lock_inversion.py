@@ -185,8 +185,8 @@ def test_tpc_abort_without_connection_is_quiet(caplog):
 
 
 def test_failed_poll_returns_slot(monkeypatch):
-    """An exception after checkout must not escape Connection.open() with
-    the slot still held; ZODB strands that Connection (#126)."""
+    """A poll that fails after checkout must not keep the slot (#126); it
+    returns None instead of raising, so ZODB keeps the Connection (#142)."""
     import psycopg
     import zodb_pgjsonb.instance as instance_mod
 
@@ -198,8 +198,7 @@ def test_failed_poll_returns_slot(monkeypatch):
             raise psycopg.OperationalError("simulated failure after BEGIN")
 
         monkeypatch.setattr(instance_mod, "_read_max_tid", boom)
-        with pytest.raises(psycopg.OperationalError):
-            inst.poll_invalidations()
+        assert inst.poll_invalidations() is None
         assert inst._conn is None
         # pool_max_size=1: the only slot must be free again
         pool = storage._instance_pool
@@ -224,8 +223,7 @@ def test_instance_recovers_after_failed_poll(monkeypatch):
             raise psycopg.OperationalError("simulated")
 
         monkeypatch.setattr(instance_mod, "_read_max_tid", boom)
-        with pytest.raises(psycopg.OperationalError):
-            inst.poll_invalidations()
+        assert inst.poll_invalidations() is None
         monkeypatch.setattr(instance_mod, "_read_max_tid", real)
         assert inst.poll_invalidations() == []
         assert inst._in_read_txn is True
@@ -304,8 +302,7 @@ def test_failed_pending_ddl_returns_slot(monkeypatch):
             raise psycopg.OperationalError("simulated DDL failure")
 
         monkeypatch.setattr(storage, "_apply_pending_ddl", boom)
-        with pytest.raises(psycopg.OperationalError):
-            inst.poll_invalidations()
+        assert inst.poll_invalidations() is None
         assert inst._conn is None
         pool = storage._instance_pool
         conn = pool.getconn(timeout=0.5)
