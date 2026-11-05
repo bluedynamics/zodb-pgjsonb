@@ -59,7 +59,7 @@ ZODB.DB
 - `PGJsonbStorage.new_instance()` returns a `PGJsonbStorageInstance` per ZODB Connection
 - Each instance uses `REPEATABLE READ` snapshot isolation for consistent reads
 - `poll_invalidations()` starts snapshot FIRST, then queries invalidated OIDs
-- If PostgreSQL is unreachable, `poll_invalidations()` returns `None` (ZODB invalidates its whole cache) instead of raising, and the next read repeats the poll; raising there would strand the ZODB Connection
+- On `psycopg.OperationalError` (unreachable server, `PoolTimeout`, `QueryCanceled`, ...), `poll_invalidations()` returns `None` (ZODB invalidates its whole cache) instead of raising, and the next read repeats the poll; raising there would strand the ZODB Connection
 - TID generation uses PostgreSQL advisory locks for serialization
 - Invalidation via LISTEN/NOTIFY (~1ms latency vs 1-5s polling in RelStorage)
 

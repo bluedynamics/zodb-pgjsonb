@@ -200,3 +200,105 @@ def test_db_open_during_outage_does_not_raise(monkeypatch):
         assert all(c.opened is None for c in db.pool.all)
     finally:
         db.close()
+
+
+@pytest.mark.parametrize(
+    "read",
+    [
+        pytest.param(lambda inst, oid: inst.load(oid), id="load"),
+        pytest.param(
+            lambda inst, oid: inst.load_multiple([oid])[oid], id="load_multiple"
+        ),
+    ],
+)
+def test_read_after_failed_poll_sees_commit_from_outage(monkeypatch, read):
+    """The repeated poll must advance the shared-cache gate.
+
+    Another process commits during the outage, so this process's shared
+    cache still holds the state from before it.  Read with the stale
+    ``_polled_tid``, the shared cache would return that state instead of the
+    one committed meanwhile.
+    """
+    from zodb_pgjsonb.storage import PGJsonbStorage
+
+    storage = _storage()
+    db = ZODB.DB(storage)
+    other_db = None
+    try:
+        oid = _store_object(db)
+        inst = storage.new_instance()
+        inst.poll_invalidations()
+        _, old_tid = inst.load(oid)  # now in the shared cache
+        _unreachable(monkeypatch)
+        assert inst.poll_invalidations() is None
+        _reachable(monkeypatch)
+
+        other_db = ZODB.DB(PGJsonbStorage(DSN, cache_warm_pct=0))
+        tm = transaction.TransactionManager()
+        conn = other_db.open(tm)
+        conn.root()["obj"]["value"] = 2
+        tm.commit()
+        new_tid = conn.root()["obj"]._p_serial
+        conn.close()
+        assert new_tid != old_tid
+
+        _, tid = read(inst, oid)
+        assert tid == new_tid
+        inst.release()
+    finally:
+        if other_db is not None:
+            other_db.close()
+        db.close()
+
+
+def test_undo_after_failed_poll_repeats_poll(monkeypatch):
+    """Readers that go straight to the connection get a snapshot too."""
+    storage = _storage()
+    try:
+        inst = storage.new_instance()
+        _unreachable(monkeypatch)
+        assert inst.poll_invalidations() is None
+        _reachable(monkeypatch)
+        inst._ensure_conn()
+        assert inst._poll_failed is False
+        assert inst._in_read_txn is True
+        inst.release()
+    finally:
+        storage.close()
+
+
+def test_released_instance_does_not_repeat_poll(monkeypatch):
+    """A late read on a released instance must not check out a slot that
+    release() never returns (#126)."""
+    storage = _storage(pool_size=1, pool_max_size=1)
+    try:
+        inst = storage.new_instance()
+        _unreachable(monkeypatch)
+        assert inst.poll_invalidations() is None
+        _reachable(monkeypatch)
+        inst.release()
+        inst._repeat_failed_poll()
+        assert inst._conn is None
+        pool = storage._instance_pool
+        conn = pool.getconn(timeout=0.5)
+        pool.putconn(conn)
+    finally:
+        storage.close()
+
+
+def test_traceback_logged_once_per_outage(monkeypatch, caplog):
+    storage = _storage()
+    try:
+        inst = storage.new_instance()
+        _unreachable(monkeypatch)
+        with caplog.at_level("WARNING", logger="zodb_pgjsonb.instance"):
+            inst.poll_invalidations()
+            inst.poll_invalidations()
+            inst.poll_invalidations()
+        polls = [r for r in caplog.records if "poll_invalidations" in r.getMessage()]
+        assert len(polls) == 3
+        assert [bool(r.exc_info) for r in polls] == [True, False, False]
+        _reachable(monkeypatch)
+        inst.release()
+    finally:
+        storage.close()
