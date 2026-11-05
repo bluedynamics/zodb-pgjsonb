@@ -386,11 +386,15 @@ Inherits from: `ConflictResolvingStorage`.
 : Return the connection to the pool, end any active read transaction,
   and remove the blob temp directory.
 
-`poll_invalidations() -> list[bytes]`
+`poll_invalidations() -> list[bytes] | None`
 : Return OIDs changed since the last poll.
   Ends any previous read snapshot, starts a new `REPEATABLE READ`
   snapshot, queries for changes, and invalidates affected cache entries.
   Returns `[]` if nothing changed.
+  Returns `None` if PostgreSQL is unreachable (`psycopg.OperationalError`
+  or `psycopg_pool.PoolTimeout`): ZODB then invalidates its whole cache,
+  and the next `load()`, `load_multiple()` or `pg_connection` access
+  repeats the poll first.
 
 `sync(force: bool = True) -> None`
 : Sync snapshot.

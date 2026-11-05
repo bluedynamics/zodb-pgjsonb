@@ -121,6 +121,20 @@ The first query anchors the snapshot.
 Starting the snapshot *before* querying for changes ensures that all subsequent `load()` calls see the exact same database state as the invalidation queries.
 If the snapshot started after the query, a concurrent commit could land between the poll and the first load, causing an inconsistent view.
 
+### When PostgreSQL is unreachable
+
+ZODB polls in `Connection.open()` and, through `Connection.afterCompletion()`, in every `transaction.abort()` and `commit()`.
+An exception from either place strands the ZODB Connection.
+`DB.open()` never returns it, and Zope's publisher skips `close()` when `abort()` raises.
+A Connection that is never closed is never freed, so it keeps its whole object cache in memory.
+
+During a failover the server is briefly unreachable, so `poll_invalidations()` does not raise on `psycopg.OperationalError` or `psycopg_pool.PoolTimeout`.
+It returns `None`, which by the IMVCCStorage contract makes ZODB invalidate its whole cache.
+The instance clears its load cache and repeats the poll before the next `load()`, `load_multiple()` or `pg_connection` access.
+That repeated poll begins a fresh snapshot and advances the TID that gates the shared cache, so reads stay consistent.
+If the server is still unreachable then, the read raises inside the request that needs the data.
+Other exceptions from `poll_invalidations()` still propagate.
+
 ### TID generation
 
 Transaction IDs must be globally unique and monotonically increasing.

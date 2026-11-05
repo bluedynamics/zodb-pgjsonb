@@ -2,6 +2,22 @@
 
 ## 1.19.1 (unreleased)
 
+### Bug fixes
+
+- **Fix: a failover no longer strands ZODB connections with their full cache
+  (#142).** ZODB polls in `Connection.open()` and in every
+  `transaction.abort()`. While PostgreSQL was unreachable,
+  `poll_invalidations()` raised `OperationalError` or `PoolTimeout` there.
+  `DB.open()` then never returned the connection, and Zope's publisher
+  skipped `close()` after the failing `abort()`. A connection that is never
+  closed is never freed, so every request in flight during a failover left
+  its connection and its whole object cache in memory, and the process grew
+  with every failover. Now `poll_invalidations()` returns `None` in that
+  case, which tells ZODB to invalidate its whole cache, and the next
+  `load()`, `load_multiple()` or `pg_connection` access repeats the poll
+  before reading. After a failover each connection therefore reloads its
+  objects once. Other exceptions still propagate.
+
 ### New features
 
 - Declare and test Python 3.15 support: trove classifier and CI test matrix.

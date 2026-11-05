@@ -35,6 +35,7 @@ from ZODB.utils import z64
 import logging
 import os
 import psycopg
+import psycopg_pool
 import shutil
 import tempfile
 import zodb_json_codec
@@ -42,6 +43,10 @@ import zope.interface
 
 
 logger = logging.getLogger(__name__)
+
+# Errors that mean PostgreSQL cannot be reached right now, e.g. while a
+# failover switches the primary.
+_UNREACHABLE_ERRORS = (psycopg.OperationalError, psycopg_pool.PoolTimeout)
 
 
 @zope.interface.implementer(IBlobStorage)
@@ -70,6 +75,7 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
         self._released = False
         self._polled_tid = None  # None = never polled, int = last seen TID
         self._in_read_txn = False  # True when inside REPEATABLE READ snapshot
+        self._poll_failed = False  # True until a failed poll is repeated (#142)
         # Plain-int load counters for optional, soft-coupled observability
         # (e.g. plone.observability reads them via getattr).  No dependency:
         # zodb-pgjsonb does not import or require any tracing library.
@@ -120,6 +126,7 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
         """
         if self._released:
             return None
+        self._repeat_failed_poll()
         return self._ensure_conn()
 
     # ── IMVCCStorage ─────────────────────────────────────────────────
@@ -279,16 +286,54 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
         # (e.g. 'meta') would crash with UndefinedColumn (#105).
         try:
             self._main._apply_pending_ddl()
-            return self._poll()
+            invalidated = self._poll()
+        except _UNREACHABLE_ERRORS:
+            # Raising here strands the ZODB Connection: DB.open() never
+            # returns it, and Zope's publisher skips close() when
+            # transaction.abort() raises.  A Connection that is never closed
+            # is never freed, so every failover leaked a full object cache
+            # (#142).  Return None instead, which tells ZODB to invalidate
+            # its whole cache, and repeat the poll before the next read.
+            self._fail_poll()
+            logger.warning(
+                "poll_invalidations: PostgreSQL unreachable; invalidating "
+                "the whole cache and polling again before the next read",
+                exc_info=True,
+            )
+            return None
         except Exception:
-            # Never let an exception escape Connection.open() /
-            # newTransaction() with a slot checked out: ZODB strands that
-            # Connection, and psycopg-pool never reclaims a slot whose
-            # connection is simply dropped, so it would be lost for good
-            # (#126).  The next use checks out a fresh connection via
-            # _ensure_conn().
+            # Never let an exception escape with a slot checked out:
+            # psycopg-pool never reclaims a slot whose connection is simply
+            # dropped (#126).  The next use checks out a fresh connection
+            # via _ensure_conn().
             self._drop_conn()
             raise
+        self._poll_failed = False
+        return invalidated
+
+    def _fail_poll(self):
+        """Forget the snapshot and everything cached since the last poll."""
+        self._drop_conn()
+        self._load_cache.clear()
+        self._poll_failed = True
+
+    def _repeat_failed_poll(self):
+        """Begin the snapshot that a failed poll could not (#142).
+
+        Must run before any read that depends on the snapshot or on
+        ``_polled_tid``, which gates the shared cache.  The invalidations it
+        returns are not needed: ZODB already invalidated its whole cache, and
+        ``_fail_poll`` cleared the load cache.  Raises while PostgreSQL is
+        still unreachable, inside the request that needs the data.
+        """
+        if not self._poll_failed:
+            return
+        try:
+            self._poll()
+        except Exception:
+            self._fail_poll()
+            raise
+        self._poll_failed = False
 
     def _poll(self):
         """Begin the read snapshot and collect invalidations (see above)."""
@@ -338,6 +383,7 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
         wide shared cache (L2, consensus-TID gated) → PostgreSQL.
         """
         zoid = u64(oid)
+        self._repeat_failed_poll()
 
         # L1: instance load cache (fast path, no lock)
         cached = self._load_cache.get(zoid)
@@ -426,6 +472,7 @@ class PGJsonbStorageInstance(ConflictResolvingStorage):
             dict mapping oid_bytes -> (pickle_bytes, tid_bytes).
             Only includes oids that exist; missing oids are silently omitted.
         """
+        self._repeat_failed_poll()
         result = {}
         miss_oids = []  # list of (oid_bytes, zoid_int) for L1+shared misses
         shared = self._main._shared_cache
