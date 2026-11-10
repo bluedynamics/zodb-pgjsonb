@@ -4,7 +4,7 @@
 
 zodb-pgjsonb is a ZODB storage adapter that stores object state as PostgreSQL JSONB instead of opaque pickle bytes.
 It implements the full suite of ZODB storage interfaces: IStorage, IMVCCStorage, IBlobStorage, IStorageUndoable, IStorageIteration, and IStorageRestoreable.
-All stored data stays queryable through standard SQL.
+All stored data is queryable through standard SQL.
 
 This page explains the storage class hierarchy and the write and read data paths.
 It also covers MVCC snapshot isolation, the pack algorithm, blob tiering, and the LISTEN/NOTIFY invalidation mechanism.
@@ -81,7 +81,7 @@ No intermediate Python dicts are created for the store path.
 
 2. **State processors** run after decoding.
 Registered processors (such as plone-pgcatalog's `CatalogStateProcessor`) can inspect the decoded state, pop keys, and return `ExtraColumn` values.
-The same INSERT statement writes these values alongside the object state.
+The INSERT statement that writes the object state also writes these values.
 
 3. **tpc_vote()** acquires a PostgreSQL advisory lock (`pg_advisory_xact_lock(0)`) to serialize all write transactions.
 It then runs a single batch conflict check (`SELECT zoid, tid FROM object_state WHERE zoid = ANY(...)`) instead of per-object queries.
@@ -169,15 +169,15 @@ For most ZODB workloads, write transactions are short and the advisory lock intr
 
 State processors (and plugins like plone-pgcatalog) contribute schema DDL, such as new columns, indexes, and statistics.
 This DDL must exist before the first request.
-This DDL cannot run while a ZODB connection holds an open `REPEATABLE READ` snapshot, because `CREATE INDEX` needs `ACCESS EXCLUSIVE` and would deadlock against the snapshot's `ACCESS SHARE`.
-So the storage defers it.
-`register_state_processor()` and `defer_startup_action()` queue the work.
+It cannot run while a ZODB connection holds an open `REPEATABLE READ` snapshot: `ALTER TABLE ADD COLUMN` needs `ACCESS EXCLUSIVE` and would deadlock against the snapshot's `ACCESS SHARE`.
 State processors register from `IDatabaseOpenedWithRoot` subscribers.
 At that point a ZODB connection still holds the startup `REPEATABLE READ` snapshot.
+So the storage defers the DDL.
+`register_state_processor()` and `defer_startup_action()` queue the work.
 `_apply_pending_ddl()` runs the queue at the next `poll_invalidations()` or `tpc_begin()` after the read snapshot has ended.
 It runs again on later calls while entries remain queued.
 `install_schema()` skips the full core DDL when the core tables already exist.
-The reason is the same: an existing database may have other instances holding `REPEATABLE READ` snapshots, while `CREATE TABLE` and `CREATE INDEX` need `ACCESS EXCLUSIVE`.
+The reason is the same: its DDL would take `ACCESS EXCLUSIVE` locks that block other instances holding `REPEATABLE READ` snapshots.
 
 A single replica applying idempotent DDL is cheap.
 The problem is a rolling deploy of many replicas.
@@ -199,13 +199,15 @@ Two version sources feed the gate.
 The static `get_schema_sql()` block is hashed automatically (`sha256` of the DDL text).
 The block re-applies exactly when the DDL changes and needs no cooperation from the processor.
 Deferred callables pass an explicit `version` to `defer_startup_action()`.
-They need it because their effect depends on runtime state that no hash of static text would capture, such as the live index registry.
+Their effect depends on runtime state, such as the live index registry.
+No hash of static text would capture it.
 Entries with `version=None` are always treated as stale and run under the lock on every startup.
 This preserves the original behavior for callers that have not opted in.
 
 This trades one property for another.
 The gate *trusts the marker* instead of re-checking the live schema.
-If someone manually drops an index, the gate skips the idempotent DDL that would have recreated it until the version changes.
+If someone manually drops an index, nothing recreates it.
+Until the version changes, the gate skips the idempotent DDL that would have recreated it.
 That trade is deliberate, because skipping the redundant DDL is the entire point.
 `ZODB_PGJSONB_FORCE_DDL=1` is the escape hatch when you need a full re-apply.
 
