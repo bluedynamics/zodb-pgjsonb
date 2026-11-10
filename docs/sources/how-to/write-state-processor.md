@@ -52,6 +52,8 @@ CREATE INDEX IF NOT EXISTS idx_title_tsvector ON object_state USING gin (title_t
     def process(self, zoid, class_mod, class_name, state):
         if isinstance(state, str):
             state = json.loads(state)
+        if not isinstance(state, dict):
+            return None
         portal_type = state.get("portal_type")
         title = state.get("title", "")
         if portal_type is None:
@@ -88,7 +90,8 @@ The `process` method receives four arguments:
 - **zoid**: integer object ID.
 - **class_mod**: Python module of the object class (for example, `plone.app.contenttypes.content`).
 - **class_name**: Python class name (for example, `Document`).
-- **state**: the object state, a JSON string on store, restore and conflict resolution, and an already-decoded dict when undo re-runs the processor.
+- **state**: the object state, a JSON string on store, restore and conflict resolution.
+  When undo re-runs the processor, it is an already-decoded dict.
   Parse a string with `json.loads`, as the example above does.
 
 Return `None` when you have nothing to say about this object: your columns keep their stored values.

@@ -43,7 +43,7 @@ ZODB.DB
 1. ZODB calls `store(oid, serial, pickle_bytes, version, transaction)`
 2. `zodb_json_codec.decode_zodb_record_for_pg_json()` transcodes pickle to JSON string (entirely in Rust, GIL released)
 3. Class module/name extracted from `@cls` marker, state from `@s`, refs from `@ref` markers
-4. State processors (plugins) run: pop keys from state, return extra column data
+4. State processors (plugins) run: inspect the decoded state and return extra column data
 5. `tpc_vote()` batch-writes all objects via `executemany()` (pipelined, single round-trip)
 6. `tpc_finish()` commits PG transaction, triggers NOTIFY for invalidation
 

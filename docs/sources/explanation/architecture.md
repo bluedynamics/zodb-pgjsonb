@@ -68,6 +68,7 @@ sequenceDiagram
     ZODB->>Inst: tpc_vote(transaction)
     Inst->>PG: Batch conflict check (SELECT WHERE zoid = ANY(zoids))
     Inst->>PG: executemany INSERT ON CONFLICT (pipelined)
+    ZODB->>Inst: tpc_finish(transaction)
     Inst->>PG: COMMIT
     Inst-->>ZODB: tid_bytes
 ```
@@ -84,14 +85,16 @@ The entire pipeline runs in Rust with the GIL released.
 No intermediate Python dicts are created for the store path.
 
 3. **State processors** run after decoding.
-Registered processors (such as plone-pgcatalog's `CatalogStateProcessor`) can inspect the decoded state, pop keys, and return `ExtraColumn` values.
+Registered processors (such as plone-pgcatalog's `CatalogStateProcessor`) can inspect the decoded state and return `ExtraColumn` values.
 The INSERT statement that writes the object state also writes these values.
 
 4. **tpc_vote()** runs a single batch conflict check (`SELECT zoid, tid FROM object_state WHERE zoid = ANY(...)`) instead of per-object queries.
+It then inserts a row into `transaction_log`.
 Finally, it calls `_batch_write_objects()`, which uses psycopg3's `executemany()` in pipeline mode.
 All INSERT statements go in a single network round-trip.
 
-5. **tpc_finish()** commits the PostgreSQL transaction and inserts a row into `transaction_log`, which fires the NOTIFY trigger.
+5. **tpc_finish()** commits the PostgreSQL transaction.
+The `transaction_log` row inserted in `tpc_vote()` fires the NOTIFY trigger, which is delivered at the commit.
 The commit releases the advisory lock.
 Then `tpc_finish()` returns the TID bytes to ZODB.
 
@@ -161,7 +164,7 @@ If the poll query keeps failing, every transaction flushes the cache and every r
 ### TID generation
 
 Transaction IDs must be globally unique and monotonically increasing.
-zodb-pgjsonb uses a PostgreSQL advisory lock (`pg_advisory_xact_lock(0)`) acquired in `tpc_begin()` and held until `tpc_finish()` commits to serialize all write transactions.
+zodb-pgjsonb uses a PostgreSQL advisory lock (`pg_advisory_xact_lock(0)`) acquired in `tpc_begin()` to serialize all write transactions and held until `tpc_finish()` commits.
 Within the lock, `_new_tid()` generates a timestamp-based TID that is guaranteed to be later than the previous one via `TimeStamp.laterThan()`.
 
 This is a simplicity trade-off: it limits write throughput to one transaction at a time, but guarantees correct TID ordering without complex distributed coordination.
@@ -405,7 +408,8 @@ Batch writes are up to 33% faster and storage overhead is roughly 50% lower.
 
 ### Switching between modes
 
-Switching to history-preserving happens at startup, and switching to history-free needs all application instances stopped.
+Switching to history-preserving happens at startup.
+Switching to history-free needs all application instances stopped.
 Switching from history-free to history-preserving creates the `object_history` table and begins tracking changes on the next modification.
 Switching from history-preserving to history-free uses `convert_to_history_free()` to drop history tables, clean old blob versions, and remove orphaned transaction log entries.
 See {doc}`/how-to/switch-history-modes` for details.

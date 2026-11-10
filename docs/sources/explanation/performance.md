@@ -2,8 +2,8 @@
 
 # Performance characteristics
 
-zodb-pgjsonb's performance profile reflects a fundamental trade-off.
-It pays a transcode cost on every uncached read.
+The performance profile of zodb-pgjsonb reflects a fundamental trade-off.
+The storage pays a transcode cost on every uncached read.
 In exchange it offers SQL queryability, faster writes, dramatically faster garbage collection, and a richer ecosystem of integrations.
 
 This page presents benchmark data, explains where time is spent on each operation, and traces the optimization history that shaped the current implementation.
