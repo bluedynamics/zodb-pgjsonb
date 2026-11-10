@@ -21,10 +21,10 @@ Activate the virtual environment that our Plone site uses and install zodb-pgjso
 
 ```bash
 source .venv/bin/activate
-uv pip install zodb-pgjsonb
+uv pip install zodb-pgjsonb zodb-convert
 ```
 
-This also installs `zodbconvert`, which is part of the ZODB package.
+This also installs the `zodb-convert` command.
 
 ## Step 2: prepare the PostgreSQL database
 
@@ -55,7 +55,7 @@ zodb-pgjsonb creates all required tables (`object_state`, `transaction_log`, `bl
 We must stop Plone before migrating to avoid writes to the source FileStorage during the copy.
 Use `Ctrl+C` in the terminal where Zope is running, or stop the process through your process manager (supervisord, systemd, etc.).
 
-## Step 4: write the zodbconvert configuration
+## Step 4: write the zodb-convert configuration
 
 Create a file called `migrate.cfg` in the project directory:
 
@@ -84,22 +84,13 @@ A typical Plone installation uses `instance/var/filestorage/Data.fs` and `instan
 
 ## Step 5: run the migration
 
-Run `zodbconvert` to copy all transactions from FileStorage to PostgreSQL:
+Run `zodb-convert` to copy all transactions from FileStorage to PostgreSQL:
 
 ```bash
-.venv/bin/zodbconvert --clear migrate.cfg
+.venv/bin/zodb-convert migrate.cfg
 ```
 
-The `--clear` flag ensures the destination database starts empty.
-
-We should see progress output as transactions are copied:
-
-```text
-Copying transactions from FileStorage to PGJsonbStorage
-[00:15] 8,200 / 28,394 records (28.9%) | 547 rec/s | 12.3 MB/s
-[00:30] 17,500 / 28,394 records (61.6%) | 620 rec/s | 11.8 MB/s
-Copied 1,542 transactions with 28,394 records in 45.2s (628 rec/s, 12.3 MB/s)
-```
+zodb-convert logs progress while it copies and prints a summary when it finishes.
 
 :::{note}
 The migration speed depends on database size, network latency, and disk I/O.
@@ -109,7 +100,7 @@ A typical Plone site with 50,000 objects migrates in under 5 minutes.
 ### Parallel migration for large databases
 
 For large databases, zodb-pgjsonb supports parallel migration using multiple PostgreSQL connections.
-The `zodbconvert` CLI does not expose a `--workers` flag, so we use a short Python script instead:
+The `zodb-convert` CLI does not expose a `--workers` flag, so we use a short Python script instead:
 
 Create a file called `migrate_parallel.py`:
 
@@ -237,8 +228,8 @@ We should see the same objects that existed in the original FileStorage.
 
 ## What we learned
 
-- zodb-pgjsonb implements `IStorageRestoreable`, making it compatible with `zodbconvert`
-- The standard `zodbconvert` tool copies all transactions, including blobs
+- zodb-pgjsonb implements `IStorageRestoreable`, making it compatible with `zodb-convert`
+- The standard `zodb-convert` tool copies all transactions, including blobs
 - For large databases, the Python API `copyTransactionsFrom(source, workers=N)` uses parallel PostgreSQL connections for higher throughput
 - After migration, we swap the `<filestorage>` section for `<pgjsonb>` in `zope.conf`
 - All ZODB data is now queryable JSON in PostgreSQL

@@ -119,7 +119,7 @@ In practice, null bytes in ZODB object state are rare.
 
 **Choose zodb-pgjsonb when:**
 - You want to query ZODB data with SQL (reporting, analytics, debugging).
-- You are building on the z3blobs ecosystem (plone-pgcatalog, plone-pgthumbor).
+- You are building on the PostgreSQL-native ecosystem around zodb-pgjsonb (plone-pgcatalog, plone-pgthumbor).
 - You want faster pack/GC on large databases.
 - You want the security benefit of eliminating pickle deserialization at the storage level.
 - You need tiered blob storage (PG bytea + S3).

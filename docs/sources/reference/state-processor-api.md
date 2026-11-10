@@ -39,9 +39,10 @@ A processor must implement the following methods:
 : Return DDL statements to apply (for example, `ALTER TABLE ... ADD COLUMN`,
   `CREATE INDEX`).
   Called once during `register_state_processor()`.
-  The DDL is executed via a separate autocommit connection.
-  If blocked by startup read transactions (lock conflict), the DDL
-  is deferred to the first `tpc_begin()`.
+  The DDL is always deferred: registration only queues it.
+  It is executed from the first `tpc_begin()` and from
+  `poll_invalidations()` retries, each statement on its own direct
+  autocommit connection.
   Returns `None` if no DDL is needed.
 
 `finalize(cursor) -> None`
@@ -164,18 +165,20 @@ a ZODB write transaction (the undo step only applies to undo transactions):
 
 ## DDL application
 
-DDL from `get_schema_sql()` is applied using a dedicated autocommit
-connection (not the pool connection).
-This avoids conflicts with `REPEATABLE READ` snapshots held by pool
-connections.
+`register_state_processor()` does not execute DDL from `get_schema_sql()`.
+It queues the DDL, tagged with a version of `sha256` of its text.
 
 At Zope startup, IDatabaseOpenedWithRoot subscribers fire while a
 ZODB Connection still holds an `ACCESS SHARE` lock via its
 `REPEATABLE READ` snapshot.
 `ALTER TABLE` requires `ACCESS EXCLUSIVE`, which would deadlock.
 
-The storage handles this by setting `lock_timeout = '2s'` on the DDL
-connection.
-If the lock cannot be acquired, the DDL is stored in a pending queue
-and applied at the next `tpc_begin()` (after the read transaction
-has been committed and the `ACCESS SHARE` lock released).
+`_apply_pending_ddl()` runs the queue from the first `tpc_begin()` and
+from `poll_invalidations()` retries, after the read snapshot has ended:
+
+- It takes a session-level advisory lock.
+  Acquiring it waits at most `lock_timeout` = `ZODB_PGJSONB_DDL_LOCK_TIMEOUT` (default `15min`).
+- The schema-version gate skips entries whose version marker is current.
+- Each DDL statement runs on its own direct autocommit connection (not the pool connection) with `lock_timeout = '30s'`.
+- An entry that fails with `psycopg.OperationalError` is requeued.
+  Any other error drops the entry until the next startup.

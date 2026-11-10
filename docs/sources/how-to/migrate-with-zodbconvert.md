@@ -1,10 +1,10 @@
 <!-- diataxis: how-to -->
 
-# How to migrate with zodbconvert
+# How to migrate with zodb-convert
 
 This guide shows you how to migrate an existing ZODB database (FileStorage or RelStorage) to zodb-pgjsonb using [zodb-convert](https://github.com/bluedynamics/zodb-convert) or the Python API.
 
-## Write a zodbconvert configuration file
+## Write a zodb-convert configuration file
 
 Create a file named `migrate.cfg`:
 
@@ -125,7 +125,7 @@ source.close()
 
 ## Migrate blobs
 
-Blobs are migrated automatically by both `zodbconvert` and `copyTransactionsFrom`.
+Blobs are migrated automatically by both `zodb-convert` and `copyTransactionsFrom`.
 The destination storage applies its blob tiering rules (PG bytea vs S3) based on the configured `blob-threshold`.
 
 If you have S3 tiering configured on the destination, large blobs are uploaded to S3 during the migration.

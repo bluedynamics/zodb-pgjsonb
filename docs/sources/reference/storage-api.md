@@ -33,13 +33,24 @@ PGJsonbStorage(
     name: str = "pgjsonb",
     history_preserving: bool = False,
     blob_temp_dir: str | None = None,
-    cache_local_mb: int = 16,
+    cache_local_mb: int | None = None,
+    cache_shared_mb: int = 256,
+    cache_per_connection_mb: int = 16,
     pool_size: int = 1,
     pool_max_size: int = 10,
     pool_timeout: float = 30.0,
     s3_client: S3Client | None = None,
     blob_cache: S3BlobCache | None = None,
+    blob_cache_size: int = 1024 * 1024 * 1024,
     blob_threshold: int = 102_400,
+    cache_warm_pct: int = 10,
+    cache_warm_decay: float = 0.8,
+    cache_warm_delay: int = 15,
+    cache_warm_jitter: int = 30,
+    cache_warm_concurrency: int = 2,
+    cache_warm_wait_max: int = 300,
+    cache_warm_batch_size: int = 500,
+    cache_warm_batch_pause: float = 0.5,
 )
 ```
 
@@ -177,7 +188,7 @@ existing data.
 
 `restore(oid: bytes, serial: bytes, data: bytes, version: str, prev_txn, transaction) -> None`
 : Write pre-committed data without conflict checking.
-  Used by `copyTransactionsFrom()` and `zodbconvert`.
+  Used by `copyTransactionsFrom()` and `zodb-convert`.
 
 `restoreBlob(oid: bytes, serial: bytes, data: bytes, blobfilename: str, prev_txn, transaction) -> None`
 : Restore object data and a blob file without conflict checking.
@@ -336,8 +347,8 @@ existing data.
   deadlock against that snapshot.
 
   This method queues a callable that will be executed during the first
-  `tpc_begin()` call, when the read snapshot has been committed and
-  locks are released.  The callable receives the DSN string as its
+  `tpc_begin()` call and on `poll_invalidations()` retries, after the
+  read snapshot has ended.  The callable receives the DSN string as its
   only argument and should open its own autocommit connection.  Since
   v1.19.2 that DSN carries a `connect_timeout` (`pool_timeout`), unless
   the configured DSN or `PGCONNECT_TIMEOUT` already sets one.  If the

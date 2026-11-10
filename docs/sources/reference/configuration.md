@@ -79,13 +79,24 @@ PGJsonbStorage(
     name: str = "pgjsonb",
     history_preserving: bool = False,
     blob_temp_dir: str | None = None,
-    cache_local_mb: int = 16,
+    cache_local_mb: int | None = None,
+    cache_shared_mb: int = 256,
+    cache_per_connection_mb: int = 16,
     pool_size: int = 1,
     pool_max_size: int = 10,
     pool_timeout: float = 30.0,
     s3_client: S3Client | None = None,
     blob_cache: S3BlobCache | None = None,
+    blob_cache_size: int = 1024 * 1024 * 1024,
     blob_threshold: int = 102_400,
+    cache_warm_pct: int = 10,
+    cache_warm_decay: float = 0.8,
+    cache_warm_delay: int = 15,
+    cache_warm_jitter: int = 30,
+    cache_warm_concurrency: int = 2,
+    cache_warm_wait_max: int = 300,
+    cache_warm_batch_size: int = 500,
+    cache_warm_batch_pause: float = 0.5,
 )
 ```
 
@@ -95,13 +106,24 @@ PGJsonbStorage(
 | `name` | `str` | `"pgjsonb"` | Storage name. |
 | `history_preserving` | `bool` | `False` | Enable history-preserving mode. |
 | `blob_temp_dir` | `str \| None` | `None` | Blob temp directory. A temporary directory is auto-created when `None`. |
-| `cache_local_mb` | `int` | `16` | Per-instance LRU cache size in megabytes. |
+| `cache_local_mb` | `int \| None` | `None` | **Deprecated since 1.12.0.** Alias for `cache_shared_mb` that emits a `DeprecationWarning` when set. |
+| `cache_shared_mb` | `int` | `256` | Size of the process-wide shared load cache (L2) in megabytes, shared across all connections in the process. Caches `load()` results (pickle bytes) to avoid repeated PostgreSQL round-trips and JSONB transcoding. Set to `0` to disable. See {ref}`cache-tiers`. |
+| `cache_per_connection_mb` | `int` | `16` | Size of the per-connection L1 load cache in megabytes, a lock-free hot cache ahead of `cache_shared_mb`. Set to `0` to rely entirely on the shared cache. |
 | `pool_size` | `int` | `1` | Minimum pool connections. |
 | `pool_max_size` | `int` | `10` | Maximum pool connections. |
 | `pool_timeout` | `float` | `30.0` | Pool acquisition timeout in seconds. Also the `connect_timeout` of the startup DDL connections (see `pool-timeout`). |
 | `s3_client` | `S3Client \| None` | `None` | S3 client instance from `zodb-s3blobs`. |
 | `blob_cache` | `S3BlobCache \| None` | `None` | Local S3 blob cache instance from `zodb-s3blobs`. |
+| `blob_cache_size` | `int` | `1073741824` | Maximum size of the local blob cache in bytes. |
 | `blob_threshold` | `int` | `102400` | Byte threshold for S3 tiering. |
+| `cache_warm_pct` | `int` | `10` | Percentage of `cache_shared_mb` to pre-warm at startup from the most-accessed objects. Set to `0` to disable warming. See {ref}`cache-tiers`. |
+| `cache_warm_decay` | `float` | `0.8` | Per-restart decay factor for historical access scores. `0.8` means scores from 10 restarts ago retain 10% of their weight. |
+| `cache_warm_delay` | `int` | `15` | Baseline delay in seconds before the warmer starts, keeping it out of the pod's cold-start window. Set to `0` to disable. |
+| `cache_warm_jitter` | `int` | `30` | Additional uniform-random delay (0 to `jitter` seconds) on top of `cache_warm_delay`, spreading warmer start across replicas. Set to `0` to disable. |
+| `cache_warm_concurrency` | `int` | `2` | Maximum number of pods warming concurrently cluster-wide, enforced by a PostgreSQL advisory-lock semaphore. Set to a very large value to effectively disable the cap. |
+| `cache_warm_wait_max` | `int` | `300` | Maximum seconds a pod waits for a warming slot before skipping warmup (logs a `WARNING`). |
+| `cache_warm_batch_size` | `int` | `500` | Number of object ids fetched per warmer `SELECT` batch. |
+| `cache_warm_batch_pause` | `float` | `0.5` | Seconds to pause between warmer batches, lowering per-pod peak query rate. Set to `0` to disable. |
 
 The ZConfig factory (`PGJsonbStorageFactory`) constructs `S3Client` and
 `S3BlobCache` from the ZConfig keys before passing them to the constructor.

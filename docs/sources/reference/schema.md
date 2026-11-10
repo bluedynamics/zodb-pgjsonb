@@ -147,8 +147,6 @@ The installation sequence:
 4. If `history_preserving=True` and `object_history` does not exist, execute the history-preserving additions.
 5. Commit.
 
-State processor DDL (from `get_schema_sql()`) is applied separately via
-`register_state_processor()`, using a dedicated autocommit connection
-with a 2-second `lock_timeout`.
-If the lock cannot be acquired at startup,
-the DDL is deferred to the first `tpc_begin()`.
+State processor DDL (from `get_schema_sql()`) is applied separately.
+`register_state_processor()` only queues it, tagged with a version of `sha256` of its text.
+The queue runs from the first `tpc_begin()` and from `poll_invalidations()` retries, each DDL statement on its own direct autocommit connection.

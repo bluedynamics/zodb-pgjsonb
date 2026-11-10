@@ -48,18 +48,20 @@ Prefer more processes with fewer threads each over fewer processes with many thr
 
 ## Tune the object cache
 
-Set `cache-local-mb` to control the per-instance LRU cache for `load()` results:
+Set `cache-shared-mb` to size the process-wide load cache (L2) and `cache-per-connection-mb` to size the per-connection cache (L1):
 
 ```xml
 <pgjsonb>
     dsn dbname=zodb user=zodb host=localhost
-    cache-local-mb 64
+    cache-shared-mb 512
+    cache-per-connection-mb 32
 </pgjsonb>
 ```
 
-The cache stores pickle bytes keyed by object ID, avoiding repeated PostgreSQL round-trips and JSONB transcoding.
-The default is 16 MB.
-Set to 0 to disable caching entirely.
+The caches store pickle bytes keyed by object ID, avoiding repeated PostgreSQL round-trips and JSONB transcoding.
+The default is 256 MB for `cache-shared-mb` and 16 MB for `cache-per-connection-mb`.
+Set either to 0 to disable that tier.
+See {ref}`cache-tiers` for the model.
 
 ## Roll out without a DDL stampede
 

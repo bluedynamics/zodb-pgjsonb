@@ -23,7 +23,7 @@ queryable JSON internally.
 - IBlobStorage — tiered blobs (PG bytea + optional S3)
 - IStorageUndoable — undo support in history-preserving mode
 - IStorageIteration — transaction/record iteration
-- IStorageRestoreable — zodbconvert migration support
+- IStorageRestoreable — zodb-convert migration support
 
 ## Architecture
 
@@ -282,7 +282,7 @@ FROM object_state
 WHERE state @> '{"portal_type": "Document"}';
 ```
 
-### Migration (zodbconvert)
+### Migration (zodb-convert)
 
 ```python
 storage = PGJsonbStorage(dsn="...")
