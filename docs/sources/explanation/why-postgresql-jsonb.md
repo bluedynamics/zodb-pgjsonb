@@ -12,7 +12,8 @@ This page explains the problem with opaque storage, how JSONB solves it, what tr
 
 ## The problem: opaque pickle storage
 
-ZODB's traditional storage backends -- FileStorage, RelStorage, and ZEO -- all store object state as pickle bytes.
+ZODB's traditional storage backends are FileStorage, RelStorage, and ZEO.
+All of them store object state as pickle bytes.
 From the database's perspective, each object is an opaque blob of binary data.
 You cannot query it, index it, or inspect it without loading it into a Python process and unpickling it.
 
@@ -20,7 +21,7 @@ This has several consequences:
 
 - **No SQL queryability.** You cannot run `SELECT` queries against ZODB data.
 Reporting, analytics, and debugging require loading objects through the full ZODB/Zope stack.
-- **No cross-tool access.** Standard database tools -- pgAdmin, Grafana, Metabase, custom scripts -- cannot read the data directly.
+- **No cross-tool access.** Standard database tools such as pgAdmin, Grafana, Metabase, and custom scripts cannot read the data directly.
 Every integration must go through Python.
 - **Pack requires object loading.** Garbage collection must load and unpickle every object in the database to discover references via `referencesf()`.
 On large databases, this is extremely slow.
@@ -31,7 +32,8 @@ A crafted pickle payload stored in the database could compromise any process tha
 
 ## The RelStorage approach
 
-RelStorage stores ZODB data in a relational database (PostgreSQL, MySQL, or Oracle), but it stores object state as bytea -- raw pickle bytes in a binary column.
+RelStorage stores ZODB data in a relational database (PostgreSQL, MySQL, or Oracle).
+It stores object state as bytea: raw pickle bytes in a binary column.
 The data is still opaque.
 You get the operational benefits of PostgreSQL (backup, replication, monitoring) but none of the queryability.
 
@@ -49,7 +51,8 @@ But if you want to query your data with SQL, RelStorage cannot help.
 ## The JSONB approach
 
 zodb-pgjsonb transcodes pickle bytes to JSONB before writing to PostgreSQL and transcodes back to pickle bytes on read.
-ZODB sees pickle at its boundaries; PostgreSQL sees queryable JSON.
+ZODB sees pickle at its boundaries.
+PostgreSQL sees queryable JSON.
 
 ```sql
 -- zodb-pgjsonb: data is queryable JSONB
@@ -66,10 +69,13 @@ The entire encode/decode pipeline runs in Rust with the GIL released, processing
 **Direct SQL queries.** You can query any ZODB object's state using PostgreSQL's JSONB operators (`->`, `->>`, `@>`, `?`, `?|`).
 Class information is extracted into dedicated columns (`class_mod`, `class_name`) and indexed for fast type-based queries.
 
-**GIN and expression indexes.** PostgreSQL can create GIN indexes on JSONB paths for fast containment queries, and expression indexes (such as `idx->>'portal_type'`) for fast equality lookups.
-This is what makes plone-pgcatalog possible -- catalog data is stored as additional JSONB columns on the same `object_state` row and queried with standard SQL.
+**GIN and expression indexes.** PostgreSQL can create GIN indexes on JSONB paths for fast containment queries.
+It can also create expression indexes (such as `idx->>'portal_type'`) for fast equality lookups.
+JSONB indexing is what makes plone-pgcatalog possible.
+Catalog data is stored as additional JSONB columns on the same `object_state` row and queried with standard SQL.
 
-**Standard tooling.** Any tool that speaks SQL can access ZODB data directly: Grafana dashboards, Metabase analytics, custom reporting scripts, database migration tools, or a simple `psql` session.
+**Standard tooling.** Any tool that speaks SQL can access ZODB data directly.
+Examples are Grafana dashboards, Metabase analytics, custom reporting scripts, database migration tools, and a simple `psql` session.
 You do not need a running Zope instance.
 
 **Pure SQL garbage collection.** Object references are extracted at write time into a `refs` BIGINT[] column.
@@ -87,7 +93,8 @@ A crafted pickle stored in the database can execute arbitrary code when any ZODB
 Defenses exist (restricted unpicklers, class whitelists), but they add complexity and are difficult to get right.
 
 JSON has no code execution capability.
-A JSONB column in PostgreSQL can contain strings, numbers, booleans, arrays, and objects -- nothing else.
+A JSONB column in PostgreSQL can contain strings, numbers, booleans, arrays, and objects.
+It can contain nothing else.
 There is no mechanism to embed executable code in JSON.
 By storing state as JSONB, zodb-pgjsonb eliminates the entire class of pickle deserialization attacks at the storage level.
 See {doc}`security` for the full security analysis.
@@ -103,8 +110,9 @@ This adds roughly 50-60 microseconds per object compared to RelStorage, which re
 In benchmarks, uncached loads are 1.1-1.6x slower than RelStorage.
 
 In practice, this matters less than it appears.
-The ZODB object cache handles the vast majority of reads in production -- typically >95%.
-Objects evicted from the ZODB object cache are often still in the storage LRU cache, which serves cached pickle bytes without any database round-trip or transcoding.
+The ZODB object cache handles the vast majority of reads in production, typically >95%.
+Objects evicted from the ZODB object cache are often still in the storage's L1 or L2 cache (see {ref}`cache-tiers`).
+These caches serve cached pickle bytes without any database round-trip or transcoding.
 The uncached load path is exercised primarily during cold starts and cache misses after large invalidations.
 
 ### JSONB storage and indexing overhead on writes
@@ -112,7 +120,8 @@ The uncached load path is exercised primarily during cold starts and cache misse
 JSONB is larger than pickle bytea for the same data (JSON keys are repeated per-object, types are less compact).
 PostgreSQL must also maintain JSONB-aware indexes on write, which adds overhead compared to inserting raw bytes.
 
-In practice, single-object writes are actually 1.3-1.6x *faster* than RelStorage because zodb-pgjsonb's simpler 2PC path (direct SQL, no OID/TID tracking tables) more than compensates for the indexing overhead.
+In practice, single-object writes are actually 1.3-1.6x *faster* than RelStorage.
+The reason is zodb-pgjsonb's simpler 2PC path (direct SQL, no OID/TID tracking tables), which more than compensates for the indexing overhead.
 Batch writes of 100 objects are roughly on par.
 
 ### PostgreSQL JSONB null-byte limitation
@@ -120,7 +129,8 @@ Batch writes of 100 objects are roughly on par.
 PostgreSQL JSONB cannot store the null byte (`\u0000`) in strings.
 zodb-pgjsonb handles this with automatic sanitization: strings containing null bytes are replaced with an `@ns` marker containing the base64-encoded original.
 The reverse transformation runs on read.
-This is transparent to application code but means that raw SQL queries against strings with embedded null bytes must account for the marker format.
+This is transparent to application code.
+Raw SQL queries against strings with embedded null bytes must account for the marker format.
 In practice, null bytes in ZODB object state are rare.
 
 (why-postgresql-jsonb-when-to-choose-zodb-pgjsonb)=
@@ -148,7 +158,8 @@ In practice, null bytes in ZODB object state are rare.
 
 ## The ecosystem advantage
 
-zodb-pgjsonb is not just a storage backend -- it is the foundation for an ecosystem of PostgreSQL-native ZODB tools:
+zodb-pgjsonb is more than a storage backend.
+It is the foundation for an ecosystem of PostgreSQL-native ZODB tools:
 
 - **plone-pgcatalog** replaces ZCatalog's BTree indexes with SQL queries against extra columns on `object_state`, written atomically via the state processor plugin system.
 See {doc}`architecture` for how state processors work.
