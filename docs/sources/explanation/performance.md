@@ -6,6 +6,8 @@ zodb-pgjsonb's performance profile reflects a fundamental trade-off: it pays a t
 
 This page presents benchmark data, explains where time is spent on each operation, and traces the optimization history that shaped the current implementation.
 
+(performance-benchmark-environment)=
+
 ## Benchmark environment
 
 The numbers below were refreshed in 2026-07 on a developer workstation:
@@ -22,6 +24,8 @@ Reproduce or refresh these numbers on your own hardware with the suite in [`benc
 ```
 
 The benchmark suite covers raw storage API operations (bypassing ZODB's object cache), ZODB.DB-level operations (through the object cache), pack/GC, history-preserving mode, and real Plone workloads.
+
+(performance-write-performance)=
 
 ## Write performance
 
@@ -45,6 +49,8 @@ The dominant costs on the write path are:
 4. **COMMIT** -- PostgreSQL WAL fsync.
 
 The codec transcode and state processor execution together account for less than 5% of write time.
+
+(performance-read-performance)=
 
 ## Read performance
 
@@ -86,6 +92,8 @@ The uncached path fires primarily during cold starts and after large invalidatio
 Through ZODB.DB the object cache dominates cached reads, so both storages land within microseconds of each other.
 The connection cycle (open a `ZODB.Connection`, poll, close) is slower because each cycle acquires a pooled connection -- validated with a liveness check on checkout since 1.14.2 -- and opens a fresh REPEATABLE READ snapshot.
 
+(performance-pack-and-garbage-collection)=
+
 ## Pack and garbage collection
 
 | Objects | PGJsonb | RelStorage | Comparison |
@@ -101,9 +109,11 @@ RelStorage must load and unpickle every object to discover references via `refer
 The performance gap widens with database size because RelStorage's cost scales linearly with the number of objects (each must be loaded and unpickled), while zodb-pgjsonb's recursive CTE operates on integer arrays and benefits from PostgreSQL's index-driven join strategies.
 zodb-pgjsonb's own pack time grows only slowly with object count -- a fixed temp-table and index-build overhead dominates at small sizes, so 100 and 1,000 objects pack in a similar time.
 
+(performance-history-preserving-mode)=
+
 ## History-preserving mode
 
-### HP writes
+### History-preserving writes
 
 | Operation | PGJsonb | RelStorage | Comparison |
 |---|---|---|---|
@@ -114,7 +124,7 @@ zodb-pgjsonb's own pack time grows only slowly with object count -- a fixed temp
 History-preserving writes use the copy-before-overwrite model: existing rows are copied to `object_history` before `object_state` is upserted.
 This is more efficient than RelStorage's full dual-write path.
 
-### HP reads
+### History-preserving reads
 
 | Operation | PGJsonb | RelStorage | Comparison |
 |---|---|---|---|
@@ -124,7 +134,7 @@ This is more efficient than RelStorage's full dual-write path.
 `loadBefore` carries the same transcode overhead as regular uncached loads and is now roughly on par with RelStorage.
 `history()` is faster because zodb-pgjsonb uses a UNION query across `object_state` and `object_history` with a direct JOIN on `transaction_log`, while RelStorage requires separate table scans.
 
-### HP undo and pack
+### History-preserving undo and pack
 
 | Operation | PGJsonb | RelStorage | Comparison |
 |---|---|---|---|
@@ -135,7 +145,7 @@ This is more efficient than RelStorage's full dual-write path.
 Undo is 1.7x faster thanks to zodb-pgjsonb's simpler state swap path (direct SQL).
 HP pack retains the same massive advantage as HF pack -- pure SQL graph traversal versus object loading.
 
-### HP optimization impact
+### History-preserving optimization impact
 
 The history-preserving optimization (v1.3.0) changed `object_history` from a full duplicate of every write to a copy-before-overwrite model.
 The before/after comparison shows the impact:
@@ -149,6 +159,8 @@ The before/after comparison shows the impact:
 
 The biggest win is batch writes (-33%), where the old dual-write approach wrote the same JSONB data twice.
 Storage overhead dropped by roughly 50% because `object_history` now contains only previous versions, not a copy of every current version.
+
+(performance-plone-application-workloads)=
 
 ## Plone application workloads
 
@@ -166,6 +178,8 @@ At the application level, ZODB's object cache handles the hot path, and per-obje
 
 This is the expected result: zodb-pgjsonb's performance differences are visible at the storage API level, but Plone's application overhead dominates at the user-facing level.
 The value proposition of zodb-pgjsonb is not raw speed for Plone operations -- it is SQL queryability, faster pack/GC, and the ecosystem of PostgreSQL-native integrations.
+
+(performance-optimization-history)=
 
 ## Optimization history
 
@@ -211,11 +225,15 @@ The packer's unreachable object deletion was changed from `NOT IN (SELECT zoid F
 On a 4.4M-object database, pack went from 48+ minutes (incomplete) to approximately 2 minutes.
 The same pattern was applied to all deletion phases (objects, blobs, transaction log cleanup).
 
+(performance-batch-object-loading)=
+
 ### Batch object loading (1.8.0)
 
 `load_multiple(oids)` on `PGJsonbStorageInstance` loads multiple objects in a single `SELECT ... WHERE zoid = ANY(...)` query instead of individual roundtrips.
 The method checks the per-instance LRU cache first and only queries misses.
 This is the building block for the refs prefetch feature (1.9.0+).
+
+(performance-refs-prefetch)=
 
 ### Pluggable refs prefetch (1.9.0--1.9.2)
 
@@ -267,17 +285,16 @@ A caller that prefetches its result set turns those N round-trips into one; the 
 
 ### Load counters for observability
 
-Each connection instance exposes plain-int counters (read best-effort by tracing tools such as
-plone.observability, with no dependency added here):
+Each connection instance exposes plain-int counters (read best-effort by tracing tools such as plone.observability, with no dependency added here):
 
-- `_l2_load_hits` -- objects served from the shared (L2) cache.
-- `_pg_load_count` -- objects fetched from PostgreSQL.
-- `_pg_query_count` -- PostgreSQL round-trips (queries).
+- `_l2_load_hits`: objects served from the shared (L2) cache.
+- `_pg_load_count`: objects fetched from PostgreSQL.
+- `_pg_query_count`: PostgreSQL round-trips (queries).
 
-`_pg_load_count` counts *objects*; `_pg_query_count` counts *queries*. A single
-`load_multiple()` / `prefetch` that fetches N objects in one `WHERE zoid = ANY(...)` bumps
-`_pg_load_count` by N but `_pg_query_count` by 1 -- so their ratio makes the batching/prefetch
-win directly visible, where a per-object N+1 pattern keeps the ratio near 1.
+`_pg_load_count` counts *objects*; `_pg_query_count` counts *queries*.
+A single `load_multiple()` / `prefetch` that fetches N objects in one `WHERE zoid = ANY(...)` bumps `_pg_load_count` by N but `_pg_query_count` by 1 -- so their ratio makes the batching/prefetch win directly visible, where a per-object N+1 pattern keeps the ratio near 1.
+
+(performance-scaling-characteristics)=
 
 ## Scaling characteristics
 

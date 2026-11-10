@@ -7,6 +7,8 @@ It implements the full suite of ZODB storage interfaces -- IStorage, IMVCCStorag
 
 This page explains the storage class hierarchy, the write and read data paths, MVCC snapshot isolation, the pack algorithm, blob tiering, and the LISTEN/NOTIFY invalidation mechanism.
 
+(architecture-storage-hierarchy)=
+
 ## Storage hierarchy
 
 ZODB's IMVCCStorage protocol separates the storage factory from per-connection instances.
@@ -37,6 +39,8 @@ ZODB.DB calls `new_instance()` on the main storage to create one per ZODB Connec
 Each instance borrows a connection from the pool and manages its own REPEATABLE READ snapshot, load cache, and 2PC transaction state.
 The instance implements IBlobStorage so that ZODB's Connection class can detect blob support on the object it actually talks to.
 
+(architecture-write-path)=
+
 ## Write path
 
 The write path transforms Python pickle bytes into queryable JSONB and writes them to PostgreSQL in a single pipelined batch.
@@ -59,8 +63,8 @@ sequenceDiagram
     Note over Inst: Queue entry in _tmp list
     ZODB->>Inst: tpc_vote(transaction)
     Inst->>PG: BEGIN#59; pg_advisory_xact_lock(0)
-    Inst->>PG: Batch conflict check (SELECT WHERE zoid = ANY(...))
-    Inst->>PG: executemany INSERT...ON CONFLICT (pipelined)
+    Inst->>PG: Batch conflict check (SELECT WHERE zoid = ANY(zoids))
+    Inst->>PG: executemany INSERT ON CONFLICT (pipelined)
     Inst->>PG: COMMIT
     Inst-->>ZODB: tid_bytes
 ```
@@ -87,6 +91,8 @@ In history-preserving mode, `_batch_write_objects()` adds a copy-before-overwrit
 Only previous versions are archived -- the current version always lives in `object_state`.
 This model avoids writing duplicate JSONB data on every commit and is 33% faster for batch writes compared to the original full dual-write approach.
 
+(architecture-read-path)=
+
 ## Read path
 
 The read path converts JSONB back to pickle bytes, with an LRU cache to avoid redundant transcoding.
@@ -102,6 +108,8 @@ The result is stored in the load cache before being returned.
 
 In production, the ZODB object cache sits above the storage cache and handles the vast majority of reads.
 The storage LRU cache catches objects evicted from the ZODB object cache but still hot at the storage level, avoiding PostgreSQL round-trips for warm data.
+
+(architecture-mvcc-and-snapshot-isolation)=
 
 ## MVCC and snapshot isolation
 
@@ -191,6 +199,8 @@ They connect with `connect_timeout` set to `pool-timeout` instead, unless the DS
 Deferred callables receive that DSN too.
 Without it, a primary that drops packets would block the poll applying the DDL for the operating system's TCP timeout, often minutes.
 
+(architecture-connection-pool-lifecycle)=
+
 ## Connection pool lifecycle
 
 zodb-pgjsonb uses psycopg3's `ConnectionPool` for all database connections.
@@ -209,6 +219,8 @@ The pool is created at storage initialization with configurable `min_size` (defa
 A `pool_timeout` parameter (default 30 seconds) limits how long a connection request blocks before raising an error, preventing unbounded waits under load.
 Connections use `autocommit=True` and `dict_row` by default.
 Each `PGJsonbStorageInstance` borrows a connection from the pool at creation time and returns it when `release()` is called.
+
+(architecture-pack-algorithm)=
 
 ## Pack algorithm
 
@@ -243,6 +255,8 @@ In history-preserving mode with a pack time, objects created or modified after t
 
 The result is 13-28x faster pack compared to RelStorage, which must load and unpickle every object in Python to discover references.
 See {doc}`performance` for benchmark numbers.
+
+(architecture-blob-tiering)=
 
 ## Blob tiering
 
@@ -292,6 +306,8 @@ They run in `tpc_vote` while the commit lock is held, so a stalled upload blocks
 Some S3 providers answer uploads under concurrent load only after more than a minute, so a short upload timeout would cause spurious failures and retries.
 That is why uploads keep long timeouts and have their own settings.
 
+(architecture-listen-notify-invalidation)=
+
 ## LISTEN/NOTIFY invalidation
 
 ZODB's MVCC protocol requires the storage to report which objects changed since the last poll.
@@ -300,7 +316,7 @@ zodb-pgjsonb uses PostgreSQL's LISTEN/NOTIFY for near-instant invalidation.
 
 A trigger on the `transaction_log` table fires on every INSERT:
 
-```sql
+```postgresql
 CREATE OR REPLACE FUNCTION notify_commit() RETURNS trigger AS $$
 BEGIN
     PERFORM pg_notify('zodb_invalidations', NEW.tid::text);
@@ -317,6 +333,8 @@ When a transaction commits and inserts its metadata row into `transaction_log`, 
 Storage instances that have subscribed to the `zodb_invalidations` channel receive the notification within milliseconds, allowing them to invalidate cached objects and refresh their snapshots with minimal delay.
 
 This mechanism works across multiple application servers connecting to the same PostgreSQL instance, providing cluster-wide invalidation without any additional infrastructure.
+
+(architecture-history-modes)=
 
 ## History modes
 

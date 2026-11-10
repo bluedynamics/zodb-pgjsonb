@@ -8,6 +8,8 @@ zodb-pgjsonb changes the storage format to PostgreSQL JSONB, making ZODB data qu
 
 This page explains the problem with opaque storage, how JSONB solves it, what trade-offs are involved, and when you should choose zodb-pgjsonb over the alternatives.
 
+(why-postgresql-jsonb-the-problem-opaque-pickle-storage)=
+
 ## The problem: opaque pickle storage
 
 ZODB's traditional storage backends -- FileStorage, RelStorage, and ZEO -- all store object state as pickle bytes.
@@ -25,6 +27,8 @@ On large databases, this is extremely slow.
 - **Security risk.** Pickle deserialization can execute arbitrary Python code.
 A crafted pickle payload stored in the database could compromise any process that loads it.
 
+(why-postgresql-jsonb-the-relstorage-approach)=
+
 ## The RelStorage approach
 
 RelStorage stores ZODB data in a relational database (PostgreSQL, MySQL, or Oracle), but it stores object state as bytea -- raw pickle bytes in a binary column.
@@ -34,11 +38,13 @@ You get the operational benefits of PostgreSQL (backup, replication, monitoring)
 ```sql
 -- RelStorage: data is opaque bytea
 SELECT zoid, state FROM object_state WHERE zoid = 42;
--- state: \x80049513000000000000008c0b...  (unreadable binary)
+-- state: binary pickle bytes, unreadable
 ```
 
 RelStorage is a mature, well-tested project and a good choice when you need PostgreSQL's operational infrastructure without changing ZODB's fundamental storage model.
 But if you want to query your data with SQL, RelStorage cannot help.
+
+(why-postgresql-jsonb-the-jsonb-approach)=
 
 ## The JSONB approach
 
@@ -71,6 +77,8 @@ The pack algorithm uses a recursive CTE to traverse the reference graph entirely
 This is 13-28x faster than RelStorage's approach of loading and unpickling every object.
 See {doc}`performance` for detailed numbers.
 
+(why-postgresql-jsonb-security-no-code-execution-attack-surface)=
+
 ## Security: no code execution attack surface
 
 This deserves its own emphasis because it is often overlooked.
@@ -85,6 +93,8 @@ A JSONB column in PostgreSQL can contain strings, numbers, booleans, arrays, and
 There is no mechanism to embed executable code in JSON.
 By storing state as JSONB, zodb-pgjsonb eliminates the entire class of pickle deserialization attacks at the storage level.
 See {doc}`security` for the full security analysis.
+
+(why-postgresql-jsonb-trade-offs)=
 
 ## Trade-offs
 
@@ -115,6 +125,8 @@ The reverse transformation runs on read.
 This is transparent to application code but means that raw SQL queries against strings with embedded null bytes must account for the marker format.
 In practice, null bytes in ZODB object state are rare.
 
+(why-postgresql-jsonb-when-to-choose-zodb-pgjsonb)=
+
 ## When to choose zodb-pgjsonb
 
 **Choose zodb-pgjsonb when:**
@@ -133,6 +145,8 @@ In practice, null bytes in ZODB object state are rare.
 - You run a single Zope instance and do not need concurrent access.
 - You want the simplest possible deployment with no external database.
 - Your database is small enough that pack performance is not a concern.
+
+(why-postgresql-jsonb-the-ecosystem-advantage)=
 
 ## The ecosystem advantage
 

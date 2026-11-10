@@ -15,16 +15,18 @@ ZODB sees pickle bytes at its boundaries; PostgreSQL sees queryable JSON interna
 
 **Key capabilities:**
 
-- SQL queryability -- query ZODB objects directly with PostgreSQL JSONB operators and GIN indexes
+- SQL queryability: query ZODB objects directly with PostgreSQL JSONB operators and GIN indexes
 - Transparent transcoding via Rust-based codec (2x faster than CPython pickle)
-- Tiered blob storage -- small blobs in PG bytea, large blobs in S3 (configurable threshold)
-- Full ZODB compatibility -- IStorage, IMVCCStorage, IBlobStorage, IStorageUndoable, IStorageIteration
+- Tiered blob storage: small blobs in PG bytea, large blobs in S3 (configurable threshold)
+- Full ZODB compatibility: IStorage, IMVCCStorage, IBlobStorage, IStorageUndoable, IStorageIteration
 - Configurable history modes (history-free or history-preserving with undo)
 - State processor plugins for writing extra columns atomically alongside object state
 - Pure SQL pack/GC via pre-extracted refs column (15-28x faster than RelStorage)
 - Instant cache invalidation via PostgreSQL LISTEN/NOTIFY
 
 **Requirements:** Python 3.12+, PostgreSQL 15+ (tested with 17), [zodb-json-codec](https://pypi.org/project/zodb-json-codec/)
+
+(index-documentation)=
 
 ## Documentation
 
@@ -35,39 +37,33 @@ ZODB sees pickle bytes at its boundaries; PostgreSQL sees queryable JSON interna
 :link: tutorials/index
 :link-type: doc
 
-**Learning-oriented** -- Step-by-step lessons to build skills.
-
-*Start here if you are new to zodb-pgjsonb.*
+Step-by-step lessons for readers new to zodb-pgjsonb.
 :::
 
-:::{grid-item-card} How-To Guides
+:::{grid-item-card} How-to guides
 :link: how-to/index
 :link-type: doc
 
-**Goal-oriented** -- Solutions to specific problems.
-
-*Use these when you need to accomplish something.*
+Solutions to specific problems for readers who know the basics.
 :::
 
 :::{grid-item-card} Reference
 :link: reference/index
 :link-type: doc
 
-**Information-oriented** -- Configuration tables and API details.
-
-*Consult when you need detailed information.*
+Configuration tables, schema and API details.
 :::
 
 :::{grid-item-card} Explanation
 :link: explanation/index
 :link-type: doc
 
-**Understanding-oriented** -- Architecture and design decisions.
-
-*Read to deepen your understanding of how it works.*
+Architecture, caching, performance and design decisions.
 :::
 
 ::::
+
+(index-quick-start)=
 
 ## Quick start
 

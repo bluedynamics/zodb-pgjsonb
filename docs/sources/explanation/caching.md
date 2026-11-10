@@ -11,6 +11,8 @@ This page is about the read caches.
 For the exact configuration keys and defaults, see {doc}`/reference/configuration`.
 For where the caches sit in the overall read path, see {doc}`/explanation/architecture`.
 
+(caching-the-layers-top-to-bottom)=
+
 ## The layers, top to bottom
 
 A read that misses every cache travels the full stack.
@@ -52,6 +54,8 @@ The gate is precise, not all-or-nothing.
 During a burst of writes — a bulk `reindexObject` run, a publishing wave — the consensus advances on nearly every request, but a reader whose snapshot is a moment behind still hits L2 for every object unchanged since its snapshot; only objects committed after its snapshot miss and fall through to PostgreSQL.
 So heavy write activity costs a warm pod only the objects that actually changed, not its whole cache.
 
+(caching-the-cache-warmer)=
+
 ## The cache warmer
 
 A freshly started pod has an empty L2 and empty L1s.
@@ -62,6 +66,8 @@ It reads the most-accessed object ids and loads them in paced batches before the
 Because every replica would otherwise warm at once and multiply the database's startup load by the replica count, the warmer is deliberately un-synchronized: a baseline delay (`cache-warm-delay`), random jitter (`cache-warm-jitter`), a cluster-wide concurrency cap enforced by an advisory-lock semaphore (`cache-warm-concurrency`), and batch pacing (`cache-warm-batch-size`, `cache-warm-batch-pause`) spread the work out.
 The trade-off is that a pod's L2 is warm roughly 15–45 seconds after startup rather than instantly.
 It serves traffic from the first second, but the first requests for a cold working set still pay the PostgreSQL path.
+
+(caching-observing-cache-effectiveness)=
 
 ## Observing cache effectiveness
 
@@ -83,6 +89,8 @@ Reading a slow span this way tells you which layer failed.
 - `load_pg_queries` small but `load_time_ms` still high — few loads, but slow ones: high per-round-trip latency, or a handful of very large objects.
 
 `plone.zodb.load_time_ms` is the wall time spent inside those `setstate` loads, so comparing it against `load_pg_queries` gives the effective per-load latency.
+
+(caching-what-makes-a-request-cold-and-which-knob-helps)=
 
 ## What makes a request cold, and which knob helps
 

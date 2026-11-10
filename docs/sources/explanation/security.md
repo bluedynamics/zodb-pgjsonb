@@ -7,6 +7,8 @@ Beyond this foundational choice, the implementation includes several hardening m
 
 This page documents each security measure, the threat it addresses, and the reasoning behind the design.
 
+(security-pickle-elimination)=
+
 ## Pickle elimination
 
 ### The threat
@@ -43,6 +45,8 @@ The security difference is not one of degree -- it is categorical.
 Pickle-based storage requires active defense (restricted unpicklers, class whitelists) to prevent code execution.
 JSONB storage is passively safe because the format has no execution capability.
 
+(security-restricted-unpickler-for-legacy-extension-data)=
+
 ## Restricted unpickler for legacy extension data
 
 ### The threat
@@ -67,6 +71,8 @@ This blocks the standard pickle exploitation techniques (which rely on importing
 New extension data is always serialized as JSON bytes, not pickle.
 The restricted unpickler is a backward-compatibility measure for databases that contain legacy pickle-formatted extension data.
 
+(security-sql-injection-prevention)=
+
 ## SQL injection prevention
 
 ### ExtraColumn name validation
@@ -87,6 +93,8 @@ All user-facing queries (load, store, poll, history, undo) use psycopg's paramet
 Values are never string-formatted into SQL.
 psycopg handles escaping at the protocol level using PostgreSQL prepared statement parameters, which is immune to SQL injection regardless of value content.
 
+(security-dsn-credential-masking)=
+
 ## DSN credential masking
 
 ### The threat
@@ -100,6 +108,8 @@ If a DSN appears in a log file, stack trace, or error message, the password is e
 The regex handles both `password=secret` and `password='quoted secret'` formats.
 This function is called wherever the DSN is logged -- during pool creation, connection errors, and diagnostic output.
 
+(security-blob-file-permissions)=
+
 ## Blob file permissions
 
 ### The threat
@@ -111,6 +121,8 @@ Permissive file permissions could allow other users on the same system to read b
 
 Blob files are written with permissions `0o600` (owner read/write only).
 This restricts access to the process owner, preventing other system users from reading blob data even if they have access to the blob cache directory.
+
+(security-connection-pool-timeout)=
 
 ## Connection pool timeout
 
@@ -124,6 +136,8 @@ An attacker or a bug that leaks connections could cause all subsequent requests 
 The `pool_timeout` parameter (default 30 seconds) limits how long `getconn()` blocks before raising `PoolTimeout`.
 This ensures that connection exhaustion surfaces as an explicit error rather than an indefinite hang.
 The timeout is configurable via ZConfig (`pool-timeout`) to accommodate deployments with different concurrency requirements.
+
+(security-pg-null-byte-sanitization)=
 
 ## PG null-byte sanitization
 
@@ -143,6 +157,8 @@ The common case (no null bytes) incurs zero allocations -- the function returns 
 The marker format is unambiguous because `@ns` is a reserved key prefix in the zodb-json-codec type mapping.
 
 This is a data integrity measure rather than a security defense, but it prevents a class of silent data corruption that could otherwise affect applications storing binary-adjacent string data in ZODB objects.
+
+(security-connection-safety)=
 
 ## Connection safety
 
