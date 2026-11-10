@@ -1,3 +1,12 @@
+---
+myst:
+  html_meta:
+    "description": "Architecture, caching, performance and security design of zodb-pgjsonb."
+    "property=og:description": "Architecture, caching, performance and security design of zodb-pgjsonb."
+    "property=og:title": "Explanation"
+    "keywords": "ZODB, PostgreSQL, JSONB, Plone, zodb-pgjsonb, explanation"
+---
+
 # Explanation
 
 <!-- diataxis: explanation -->

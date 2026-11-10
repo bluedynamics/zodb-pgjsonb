@@ -4,28 +4,26 @@
 
 This guide shows you how to query your ZODB objects directly in PostgreSQL using SQL and JSONB operators.
 
+```{warning}
+Never modify `object_state`, `transaction_log`, or `blob_state` directly via SQL.
+All writes must go through the ZODB transaction lifecycle.
+Direct SQL updates will cause data corruption or be overwritten on the next ZODB transaction.
+```
+
+The columns of `object_state` are listed in {ref}`schema-tables`.
+
+(query-with-sql-connect-to-the-database)=
+
 ## Connect to the database
 
 Use psql, pgAdmin, DBeaver, or any PostgreSQL client.
 The connection details match the `dsn` in your storage configuration:
 
-```bash
+```shell
 psql "dbname=zodb user=zodb host=localhost port=5432"
 ```
 
-## The object_state table
-
-All ZODB object data lives in `object_state`:
-
-| Column | Type | Contains |
-|---|---|---|
-| `zoid` | `BIGINT` | Object ID (primary key) |
-| `tid` | `BIGINT` | Transaction ID of last modification |
-| `class_mod` | `TEXT` | Python module of the object class |
-| `class_name` | `TEXT` | Python class name |
-| `state` | `JSONB` | Object state as queryable JSON |
-| `state_size` | `INTEGER` | Serialized state size in bytes |
-| `refs` | `BIGINT[]` | Referenced object IDs |
+(query-with-sql-list-all-object-types)=
 
 ## List all object types
 
@@ -36,6 +34,8 @@ GROUP BY 1
 ORDER BY 2 DESC;
 ```
 
+(query-with-sql-query-plone-content-by-type)=
+
 ## Query Plone content by type
 
 ```sql
@@ -44,20 +44,13 @@ FROM object_state
 WHERE class_mod LIKE 'plone.app.contenttypes.content%';
 ```
 
+(query-with-sql-jsonb-operators)=
+
 ## JSONB operators
 
-PostgreSQL provides several operators for querying JSONB data:
+The PostgreSQL documentation lists all JSONB operators in [JSON Functions and Operators](https://www.postgresql.org/docs/current/functions-json.html).
 
-| Operator | Description | Example |
-|---|---|---|
-| `->>` | Extract value as text | `state->>'title'` |
-| `->` | Extract value as JSON | `state->'items'` |
-| `@>` | Contains (uses GIN index) | `state @> '{"key": "value"}'` |
-| `?` | Key exists | `state ? 'title'` |
-| `?&` | All keys exist | `state ?& array['title', 'description']` |
-| `?\|` | Any key exists | `state ?\| array['title', 'description']` |
-
-### Containment query (GIN-indexed)
+### Containment query
 
 ```sql
 SELECT zoid, state->>'title'
@@ -81,6 +74,8 @@ FROM object_state
 WHERE class_mod LIKE 'plone.app.contenttypes%';
 ```
 
+(query-with-sql-search-text-across-objects)=
+
 ## Search text across objects
 
 ```sql
@@ -90,6 +85,8 @@ WHERE state::text ILIKE '%search term%';
 ```
 
 For better performance on large databases, create a GIN trigram index or use full-text search via plone.pgcatalog.
+
+(query-with-sql-join-with-blob-state-for-blob-metadata)=
 
 ## Join with blob_state for blob metadata
 
@@ -123,6 +120,8 @@ GROUP BY 1
 ORDER BY min(blob_size);
 ```
 
+(query-with-sql-connect-grafana-or-metabase)=
+
 ## Connect Grafana or Metabase
 
 Point Grafana, Metabase, or any BI tool at your PostgreSQL database using the same connection string.
@@ -138,9 +137,3 @@ FROM object_state
 GROUP BY 1
 ORDER BY 1;
 ```
-
-## Important: read-only
-
-Never modify `object_state`, `transaction_log`, or `blob_state` directly via SQL.
-All writes must go through the ZODB transaction lifecycle.
-Direct SQL updates will cause data corruption or be overwritten on the next ZODB transaction.

@@ -2,9 +2,10 @@
 
 # Database schema
 
-This page documents the PostgreSQL tables, indexes, triggers, and JSONB
-conventions used by zodb-pgjsonb.
+This page documents the PostgreSQL tables, indexes, triggers, and JSONB conventions used by zodb-pgjsonb.
 The schema version is 2.
+
+(schema-tables)=
 
 ## Tables
 
@@ -31,7 +32,7 @@ Present in both history-free and history-preserving modes.
 | `tid` | `BIGINT` | -- | `NOT NULL`, `REFERENCES transaction_log(tid)` | Transaction ID of the current revision. |
 | `class_mod` | `TEXT` | -- | `NOT NULL` | Python module path of the object class. |
 | `class_name` | `TEXT` | -- | `NOT NULL` | Python class name of the object. |
-| `state` | `JSONB` | -- | -- | Object state as JSONB (see [JSONB state structure](#jsonb-state-structure)). |
+| `state` | `JSONB` | -- | -- | Object state as JSONB (see {ref}`jsonb-state-structure`). |
 | `state_size` | `INTEGER` | -- | `NOT NULL` | Size of the original pickle in bytes. |
 | `refs` | `BIGINT[]` | `'{}'` | `NOT NULL` | Array of OIDs this object references (used by the packer). |
 
@@ -51,8 +52,7 @@ The primary key `(zoid, tid)` retains all blob versions across transactions.
 | `data` | `BYTEA` | -- | -- | Blob data (populated for PG-stored blobs). |
 | `s3_key` | `TEXT` | -- | -- | S3 object key (populated for S3-stored blobs). |
 
-A blob row has either `data` populated (PG-stored) or `s3_key` populated
-(S3-stored), but not both.
+A blob row has either `data` populated (PG-stored) or `s3_key` populated (S3-stored), but not both.
 
 ### object_history (history-preserving mode)
 
@@ -69,8 +69,7 @@ Created only when `history_preserving=True`.
 | `state_size` | `INTEGER` | -- | `NOT NULL` | Size of the original pickle in bytes. |
 | `refs` | `BIGINT[]` | `'{}'` | `NOT NULL` | Referenced OIDs. |
 
-The storage uses a copy-before-overwrite model: the previous version of an
-object is copied to `object_history` before `object_state` is updated.
+The storage uses a copy-before-overwrite model: the previous version of an object is copied to `object_history` before `object_state` is updated.
 The current version lives only in `object_state`.
 
 ### pack_state (history-preserving mode)
@@ -82,6 +81,8 @@ Created only when `history_preserving=True`.
 |---|---|---|---|---|
 | `zoid` | `BIGINT` | -- | `PRIMARY KEY` | Object ID. |
 | `tid` | `BIGINT` | -- | `NOT NULL` | Transaction ID. |
+
+(schema-indexes)=
 
 ## Indexes
 
@@ -100,12 +101,13 @@ Created only when `history_preserving=True`.
 | `idx_history_tid` | `object_history` | B-tree | `tid` | Transaction-based lookups. |
 | `idx_history_zoid_tid` | `object_history` | B-tree | `(zoid, tid DESC)` | `loadBefore()` queries (most recent first). |
 
+(schema-listen-notify-trigger)=
+
 ## LISTEN/NOTIFY trigger
 
-A trigger on `transaction_log` fires a PostgreSQL `NOTIFY` on every committed
-transaction, sending the TID as the payload on the `zodb_invalidations` channel.
+A trigger on `transaction_log` fires a PostgreSQL `NOTIFY` on every committed transaction, sending the TID as the payload on the `zodb_invalidations` channel.
 
-```sql
+```postgresql
 CREATE OR REPLACE FUNCTION notify_commit() RETURNS trigger AS $$
 BEGIN
     PERFORM pg_notify('zodb_invalidations', NEW.tid::text);
@@ -118,37 +120,41 @@ CREATE TRIGGER trg_notify_commit
     FOR EACH ROW EXECUTE FUNCTION notify_commit();
 ```
 
+(jsonb-state-structure)=
+
 ## JSONB state structure
 
 Object state is stored as a JSONB document in the `state` column of `object_state` (and `object_history`).
 The JSONB is produced by [zodb-json-codec](https://bluedynamics.github.io/zodb-json-codec/)'s `decode_zodb_record_for_pg_json()` function, which converts ZODB pickle data to JSON.
 
-The class information (`class_mod`, `class_name`) is stored in separate columns, not inside the JSONB.
+The class information (`class_mod`, `class_name`) is stored in separate columns.
 The JSONB contains only the object's instance state.
 
 For the full list of JSON marker keys (`@ref`, `@t`, `@b`, `@pkl`, `@dt`, and others), see the [zodb-json-codec JSON format reference](https://bluedynamics.github.io/zodb-json-codec/reference/json-format.html).
 
 The only marker specific to zodb-pgjsonb is `@ns` (null-byte sanitization).
-PostgreSQL JSONB cannot store `\u0000` characters, so strings containing null bytes are base64-encoded and wrapped in an `@ns` marker.
+PostgreSQL JSONB cannot store `\u0000` characters.
+Strings containing null bytes are therefore base64-encoded and wrapped in an `@ns` marker.
 The storage sanitizes on write and unsanitizes on read automatically.
+
+(schema-schema-installation)=
 
 ## Schema installation
 
 The `install_schema()` function in `schema.py` applies DDL idempotently.
-It skips DDL when core tables already exist to avoid `ACCESS EXCLUSIVE`
-locks that would block concurrent instances holding `REPEATABLE READ`
-snapshots.
+It skips the full schema DDL when core tables already exist.
 
 The installation sequence:
 
 1. Check whether `transaction_log` exists.
 2. If absent, execute the full history-free schema DDL (tables, indexes, trigger).
-3. If present, ensure indexes added in later schema versions exist (lightweight `CREATE INDEX IF NOT EXISTS`).
+3. If present, add any missing indexes from later schema versions (lightweight `CREATE INDEX IF NOT EXISTS`).
 4. If `history_preserving=True` and `object_history` does not exist, execute the history-preserving additions.
 5. Commit.
 
-State processor DDL (from `get_schema_sql()`) is applied separately via
-`register_state_processor()`, using a dedicated autocommit connection
-with a 2-second `lock_timeout`.
-If the lock cannot be acquired at startup,
-the DDL is deferred to the first `tpc_begin()`.
+State processor DDL (from `get_schema_sql()`) is applied separately.
+`register_state_processor()` only queues it, tagged with a version of `sha256` of its text.
+The queue runs at the next `poll_invalidations()` or `tpc_begin()` after the read snapshot has ended.
+It runs again on later calls while entries remain queued.
+Each queue entry runs on its own direct autocommit connection.
+For why this DDL is deferred, see {ref}`startup-ddl-gate`.

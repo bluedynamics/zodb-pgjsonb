@@ -4,21 +4,25 @@
 
 This guide shows you how to install zodb-pgjsonb and connect it to a PostgreSQL database.
 
+(install-install-the-package)=
+
 ## Install the package
 
-```bash
+```shell
 pip install zodb-pgjsonb
-# or
-uv pip install zodb-pgjsonb
 ```
+
+With uv, run `uv pip install zodb-pgjsonb`.
 
 Install the optional S3 blob tiering extra if you plan to store large blobs in S3:
 
-```bash
+```shell
 pip install zodb-pgjsonb[s3]
 ```
 
 Requirements: Python 3.12+, PostgreSQL 15+ (tested with 17).
+
+(install-set-up-postgresql)=
 
 ## Set up PostgreSQL
 
@@ -26,7 +30,7 @@ Requirements: Python 3.12+, PostgreSQL 15+ (tested with 17).
 
 Start a PostgreSQL 17 container:
 
-```bash
+```shell
 docker run -d --name zodb-pg \
   -e POSTGRES_USER=zodb \
   -e POSTGRES_PASSWORD=zodb \
@@ -40,17 +44,13 @@ docker run -d --name zodb-pg \
 Use any PostgreSQL 15+ instance.
 The storage creates all required tables and indexes automatically on first startup.
 
-:::{note}
-The SQL features used (JSONB, `ON CONFLICT DO UPDATE`, recursive CTEs, advisory locks)
-only require PostgreSQL 9.5+. However, we only test with PostgreSQL 17 and recommend
-15+ to stay within PostgreSQL's supported version window.
-:::
+(install-configure-for-zope-or-plone-zconfig)=
 
 ## Configure for Zope or Plone (ZConfig)
 
 Add a `<pgjsonb>` section to your `zope.conf`:
 
-```xml
+```ini
 %import zodb_pgjsonb
 
 <zodb_db main>
@@ -63,6 +63,8 @@ Add a `<pgjsonb>` section to your `zope.conf`:
 ```
 
 The `dsn` accepts both key-value format (`dbname=zodb host=localhost`) and URI format (`postgresql://user:pass@host/db`).
+
+(install-configure-for-standalone-zodb-python-api)=
 
 ## Configure for standalone ZODB (Python API)
 
@@ -85,11 +87,13 @@ conn.close()
 db.close()
 ```
 
+(install-verify-the-connection)=
+
 ## Verify the connection
 
 Connect to PostgreSQL and confirm the tables exist:
 
-```bash
+```shell
 psql "dbname=zodb user=zodb host=localhost"
 ```
 

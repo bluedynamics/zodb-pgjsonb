@@ -3,9 +3,13 @@
 # Architecture
 
 zodb-pgjsonb is a ZODB storage adapter that stores object state as PostgreSQL JSONB instead of opaque pickle bytes.
-It implements the full suite of ZODB storage interfaces -- IStorage, IMVCCStorage, IBlobStorage, IStorageUndoable, IStorageIteration, and IStorageRestoreable -- while making all stored data queryable through standard SQL.
+It implements the full suite of ZODB storage interfaces: IStorage, IMVCCStorage, IBlobStorage, IStorageUndoable, IStorageIteration, and IStorageRestoreable.
+All stored data is queryable through standard SQL.
 
-This page explains the storage class hierarchy, the write and read data paths, MVCC snapshot isolation, the pack algorithm, blob tiering, and the LISTEN/NOTIFY invalidation mechanism.
+This page explains the storage class hierarchy and the write and read data paths.
+It also covers MVCC snapshot isolation, the pack algorithm, blob tiering, and the LISTEN/NOTIFY invalidation mechanism.
+
+(architecture-storage-hierarchy)=
 
 ## Storage hierarchy
 
@@ -37,6 +41,8 @@ ZODB.DB calls `new_instance()` on the main storage to create one per ZODB Connec
 Each instance borrows a connection from the pool and manages its own REPEATABLE READ snapshot, load cache, and 2PC transaction state.
 The instance implements IBlobStorage so that ZODB's Connection class can detect blob support on the object it actually talks to.
 
+(architecture-write-path)=
+
 ## Write path
 
 The write path transforms Python pickle bytes into queryable JSONB and writes them to PostgreSQL in a single pipelined batch.
@@ -51,6 +57,8 @@ sequenceDiagram
     participant PG as PostgreSQL
 
     App->>ZODB: modify persistent object
+    ZODB->>Inst: tpc_begin(transaction)
+    Inst->>PG: BEGIN#59; pg_advisory_xact_lock(0)
     ZODB->>Inst: store(oid, serial, pickle_bytes)
     Inst->>Codec: decode_zodb_record_for_pg_json(pickle_bytes)
     Codec-->>Inst: (class_mod, class_name, json_str, refs[])
@@ -58,50 +66,57 @@ sequenceDiagram
     SP-->>Inst: extra column values
     Note over Inst: Queue entry in _tmp list
     ZODB->>Inst: tpc_vote(transaction)
-    Inst->>PG: BEGIN#59; pg_advisory_xact_lock(0)
-    Inst->>PG: Batch conflict check (SELECT WHERE zoid = ANY(...))
-    Inst->>PG: executemany INSERT...ON CONFLICT (pipelined)
+    Inst->>PG: Batch conflict check (SELECT WHERE zoid = ANY(zoids))
+    Inst->>PG: executemany INSERT ON CONFLICT (pipelined)
+    ZODB->>Inst: tpc_finish(transaction)
     Inst->>PG: COMMIT
     Inst-->>ZODB: tid_bytes
 ```
 
 ### Step by step
 
-1. **store()** receives pickle bytes from ZODB and calls `zodb_json_codec.decode_zodb_record_for_pg_json()`.
-This Rust function decodes the two concatenated pickles (class + state) in a ZODB record and returns a JSON string, the class module and name, and an array of referenced OIDs.
+1. **tpc_begin()** opens the PostgreSQL transaction, takes the advisory lock (`pg_advisory_xact_lock(0)`) to serialize all write transactions, and generates the TID.
+This happens before any `store()` call.
+
+2. **store()** receives pickle bytes from ZODB and calls `zodb_json_codec.decode_zodb_record_for_pg_json()`.
+This Rust function decodes the two concatenated pickles (class + state) in a ZODB record.
+It returns a JSON string, the class module and name, and an array of referenced OIDs.
 The entire pipeline runs in Rust with the GIL released.
 No intermediate Python dicts are created for the store path.
 
-2. **State processors** run after decoding.
-Registered processors (such as plone-pgcatalog's `CatalogStateProcessor`) can inspect the decoded state, pop keys, and return `ExtraColumn` values that will be written alongside the object state in the same INSERT statement.
+3. **State processors** run after decoding.
+Registered processors (such as plone-pgcatalog's `CatalogStateProcessor`) can inspect the decoded state and return `ExtraColumn` values.
+The INSERT statement that writes the object state also writes these values.
 
-3. **tpc_vote()** acquires a PostgreSQL advisory lock (`pg_advisory_xact_lock(0)`) to serialize all write transactions.
-It then runs a single batch conflict check (`SELECT zoid, tid FROM object_state WHERE zoid = ANY(...)`) instead of per-object queries.
-Finally, it calls `_batch_write_objects()` which uses psycopg3's `executemany()` in pipeline mode -- all INSERT statements go in a single network round-trip.
+4. **tpc_vote()** runs a single batch conflict check (`SELECT zoid, tid FROM object_state WHERE zoid = ANY(...)`) instead of per-object queries.
+It then inserts a row into `transaction_log`.
+Finally, it calls `_batch_write_objects()`, which uses psycopg3's `executemany()` in pipeline mode.
+All INSERT statements go in a single network round-trip.
 
-4. **tpc_finish()** commits the PostgreSQL transaction, inserts a row into `transaction_log` (which fires the NOTIFY trigger), releases the advisory lock, and returns the TID bytes to ZODB.
+5. **tpc_finish()** commits the PostgreSQL transaction.
+The `transaction_log` row inserted in `tpc_vote()` fires the NOTIFY trigger, which is delivered at the commit.
+The commit releases the advisory lock.
+Then `tpc_finish()` returns the TID bytes to ZODB.
 
 ### History-preserving writes
 
 In history-preserving mode, `_batch_write_objects()` adds a copy-before-overwrite step: before upserting into `object_state`, it copies the existing row for each modified object into `object_history` using `INSERT INTO object_history SELECT ... FROM object_state WHERE zoid = ANY(...)`.
-Only previous versions are archived -- the current version always lives in `object_state`.
+Only previous versions are archived.
+The current version always lives in `object_state`.
 This model avoids writing duplicate JSONB data on every commit and is 33% faster for batch writes compared to the original full dual-write approach.
+
+(architecture-read-path)=
 
 ## Read path
 
-The read path converts JSONB back to pickle bytes, with an LRU cache to avoid redundant transcoding.
+The ZODB object cache sits above the storage and serves live objects without calling `load()` at all.
+On a miss there, `load()` checks the per-connection L1 `LoadCache` first and then the process-wide L2 `SharedLoadCache`.
+When both miss, the instance runs a single-row `SELECT` on `object_state` as a prepared statement (`prepare=True`).
+`zodb_json_codec.encode_zodb_record()` transcodes the returned JSONB state to pickle bytes, and the result fills L2 and L1 on the way out.
+Only this path pays the transcode cost.
+For the cache sizes, the consensus gate and the cache warmer, see {ref}`cache-tiers`.
 
-1. **load()** checks the per-instance `LoadCache` first.
-On a hit, it returns cached pickle bytes and TID immediately -- no database round-trip, no transcoding.
-The cache is an `OrderedDict`-based LRU bounded by byte size (default 16 MB per instance).
-
-2. On a cache miss, the instance executes `SELECT state, tid, class_mod, class_name FROM object_state WHERE zoid = %s` using a prepared statement (`prepare=True`).
-
-3. The returned JSONB state is passed to `zodb_json_codec.encode_zodb_record()`, which produces pickle bytes in Rust.
-The result is stored in the load cache before being returned.
-
-In production, the ZODB object cache sits above the storage cache and handles the vast majority of reads.
-The storage LRU cache catches objects evicted from the ZODB object cache but still hot at the storage level, avoiding PostgreSQL round-trips for warm data.
+(architecture-mvcc-and-snapshot-isolation)=
 
 ## MVCC and snapshot isolation
 
@@ -118,7 +133,7 @@ The first query anchors the snapshot.
 3. Query `transaction_log` for the current maximum TID.
 4. Query `object_state` for OIDs changed since the last polled TID.
 
-Starting the snapshot *before* querying for changes ensures that all subsequent `load()` calls see the exact same database state as the invalidation queries.
+Starting the snapshot *before* querying for changes means that all subsequent `load()` calls see the exact same database state as the invalidation queries.
 If the snapshot started after the query, a concurrent commit could land between the poll and the first load, causing an inconsistent view.
 
 ### When PostgreSQL is unreachable
@@ -126,13 +141,15 @@ If the snapshot started after the query, a concurrent commit could land between 
 ZODB polls in `Connection.open()` and, through `Connection.afterCompletion()`, in every `transaction.abort()` and `commit()`.
 An exception from either place strands the ZODB Connection.
 `DB.open()` never returns it, and Zope's publisher skips `close()` when `abort()` raises.
-A Connection that is never closed is never freed, so it keeps its whole object cache in memory.
+A Connection that is never closed is never freed.
+The Connection keeps its whole object cache in memory.
 
 So `poll_invalidations()` does not raise on `psycopg.OperationalError`.
 It returns `None`, which by the IMVCCStorage contract makes ZODB invalidate its whole cache.
 The instance clears its load cache and marks the poll as failed.
 The next access to its PostgreSQL connection repeats the poll, and so do `load()` and `load_multiple()` before they consult the shared cache.
-That repeated poll begins a fresh snapshot and advances the TID that gates the shared cache, so reads stay consistent.
+That repeated poll begins a fresh snapshot and advances the TID that gates the shared cache.
+Reads stay consistent.
 If the poll fails again, the read raises inside the request that needs the data.
 Other exceptions from `poll_invalidations()` still propagate.
 
@@ -140,13 +157,14 @@ Other exceptions from `poll_invalidations()` still propagate.
 It also covers an exhausted pool (`PoolTimeout`), a cancelled statement (`QueryCanceled` from `statement_timeout`), and lock or disk errors.
 Flushing the cache is the better outcome in each of these, because the alternative is a stranded Connection that is never freed.
 It is not free, though.
-If the pool is exhausted under load while PostgreSQL is healthy, every affected Connection flushes its whole cache, and the reloads add load while the pool is saturated.
+If the pool is exhausted under load while PostgreSQL is healthy, every affected Connection flushes its whole cache.
+The reloads add load while the pool is saturated.
 If the poll query keeps failing, every transaction flushes the cache and every read fails.
 
 ### TID generation
 
 Transaction IDs must be globally unique and monotonically increasing.
-zodb-pgjsonb uses a PostgreSQL advisory lock (`pg_advisory_xact_lock(0)`) held during `tpc_vote` and `tpc_finish` to serialize all write transactions.
+zodb-pgjsonb uses a PostgreSQL advisory lock (`pg_advisory_xact_lock(0)`) acquired in `tpc_begin()` to serialize all write transactions and held until `tpc_finish()` commits.
 Within the lock, `_new_tid()` generates a timestamp-based TID that is guaranteed to be later than the previous one via `TimeStamp.laterThan()`.
 
 This is a simplicity trade-off: it limits write throughput to one transaction at a time, but guarantees correct TID ordering without complex distributed coordination.
@@ -156,40 +174,65 @@ For most ZODB workloads, write transactions are short and the advisory lock intr
 
 ## Startup DDL and the schema-version gate
 
-State processors (and plugins like plone-pgcatalog) contribute schema DDL — new columns, indexes, statistics — that must exist before the first request.
-This DDL cannot run while a ZODB connection holds an open `REPEATABLE READ` snapshot, because `CREATE INDEX` needs `ACCESS EXCLUSIVE` and would deadlock against the snapshot's `ACCESS SHARE`.
-So the storage defers it: `register_state_processor()` and `defer_startup_action()` queue the work, and `_apply_pending_ddl()` runs it from the first write transaction, once the snapshot has been released.
+State processors (and plugins like plone-pgcatalog) contribute schema DDL, such as new columns, indexes, and statistics.
+This DDL must exist before the first request.
+It cannot run while a ZODB connection holds an open `REPEATABLE READ` snapshot: `ALTER TABLE ADD COLUMN` needs `ACCESS EXCLUSIVE` and would deadlock against the snapshot's `ACCESS SHARE`.
+State processors register from `IDatabaseOpenedWithRoot` subscribers.
+At that point a ZODB connection still holds the startup `REPEATABLE READ` snapshot.
+So the storage defers the DDL.
+`register_state_processor()` and `defer_startup_action()` queue the work.
+`_apply_pending_ddl()` runs the queue at the next `poll_invalidations()` or `tpc_begin()` after the read snapshot has ended.
+It runs again on later calls while entries remain queued.
+`install_schema()` skips the full core DDL when the core tables already exist.
+The reason is the same: its DDL would take `ACCESS EXCLUSIVE` locks that block other instances holding `REPEATABLE READ` snapshots.
 
 A single replica applying idempotent DDL is cheap.
 The problem is a rolling deploy of many replicas.
 Each pod boots, queues the same DDL, and serializes on a session-level advisory lock (`startup_ddl_lock`) so only one actually runs it.
-The DDL is idempotent (`CREATE INDEX IF NOT EXISTS`), so the losers do no real work — but they still *connect and wait on the lock*, holding idle-in-transaction connections for the whole migration window.
+Because the DDL is idempotent (`CREATE INDEX IF NOT EXISTS`), the losers do no real work.
+They still *connect and wait on the lock*, holding idle-in-transaction connections for the whole migration window.
 On a large catalog that was enough to saturate the database and cascade into failed health checks (issue #78).
 
 The fix is the classic double-checked locking pattern, keyed by a schema version.
 Each deferred entry carries a version string, and the storage records which version it last applied per source in a small `pgjsonb_schema_state` table.
 Before taking the lock, a pod runs one cheap `SELECT` against that table.
-If every tagged entry is already current, the pod returns immediately and never touches the lock — so on a warm cluster N−1 replicas bail out in a single round-trip.
-The check is repeated *inside* the lock, because between the probe and acquiring the lock another replica may have applied the DDL; the winner re-reads the markers and skips anything already done.
+If every tagged entry is already current, the pod returns immediately and never touches the lock.
+On a warm cluster N−1 replicas bail out in a single round-trip.
+The check is repeated *inside* the lock.
+Between the probe and acquiring the lock, another replica may have applied the DDL.
+The winner re-reads the markers and skips anything already done.
 
 Two version sources feed the gate.
-The static `get_schema_sql()` block is hashed automatically (`sha256` of the DDL text), so it re-applies exactly when the DDL changes and needs no cooperation from the processor.
-Deferred callables pass an explicit `version` to `defer_startup_action()`, because their effect depends on runtime state (such as the live index registry) that no hash of static text would capture.
-Entries with `version=None` are always treated as stale and run under the lock on every startup, which preserves the original behavior for callers that have not opted in.
+The static `get_schema_sql()` block is hashed automatically (`sha256` of the DDL text).
+The block re-applies exactly when the DDL changes and needs no cooperation from the processor.
+Deferred callables pass an explicit `version` to `defer_startup_action()`.
+Their effect depends on runtime state, such as the live index registry.
+No hash of static text would capture it.
+Entries with `version=None` are always treated as stale and run under the lock on every startup.
+This preserves the original behavior for callers that have not opted in.
 
 This trades one property for another.
-The gate *trusts the marker* instead of re-checking the live schema, so if someone manually drops an index, the idempotent DDL that would have recreated it is skipped until the version changes.
-That trade is deliberate — skipping the redundant DDL is the entire point — and `ZODB_PGJSONB_FORCE_DDL=1` is the escape hatch when you need a full re-apply.
+The gate *trusts the marker* instead of re-checking the live schema.
+If someone manually drops an index, nothing recreates it.
+Until the version changes, the gate skips the idempotent DDL that would have recreated it.
+That trade is deliberate, because skipping the redundant DDL is the entire point.
+`ZODB_PGJSONB_FORCE_DDL=1` is the escape hatch when you need a full re-apply.
 
 The deferred work must also survive a database that is briefly unreachable, for example a failover right after a pod starts.
-`_apply_pending_ddl()` takes the queue before it connects, so a failure while connecting or taking the lock puts the whole queue back, and the next transaction or poll retries it (issue #144).
+`_apply_pending_ddl()` takes the queue before it connects.
+A failure while connecting or taking the lock puts the whole queue back.
+The next transaction or poll retries the queue (issue #144).
 Under the lock, an entry that fails with `OperationalError` (lost connection, `lock_timeout` on the `ALTER`) is put back on its own.
-Any other error, such as invalid SQL, drops the entry until the next startup, so broken DDL does not retry on every request.
+Any other error, such as invalid SQL, drops the entry until the next startup.
+This stops broken DDL from retrying on every request.
 
-The probe, the lock session and the DDL statements connect directly, outside the pool, so `pool-timeout` does not bound them.
-They connect with `connect_timeout` set to `pool-timeout` instead, unless the DSN or `PGCONNECT_TIMEOUT` sets one (issue #145).
+The probe, the lock session and the DDL statements connect directly, outside the pool.
+`pool-timeout` does not bound them.
+These connections use `connect_timeout` set to `pool-timeout` instead, unless the DSN or `PGCONNECT_TIMEOUT` sets one (issue #145).
 Deferred callables receive that DSN too.
 Without it, a primary that drops packets would block the poll applying the DDL for the operating system's TCP timeout, often minutes.
+
+(architecture-connection-pool-lifecycle)=
 
 ## Connection pool lifecycle
 
@@ -209,6 +252,8 @@ The pool is created at storage initialization with configurable `min_size` (defa
 A `pool_timeout` parameter (default 30 seconds) limits how long a connection request blocks before raising an error, preventing unbounded waits under load.
 Connections use `autocommit=True` and `dict_row` by default.
 Each `PGJsonbStorageInstance` borrows a connection from the pool at creation time and returns it when `release()` is called.
+
+(architecture-pack-algorithm)=
 
 ## Pack algorithm
 
@@ -230,7 +275,8 @@ SELECT zoid FROM reachable
 ```
 
 This starts from the root object (zoid=0) and follows all reference edges, collecting every reachable object.
-PostgreSQL's recursive CTE engine terminates naturally when no new rows are produced -- there is no explicit depth limit.
+PostgreSQL's recursive CTE engine terminates naturally when no new rows are produced.
+There is no explicit depth limit.
 
 The full pack runs in five phases:
 
@@ -241,8 +287,10 @@ In history-preserving mode with a pack time, objects created or modified after t
 4. **Clean history tables** (history-preserving mode only): remove history rows for unreachable objects and old revisions of reachable objects before the pack time.
 5. **Clean transaction log**: remove `transaction_log` entries no longer referenced by any `object_state` row.
 
-The result is 13-28x faster pack compared to RelStorage, which must load and unpickle every object in Python to discover references.
-See {doc}`performance` for benchmark numbers.
+As a result, pack is faster than in RelStorage.
+For the measured numbers, see {ref}`performance-pack-and-garbage-collection`.
+
+(architecture-blob-tiering)=
 
 ## Blob tiering
 
@@ -278,19 +326,27 @@ When S3 tiering is not configured, all blobs go to PostgreSQL bytea regardless o
 
 A blob that is not in the local cache is downloaded from S3 by the request that needs it.
 That request holds its PostgreSQL transaction open the whole time, because the transaction is its MVCC snapshot.
-zodb-pgjsonb sets `idle_in_transaction_session_timeout` (60 seconds by default) as a safety net against leaked transactions, so PostgreSQL terminates the session of a request that spends longer than that outside PostgreSQL.
+zodb-pgjsonb sets `idle_in_transaction_session_timeout` (60 seconds by default) as a safety net against leaked transactions.
+PostgreSQL terminates the session of a request that spends longer than this timeout outside PostgreSQL.
 A download that takes longer in total therefore ends the request with `IdleInTransactionSessionTimeout`, even if it succeeds.
 
 This makes the S3 timeouts part of the request budget.
-A stalled S3 connection is a common case: the first request on it hangs until the read timeout expires, and the retry on a fresh connection succeeds at once.
-zodb-s3blobs 1.2.0 therefore uses short timeouts and few retries for downloads, so that a stall costs seconds instead of minutes.
-The read timeout is an inactivity timeout per socket operation, though, not a limit on the whole download.
+A stalled S3 connection is a common case.
+The first request on it hangs until the read timeout expires.
+The retry on a fresh connection succeeds at once.
+zodb-s3blobs 1.2.0 therefore uses short timeouts and few retries for downloads so that a stall costs seconds instead of minutes.
+The read timeout is an inactivity timeout per socket operation.
+It does not limit the whole download.
 A large blob on a slow link can still exceed the PostgreSQL budget, and neither timeout setting prevents that.
 
 Uploads are different.
-They run in `tpc_vote` while the commit lock is held, so a stalled upload blocks every other writer rather than a single request.
-Some S3 providers answer uploads under concurrent load only after more than a minute, so a short upload timeout would cause spurious failures and retries.
+They run in `tpc_vote` while the commit lock is held.
+A stalled upload blocks every other writer rather than a single request.
+Some S3 providers answer uploads under concurrent load only after more than a minute.
+A short upload timeout would cause spurious failures and retries.
 That is why uploads keep long timeouts and have their own settings.
+
+(architecture-listen-notify-invalidation)=
 
 ## LISTEN/NOTIFY invalidation
 
@@ -300,7 +356,7 @@ zodb-pgjsonb uses PostgreSQL's LISTEN/NOTIFY for near-instant invalidation.
 
 A trigger on the `transaction_log` table fires on every INSERT:
 
-```sql
+```postgresql
 CREATE OR REPLACE FUNCTION notify_commit() RETURNS trigger AS $$
 BEGIN
     PERFORM pg_notify('zodb_invalidations', NEW.tid::text);
@@ -314,9 +370,12 @@ CREATE TRIGGER trg_notify_commit
 ```
 
 When a transaction commits and inserts its metadata row into `transaction_log`, PostgreSQL asynchronously notifies all listening connections with the new TID.
-Storage instances that have subscribed to the `zodb_invalidations` channel receive the notification within milliseconds, allowing them to invalidate cached objects and refresh their snapshots with minimal delay.
+Storage instances that have subscribed to the `zodb_invalidations` channel receive the notification within milliseconds.
+They can then invalidate cached objects and refresh their snapshots with minimal delay.
 
 This mechanism works across multiple application servers connecting to the same PostgreSQL instance, providing cluster-wide invalidation without any additional infrastructure.
+
+(architecture-history-modes)=
 
 ## History modes
 
@@ -332,20 +391,25 @@ This mode offers the lowest storage overhead and simplest query paths but does n
 ### History-preserving mode
 
 In history-preserving mode, previous versions are archived in `object_history` before being overwritten in `object_state`.
-This uses a copy-before-overwrite model: at write time, the existing `object_state` row for each modified object is copied into `object_history`, then `object_state` is upserted with the new version.
-The current version always lives in `object_state`; only previous versions go to `object_history`.
+This uses a copy-before-overwrite model.
+At write time, the existing `object_state` row for each modified object is copied into `object_history`.
+Then `object_state` is upserted with the new version.
+The current version always lives in `object_state`.
+Only previous versions go to `object_history`.
 
 This design enables:
 - **loadBefore()**: retrieve the state of an object at a specific point in time by querying `object_history` with a TID range.
 - **history()**: return the revision history of an object by querying both `object_state` (current) and `object_history` (previous) with a UNION.
 - **undo()**: revert an object to a previous state by swapping the current and historical versions.
 
-The copy-before-overwrite model is more efficient than a full dual-write approach (where every version is written to both tables) because it avoids writing duplicate JSONB data.
+The copy-before-overwrite model avoids writing duplicate JSONB data.
+It is more efficient than a full dual-write approach, where every version is written to both tables.
 Batch writes are up to 33% faster and storage overhead is roughly 50% lower.
 
 ### Switching between modes
 
-Both directions are supported at runtime.
+Switching to history-preserving happens at startup.
+Switching to history-free needs all application instances stopped.
 Switching from history-free to history-preserving creates the `object_history` table and begins tracking changes on the next modification.
 Switching from history-preserving to history-free uses `convert_to_history_free()` to drop history tables, clean old blob versions, and remove orphaned transaction log entries.
-See {doc}`../how-to/index` for details.
+See {doc}`/how-to/switch-history-modes` for details.

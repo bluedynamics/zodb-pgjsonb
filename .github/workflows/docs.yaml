@@ -7,6 +7,10 @@ on:
     paths:
       - "docs/**"
       - ".github/workflows/docs.yaml"
+  pull_request:
+    paths:
+      - "docs/**"
+      - ".github/workflows/docs.yaml"
   workflow_dispatch:
 
 permissions:
@@ -15,7 +19,7 @@ permissions:
   id-token: write
 
 concurrency:
-  group: pages
+  group: pages-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -38,15 +42,22 @@ jobs:
             myst_parser sphinxcontrib.mermaid shibuya \
             sphinx-design sphinx-copybutton
 
+      # reference/changelog.md only includes CHANGES.md, which carries the H1.
+      - name: Check prose
+        working-directory: docs
+        run: bash check-prose.sh $(find sources -name '*.md' -not -path '*/specs/*' -not -name changelog.md)
+
       - name: Build documentation
         working-directory: docs
-        run: .venv/bin/sphinx-build sources html
+        run: .venv/bin/sphinx-build -W --keep-going sources html
 
-      - uses: actions/upload-pages-artifact@v4
+      - if: github.event_name == 'push'
+        uses: actions/upload-pages-artifact@v4
         with:
           path: docs/html
 
   deploy:
+    if: github.event_name == 'push'
     needs: build
     runs-on: ubuntu-latest
     environment:

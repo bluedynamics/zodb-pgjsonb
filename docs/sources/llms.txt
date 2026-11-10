@@ -23,7 +23,7 @@ queryable JSON internally.
 - IBlobStorage — tiered blobs (PG bytea + optional S3)
 - IStorageUndoable — undo support in history-preserving mode
 - IStorageIteration — transaction/record iteration
-- IStorageRestoreable — zodbconvert migration support
+- IStorageRestoreable — zodb-convert migration support
 
 ## Architecture
 
@@ -43,7 +43,7 @@ ZODB.DB
 1. ZODB calls `store(oid, serial, pickle_bytes, version, transaction)`
 2. `zodb_json_codec.decode_zodb_record_for_pg_json()` transcodes pickle to JSON string (entirely in Rust, GIL released)
 3. Class module/name extracted from `@cls` marker, state from `@s`, refs from `@ref` markers
-4. State processors (plugins) run: pop keys from state, return extra column data
+4. State processors (plugins) run: inspect the decoded state and return extra column data
 5. `tpc_vote()` batch-writes all objects via `executemany()` (pipelined, single round-trip)
 6. `tpc_finish()` commits PG transaction, triggers NOTIFY for invalidation
 
@@ -77,7 +77,7 @@ WITH RECURSIVE reachable AS (
 DELETE FROM object_state WHERE zoid NOT IN (SELECT zoid FROM reachable)
 ```
 
-Pre-extracted `refs BIGINT[]` column enables 15-28x faster pack than RelStorage.
+Pre-extracted `refs BIGINT[]` column enables 8.7x to 14.4x faster pack than RelStorage (100 to 10,000 objects).
 
 ## Database Schema
 
@@ -184,7 +184,7 @@ class IStateProcessor:
 Used by plone-pgcatalog to write catalog index columns in the same PG transaction.
 
 Processor `get_schema_sql()` DDL and `defer_startup_action()` callables run from
-the first write transaction under a session-level advisory lock. A double-checked
+the next `poll_invalidations()` or `tpc_begin()` after the read snapshot has ended, under a session-level advisory lock. A double-checked
 schema-version gate (markers in `pgjsonb_schema_state`) lets replicas skip the
 lock when their tagged DDL is already current: the static DDL block is auto-tagged
 by `sha256`, deferred actions pass an explicit `version`, and `version=None` always
@@ -282,7 +282,7 @@ FROM object_state
 WHERE state @> '{"portal_type": "Document"}';
 ```
 
-### Migration (zodbconvert)
+### Migration (zodb-convert)
 
 ```python
 storage = PGJsonbStorage(dsn="...")
@@ -304,12 +304,12 @@ histogram = storage.get_blob_histogram()
 
 | Category | vs RelStorage |
 |---|---|
-| Single store | 1.4-1.6x faster |
-| Cached load | 3.7-4.4x faster |
-| Uncached load | 1.1-1.6x slower (transcode overhead) |
-| Pack/GC (10K objects) | 22x faster |
-| Batch store 100 | 1.2x slower (JSONB indexing) |
-| HP undo | 1.8x faster |
+| Single store | 1.2x faster |
+| Cached load | 2.5x faster (single), 4.8x faster (batch of 100) |
+| Uncached load | 1.3x slower (transcode overhead) |
+| Pack/GC (10K objects) | 14.4x faster |
+| Batch store 100 | on par |
+| HP undo | 1.7x faster |
 
 ## Security
 

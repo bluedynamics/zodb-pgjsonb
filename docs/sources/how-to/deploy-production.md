@@ -4,11 +4,13 @@
 
 This guide shows you how to configure zodb-pgjsonb for production workloads.
 
+(deploy-production-tune-connection-pool-settings)=
+
 ## Tune connection pool settings
 
 Set `pool-size` and `pool-max-size` based on your expected concurrency:
 
-```xml
+```ini
 <pgjsonb>
     dsn dbname=zodb user=zodb host=localhost port=5432
     pool-size 4
@@ -20,11 +22,9 @@ Set `pool-size` and `pool-max-size` based on your expected concurrency:
 - **pool-size**: minimum connections kept open (default: 1).
   Set this to the number of Zope threads for steady-state workloads.
 - **pool-max-size**: maximum connections (default: 10).
-  Every *open or idle* ZODB connection holds one pool connection, and
-  ZODB keeps up to its own `pool-size` (Zope default: 7) idle connections
-  around. Size it to at least ZODB `pool-size` + Zope worker threads +
-  cache-warmer concurrency + 2. Multiply by the number of processes when
-  you size PostgreSQL's `max_connections`.
+  Every *open or idle* ZODB connection holds one pool connection, and ZODB keeps up to its own `pool-size` (Zope default: 7) idle connections around.
+  Size it to at least ZODB `pool-size` + Zope worker threads + cache-warmer concurrency + 2.
+  Multiply by the number of processes when you size PostgreSQL's `max_connections`.
 - **pool-timeout**: seconds to wait for a connection before raising `StorageError` (default: 30.0).
 
 Each ZODB connection gets its own `PGJsonbStorageInstance` with a dedicated PostgreSQL connection from the pool.
@@ -34,52 +34,60 @@ Each ZODB connection gets its own `PGJsonbStorageInstance` with a dedicated Post
 ## Size worker threads for GIL headroom
 
 A single process runs its worker threads under one CPython GIL.
-When several threads render responses concurrently while others wait on PostgreSQL, a thread returning from a query queues behind the CPU-bound ones for the GIL, which inflates per-load wall time even when the database is fast.
+When several threads render responses concurrently while others wait on PostgreSQL, a thread returning from a query queues behind the CPU-bound ones for the GIL.
+This inflates per-load wall time even when the database is fast.
 
 Prefer more processes with fewer threads each over fewer processes with many threads:
 
-- Keep the thread count per process modest — a small number such as 2 to 4 — and scale out with more processes or replicas to serve the same concurrency.
-- Match `pool-size` to the thread count per process, as described above, so each thread still has its own pooled connection.
-- Cache CPU-heavy per-request work such as theme compilation out of the request path, so waiting threads re-acquire the GIL sooner.
+- Keep the thread count per process modest, at a small number such as 2 to 4.
+  Scale out with more processes or replicas to serve the same concurrency.
+- Match `pool-size` to the thread count per process, as described above.
+  Each thread then still has its own pooled connection.
+- Cache CPU-heavy per-request work such as theme compilation out of the request path.
+  Waiting threads then re-acquire the GIL sooner.
 
 ```{seealso}
 {ref}`gil-convoy` explains why per-load timings inflate under concurrency even when PostgreSQL is fast.
 ```
 
+(deploy-production-tune-the-object-cache)=
+
 ## Tune the object cache
 
-Set `cache-local-mb` to control the per-instance LRU cache for `load()` results:
+Set `cache-shared-mb` to size the process-wide load cache (L2) and `cache-per-connection-mb` to size the per-connection cache (L1):
 
-```xml
+```ini
 <pgjsonb>
     dsn dbname=zodb user=zodb host=localhost
-    cache-local-mb 64
+    cache-shared-mb 512
+    cache-per-connection-mb 32
 </pgjsonb>
 ```
 
-The cache stores pickle bytes keyed by object ID, avoiding repeated PostgreSQL round-trips and JSONB transcoding.
-The default is 16 MB.
-Set to 0 to disable caching entirely.
+The caches store pickle bytes keyed by object ID, avoiding repeated PostgreSQL round-trips and JSONB transcoding.
+The default is 256 MB for `cache-shared-mb` and 16 MB for `cache-per-connection-mb`.
+Set either to 0 to disable that tier.
+See {ref}`cache-tiers` for the model.
+
+(deploy-production-roll-out-without-a-ddl-stampede)=
 
 ## Roll out without a DDL stampede
 
 When you run several replicas and deploy with a rolling update, every pod starts up and wants to apply its deferred schema DDL.
-The storage coordinates this with a session-level advisory lock so only one pod runs the DDL at a time.
-A schema-version gate runs a cheap `SELECT` *before* taking that lock, so replicas whose DDL is already current return immediately instead of all queuing on the lock.
-
-You do not need to configure anything for this — it is on by default.
-The first deploy after upgrading records the version markers; from then on, deploys that do not change the schema skip the lock entirely.
-
-Two environment variables let you tune the behavior:
+The storage serializes this DDL behind an advisory lock and skips it when the schema is already current, with no configuration needed.
+To tune it, use two environment variables:
 
 - Set `ZODB_PGJSONB_DDL_LOCK_TIMEOUT` (default `15min`) to bound how long a pod waits for the lock before requeuing its DDL for the next transaction.
-- Set `ZODB_PGJSONB_FORCE_DDL=1` on a single pod to bypass the gate and re-apply all deferred DDL, for example after you manually dropped an index.
-  Remove it again once that pod has started, so the rest of the fleet keeps using the fast path.
+- Set `ZODB_PGJSONB_FORCE_DDL=1` on a single pod to bypass the schema check and re-apply all deferred DDL, for example after you manually dropped an index.
+  Remove it again once that pod has started.
+  The rest of the fleet then keeps skipping DDL that is already current.
 
 ```{seealso}
 {ref}`startup-ddl-gate` explains how the gate works and why it trades re-running idempotent DDL for skipping the lock.
 For the variables themselves, see {doc}`/reference/configuration`.
 ```
+
+(deploy-production-schedule-periodic-pack)=
 
 ## Schedule periodic pack
 
@@ -102,12 +110,14 @@ storage.close()
 
 Save this as `pack_db.py` and add a cron entry:
 
-```
+```text
 0 3 * * * /path/to/venv/bin/python /path/to/pack_db.py
 ```
 
 Pack runs pure SQL (recursive CTE on the pre-extracted `refs` column) and does not load any objects.
 It also deletes orphaned S3 blobs when S3 tiering is configured.
+
+(deploy-production-monitor-blob-statistics)=
 
 ## Monitor blob statistics
 
@@ -128,11 +138,13 @@ storage.close()
 
 When running under Zope, blob statistics are available in the ZMI database management tab.
 
-## PostgreSQL tuning
+(deploy-production-tune-postgresql)=
+
+## Tune PostgreSQL
 
 Key `postgresql.conf` settings for a dedicated PostgreSQL instance:
 
-```
+```ini
 shared_buffers = 256MB          # 25% of RAM for dedicated PG
 work_mem = 32MB                 # For complex queries and sorts
 effective_cache_size = 1GB      # Available OS cache
@@ -142,7 +154,7 @@ max_connections = 100           # Match pool-max-size * instances + overhead
 
 Enable slow query logging to identify performance issues:
 
-```
+```ini
 log_min_duration_statement = 100   # Log queries slower than 100 ms
 ```
 
@@ -154,13 +166,15 @@ Configure autovacuum for `object_state` if you have high write throughput:
 ALTER TABLE object_state SET (autovacuum_analyze_threshold = 5000);
 ```
 
-## Backup strategy
+(deploy-production-back-up-the-database-and-blobs)=
+
+## Back up the database and blobs
 
 ### PostgreSQL backup
 
 Use `pg_dump` for logical backups:
 
-```bash
+```shell
 pg_dump -Fc -f zodb_backup.dump "dbname=zodb user=zodb host=localhost"
 ```
 
@@ -169,18 +183,20 @@ All ZODB data (objects, transactions, blobs stored in PG) is captured by standar
 
 ### S3 blob backup
 
+Because pack deletes orphaned S3 blobs, versioning keeps a safety net.
 Enable S3 bucket versioning to protect against accidental deletion:
 
-```bash
+```shell
 aws s3api put-bucket-versioning \
     --bucket my-zodb-blobs \
     --versioning-configuration Status=Enabled
 ```
 
 Set up S3 cross-region replication or lifecycle rules for additional durability.
-Pack deletes orphaned S3 blobs, so versioning preserves a safety net.
 
-## Monitoring queries
+(deploy-production-monitor-the-database)=
+
+## Monitor the database
 
 Key PostgreSQL views for monitoring:
 

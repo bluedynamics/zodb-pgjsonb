@@ -33,7 +33,7 @@ myst_enable_extensions = [
 myst_fence_as_directive = ["mermaid"]
 
 templates_path = ["_templates"]
-exclude_patterns = []
+exclude_patterns = ["specs"]
 
 # mermaid options
 mermaid_output_format = "raw"

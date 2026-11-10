@@ -4,21 +4,25 @@
 
 This guide shows you how to configure tiered blob storage so that small blobs stay in PostgreSQL and large blobs go to S3.
 
+(configure-s3-blobs-install-the-s3-extra)=
+
 ## Install the S3 extra
 
-```bash
+```shell
 pip install zodb-pgjsonb[s3]
-# or
-uv pip install zodb-pgjsonb[s3]
 ```
 
+With uv, run `uv pip install zodb-pgjsonb[s3]`.
+
 This installs the `zodb-s3blobs` dependency with the boto3 S3 client.
+
+(configure-s3-blobs-add-s3-configuration-to-zconfig)=
 
 ## Add S3 configuration to ZConfig
 
 Add the S3 keys to your `<pgjsonb>` section in `zope.conf`:
 
-```xml
+```ini
 %import zodb_pgjsonb
 
 <zodb_db main>
@@ -61,22 +65,29 @@ Add the S3 keys to your `<pgjsonb>` section in `zope.conf`:
 | `blob-cache-dir` | *auto* | Local cache directory for S3 blobs |
 | `blob-cache-size` | `1GB` | Maximum size of the local blob cache |
 
+(configure-s3-blobs-choose-a-blob-threshold-strategy)=
+
 ## Choose a blob-threshold strategy
 
 The `blob-threshold` setting controls how blobs are distributed between PostgreSQL and S3.
 
-**PG-only mode (no S3):**
+### PG-only mode
+
 Omit `s3-bucket-name` entirely.
 All blobs stay in PostgreSQL `bytea` columns regardless of size.
 
-**Tiered mode (default with S3):**
+### Tiered mode
+
 Set `blob-threshold` to a size like `100KB` (the default).
 Blobs smaller than this stay in PostgreSQL for fast access.
 Blobs at or above this threshold go to S3.
 
-**S3-only mode:**
+### S3-only mode
+
 Set `blob-threshold` to `0`.
 All blobs go to S3, keeping the PostgreSQL database compact.
+
+(configure-s3-blobs-set-up-a-local-blob-cache)=
 
 ## Set up a local blob cache
 
@@ -87,6 +98,8 @@ Set `blob-cache-size` to the maximum disk space for the cache.
 The cache uses LRU eviction when the limit is reached.
 
 For production, always configure a blob cache directory to reduce S3 latency and cost.
+
+(configure-s3-blobs-tune-s3-timeouts)=
 
 ## Tune S3 timeouts
 
@@ -104,7 +117,7 @@ If a stalled upload blocks other writers for too long, lower it instead.
 
 Set the keys in the `<pgjsonb>` section:
 
-```xml
+```ini
 <pgjsonb>
     dsn dbname=zodb user=zodb host=localhost
     s3-bucket-name my-zodb-blobs
@@ -116,6 +129,8 @@ Set the keys in the `<pgjsonb>` section:
 
 To take a value from the environment, use ZConfig's `$(NAME)` syntax, for example `s3-download-read-timeout $(S3_DOWNLOAD_READ_TIMEOUT)`.
 The plain `$NAME` syntax only expands names defined with `%define`.
+
+(configure-s3-blobs-use-garage-for-development)=
 
 ## Use Garage for development
 
@@ -141,7 +156,7 @@ root_domain = ".s3.garage.localhost"
 Start a single-node Garage container.
 `--single-node` applies the cluster layout, and `--default-access-key` / `--default-bucket` create the key and the bucket from the `GARAGE_DEFAULT_*` variables:
 
-```bash
+```shell
 docker run -d --name garage \
   -p 3900:3900 \
   -v "$PWD/garage.toml:/etc/garage.toml:ro" \
@@ -152,11 +167,12 @@ docker run -d --name garage \
   /garage server --single-node --default-access-key --default-bucket
 ```
 
-Garage access keys are `GK` followed by 24 hex characters; secret keys are 64 hex characters.
+Garage access keys are `GK` followed by 24 hex characters.
+Secret keys are 64 hex characters.
 
 Configure the storage to use Garage:
 
-```xml
+```ini
 <pgjsonb>
     dsn dbname=zodb user=zodb host=localhost port=5432
 

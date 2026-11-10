@@ -4,18 +4,27 @@
 
 This guide shows you how to write a state processor that adds custom columns to the `object_state` table, written atomically alongside ZODB object state.
 
+```{warning}
+Only register processors from trusted, audited code.
+A processor's SQL expressions are interpolated unescaped, as {ref}`state-processor-api-security` describes.
+```
+
+(write-state-processor-define-the-processor-class)=
+
 ## Define the processor class
 
 A state processor must implement two methods:
 
-- `get_extra_columns()` -- return a list of `ExtraColumn` declarations.
-- `process(zoid, class_mod, class_name, state)` -- extract data and return a dict of column values, or `None` if no extra data applies.
+- `get_extra_columns()`: return a list of `ExtraColumn` declarations.
+- `process(zoid, class_mod, class_name, state)`: extract data and return a dict of column values, or `None` if no extra data applies.
 
 Optionally implement:
 
-- `get_schema_sql()` -- return DDL to apply at registration time (for example, `ALTER TABLE` or `CREATE INDEX` statements).
+- `get_schema_sql()`: return DDL that the storage applies after registration (for example, `ALTER TABLE` or `CREATE INDEX` statements).
 
 ```python
+import json
+
 from zodb_pgjsonb import ExtraColumn
 
 
@@ -41,6 +50,8 @@ CREATE INDEX IF NOT EXISTS idx_title_tsvector ON object_state USING gin (title_t
 """
 
     def process(self, zoid, class_mod, class_name, state):
+        if isinstance(state, str):
+            state = json.loads(state)
         if not isinstance(state, dict):
             return None
         portal_type = state.get("portal_type")
@@ -52,6 +63,8 @@ CREATE INDEX IF NOT EXISTS idx_title_tsvector ON object_state USING gin (title_t
             "title_tsvector": title,
         }
 ```
+
+(write-state-processor-declare-extra-columns-with-extracolumn)=
 
 ## Declare extra columns with ExtraColumn
 
@@ -68,6 +81,8 @@ ExtraColumn(name, value_expr, update_expr=None)
   Defaults to `EXCLUDED.{name}` when set to `None`.
   In it, `EXCLUDED.{name}` holds the value already computed by `value_expr`, and `object_state.{name}` the stored value.
 
+(write-state-processor-implement-the-process-method)=
+
 ## Implement the process method
 
 The `process` method receives four arguments:
@@ -75,18 +90,23 @@ The `process` method receives four arguments:
 - **zoid**: integer object ID.
 - **class_mod**: Python module of the object class (for example, `plone.app.contenttypes.content`).
 - **class_name**: Python class name (for example, `Document`).
-- **state**: the decoded JSON state as a Python dict.
+- **state**: the object state, a JSON string on store, restore and conflict resolution.
+  When undo re-runs the processor, it is an already-decoded dict.
+  Parse a string with `json.loads`, as the example above does.
 
 Return `None` when you have nothing to say about this object: your columns keep their stored values.
 Return a dict to write your columns: every column you declared is written, and columns missing from the dict become `NULL`.
 Return `{}` to clear all your columns.
-The `process` method may modify `state` in place (for example, to pop annotation keys that should not be stored in the JSONB column).
+
+(write-state-processor-provide-optional-ddl-via-get-schema-sql)=
 
 ## Provide optional DDL via get_schema_sql
 
 Return a SQL string with `ALTER TABLE`, `CREATE INDEX`, or other DDL statements.
-The storage applies this DDL when the processor is registered, using a separate autocommit connection with a short lock timeout.
-If the DDL is blocked by concurrent read transactions at startup, it is deferred and applied on the first write transaction.
+Registration only queues this DDL.
+The storage applies it at the next `poll_invalidations()` or `tpc_begin()` after the read snapshot has ended.
+It applies it again on later calls while entries remain queued.
+The storage runs it on a separate autocommit connection.
 
 Use `IF NOT EXISTS` clauses to make the DDL idempotent:
 
@@ -94,6 +114,8 @@ Use `IF NOT EXISTS` clauses to make the DDL idempotent:
 def get_schema_sql(self):
     return "ALTER TABLE object_state ADD COLUMN IF NOT EXISTS my_col TEXT;"
 ```
+
+(write-state-processor-react-to-undo-with-undone)=
 
 ## React to undo with undone
 
@@ -111,10 +133,14 @@ def undone(self, cursor, tid, restored, deleted, entries):
 ```
 
 It is called once per undone transaction, before the undo is written, in the PostgreSQL transaction that carries the undo.
-`object_state` still shows the pre-undo rows, so the rows of `deleted` zoids can still be read.
+`object_state` still shows the pre-undo rows.
+The rows of `deleted` zoids can therefore still be read.
 Raise an exception to abort the undo.
-`entries` gives, per zoid, the revision the undone transaction wrote (`before`) and the one the undo writes (`after`, `None` for a delete), each with `class_mod`, `class_name`, `state` and `refs`.
+`entries` gives, per zoid, the revision the undone transaction wrote (`before`) and the one the undo writes (`after`, `None` for a delete).
+Each revision has `class_mod`, `class_name`, `state` and `refs`.
 Objects that the undone transaction changed only in `finalize` are not listed in `restored`.
+
+(write-state-processor-register-the-processor-with-the-storage)=
 
 ## Register the processor with the storage
 
@@ -128,15 +154,3 @@ storage.register_state_processor(MyProcessor())
 ```
 
 In a Zope/Plone application, register the processor in an `IDatabaseOpenedWithRoot` subscriber so it runs after the storage is initialized.
-
-## Security considerations
-
-```{warning}
-State processors run with full SQL injection capability.
-`value_expr` and `update_expr` are interpolated directly into INSERT statements without escaping.
-Only register processors from trusted, audited code.
-A compromised processor can read, modify, or delete any data in the database.
-```
-
-Column names are validated against a strict SQL identifier pattern.
-SQL expressions in `value_expr` and `update_expr` are not validated because they may legitimately contain function calls and casts.

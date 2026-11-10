@@ -2,26 +2,34 @@
 
 # Performance characteristics
 
-zodb-pgjsonb's performance profile reflects a fundamental trade-off: it pays a transcode cost on every uncached read in exchange for SQL queryability, faster writes, dramatically faster garbage collection, and a richer ecosystem of integrations.
+The performance profile of zodb-pgjsonb reflects a fundamental trade-off.
+The storage pays a transcode cost on every uncached read.
+In exchange it offers SQL queryability, faster writes, dramatically faster garbage collection, and a richer ecosystem of integrations.
 
 This page presents benchmark data, explains where time is spent on each operation, and traces the optimization history that shaped the current implementation.
+
+(performance-benchmark-environment)=
 
 ## Benchmark environment
 
 The numbers below were refreshed in 2026-07 on a developer workstation:
 
-- Python 3.14, PostgreSQL 17.9 (Docker on `localhost`), ZODB 6.2, psycopg 3.3
-- zodb-json-codec 1.6.1
-- Comparison baseline: RelStorage 4.2.0 on the same PostgreSQL server
-- Each figure is the median of 100 measured iterations after 10 warmup iterations; pack figures are the mean over 3 runs
+- Python 3.14, PostgreSQL 17.9 (Docker on `localhost`), ZODB 6.2, psycopg 3.3.
+- zodb-json-codec 1.6.1.
+- Comparison baseline: RelStorage 4.2.0 on the same PostgreSQL server.
+- Each figure is the median of 100 measured iterations after 10 warmup iterations.
+  Pack figures are the mean over 3 runs.
 
 ```{important}
-Absolute numbers are machine-specific -- a workstation and a production server differ by a large factor.
+Absolute numbers are machine-specific: a workstation and a production server differ by a large factor.
 The portable signal is the **PGJsonb-versus-RelStorage ratio** on the same machine.
-Reproduce or refresh these numbers on your own hardware with the suite in [`benchmarks/`](https://github.com/bluedynamics/zodb-pgjsonb/tree/main/benchmarks); its `README.md` documents the setup and how to update this page.
+Reproduce or refresh these numbers on your own hardware with the suite in [`benchmarks/`](https://github.com/bluedynamics/zodb-pgjsonb/tree/main/benchmarks).
+Its `README.md` documents the setup and how to update this page.
 ```
 
 The benchmark suite covers raw storage API operations (bypassing ZODB's object cache), ZODB.DB-level operations (through the object cache), pack/GC, history-preserving mode, and real Plone workloads.
+
+(performance-write-performance)=
 
 ## Write performance
 
@@ -31,20 +39,26 @@ The benchmark suite covers raw storage API operations (bypassing ZODB's object c
 | store batch 10 | 4.5 ms | 5.9 ms | **1.3x faster** |
 | store batch 100 | 9.2 ms | 9.3 ms | on par |
 
-Single-object and small-batch writes are faster than RelStorage; large batches are on par.
-The speedup comes from zodb-pgjsonb's simpler 2PC path -- direct SQL INSERT with advisory lock serialization, no OID/TID tracking tables, no separate commit lock table.
-The Rust codec's transcode cost is negligible: processing 100 objects from pickle to JSON takes under 0.2 ms, a small fraction of the total operation time dominated by PostgreSQL I/O and 2PC overhead.
+Single-object and small-batch writes are faster than RelStorage.
+Large batches are on par.
+The speedup comes from zodb-pgjsonb's simpler 2PC path.
+That path uses direct SQL INSERT with advisory lock serialization, no OID/TID tracking tables, and no separate commit lock table.
+The Rust codec's transcode cost is negligible.
+Processing 100 objects from pickle to JSON takes under 0.2 ms.
+That is a small fraction of the total operation time, which PostgreSQL I/O and 2PC overhead dominate.
 
 ### Where write time goes
 
 The dominant costs on the write path are:
 
-1. **Advisory lock acquisition** -- serializes all write transactions through `pg_advisory_xact_lock(0)`.
-2. **Batch conflict check** -- a single `SELECT ... WHERE zoid = ANY(...)` to detect write conflicts.
-3. **Pipelined INSERT** -- `executemany()` sends all statements in one network round-trip.
-4. **COMMIT** -- PostgreSQL WAL fsync.
+1. **Advisory lock acquisition**: serializes all write transactions through `pg_advisory_xact_lock(0)`.
+2. **Batch conflict check**: a single `SELECT ... WHERE zoid = ANY(...)` to detect write conflicts.
+3. **Pipelined INSERT**: `executemany()` sends all statements in one network round-trip.
+4. **COMMIT**: PostgreSQL WAL fsync.
 
 The codec transcode and state processor execution together account for less than 5% of write time.
+
+(performance-read-performance)=
 
 ## Read performance
 
@@ -56,8 +70,10 @@ The codec transcode and state processor execution together account for less than
 | load batch cached (100) | 31 us | 148 us | **4.8x faster** |
 
 Both storages serve hot objects from in-memory caches without hitting PostgreSQL.
-zodb-pgjsonb's `OrderedDict`-based caches keep single-key and batch lookups fast; the batch path is well ahead of RelStorage's generational LRU.
-The storage cache is two-tier -- a small per-connection L1 in front of a process-wide L2 shared across all connections; see {ref}`cache-tiers`.
+zodb-pgjsonb's `OrderedDict`-based caches keep single-key and batch lookups fast.
+The batch path is well ahead of RelStorage's generational LRU.
+The storage cache has two tiers: a small per-connection L1 in front of a process-wide L2 shared across all connections.
+See {ref}`cache-tiers`.
 
 ### Uncached reads (database round-trip)
 
@@ -71,7 +87,8 @@ RelStorage returns raw bytea bytes with no post-processing.
 
 In production, this trade-off matters less than benchmarks suggest.
 The ZODB object cache handles the large majority of reads.
-An object evicted from the ZODB object cache but still warm at the storage level hits the L1 or L2 cache and returns pickle bytes without any database round-trip.
+An object may be evicted from the ZODB object cache but still be warm at the storage level.
+It then hits the L1 or L2 cache and returns pickle bytes without any database round-trip.
 The uncached path fires primarily during cold starts and after large invalidations.
 
 ### ZODB.DB-level reads
@@ -83,8 +100,12 @@ The uncached path fires primarily during cold starts and after large invalidatio
 | write btree | 5.3 ms | 6.6 ms | **1.2x faster** |
 | connection cycle | 235 us | 162 us | 1.4x slower |
 
-Through ZODB.DB the object cache dominates cached reads, so both storages land within microseconds of each other.
-The connection cycle (open a `ZODB.Connection`, poll, close) is slower because each cycle acquires a pooled connection -- validated with a liveness check on checkout since 1.14.2 -- and opens a fresh REPEATABLE READ snapshot.
+Through ZODB.DB the object cache dominates cached reads.
+Both storages land within microseconds of each other.
+The connection cycle (open a `ZODB.Connection`, poll, close) is slower because each cycle acquires a pooled connection and opens a fresh REPEATABLE READ snapshot.
+Since 1.14.2 the pooled connection is validated with a liveness check on checkout.
+
+(performance-pack-and-garbage-collection)=
 
 ## Pack and garbage collection
 
@@ -95,15 +116,23 @@ The connection cycle (open a `ZODB.Connection`, poll, close) is slower because e
 | 10,000 | 45.2 ms | 650.5 ms | **14.4x faster** |
 
 Pack is the standout advantage.
-zodb-pgjsonb's pure SQL graph traversal via the pre-extracted `refs` column runs entirely inside PostgreSQL -- no objects are loaded, no Python unpickling occurs.
+zodb-pgjsonb's pure SQL graph traversal via the pre-extracted `refs` column runs entirely inside PostgreSQL.
+No objects are loaded.
+No Python unpickling occurs.
 RelStorage must load and unpickle every object to discover references via `referencesf()`.
 
-The performance gap widens with database size because RelStorage's cost scales linearly with the number of objects (each must be loaded and unpickled), while zodb-pgjsonb's recursive CTE operates on integer arrays and benefits from PostgreSQL's index-driven join strategies.
-zodb-pgjsonb's own pack time grows only slowly with object count -- a fixed temp-table and index-build overhead dominates at small sizes, so 100 and 1,000 objects pack in a similar time.
+The performance gap widens with database size.
+RelStorage's cost scales linearly with the number of objects, because each must be loaded and unpickled.
+zodb-pgjsonb's recursive CTE operates on integer arrays and benefits from PostgreSQL's index-driven join strategies.
+zodb-pgjsonb's own pack time grows only slowly with object count.
+A fixed temp-table and index-build overhead dominates at small sizes.
+As a result, packing 100 and 1,000 objects takes a similar time.
+
+(performance-history-preserving-mode)=
 
 ## History-preserving mode
 
-### HP writes
+### History-preserving writes
 
 | Operation | PGJsonb | RelStorage | Comparison |
 |---|---|---|---|
@@ -114,7 +143,7 @@ zodb-pgjsonb's own pack time grows only slowly with object count -- a fixed temp
 History-preserving writes use the copy-before-overwrite model: existing rows are copied to `object_history` before `object_state` is upserted.
 This is more efficient than RelStorage's full dual-write path.
 
-### HP reads
+### History-preserving reads
 
 | Operation | PGJsonb | RelStorage | Comparison |
 |---|---|---|---|
@@ -124,7 +153,7 @@ This is more efficient than RelStorage's full dual-write path.
 `loadBefore` carries the same transcode overhead as regular uncached loads and is now roughly on par with RelStorage.
 `history()` is faster because zodb-pgjsonb uses a UNION query across `object_state` and `object_history` with a direct JOIN on `transaction_log`, while RelStorage requires separate table scans.
 
-### HP undo and pack
+### History-preserving undo and pack
 
 | Operation | PGJsonb | RelStorage | Comparison |
 |---|---|---|---|
@@ -133,9 +162,9 @@ This is more efficient than RelStorage's full dual-write path.
 | pack 1,000 (4 revisions each) | 34.6 ms | 273.7 ms | **7.9x faster** |
 
 Undo is 1.7x faster thanks to zodb-pgjsonb's simpler state swap path (direct SQL).
-HP pack retains the same massive advantage as HF pack -- pure SQL graph traversal versus object loading.
+HP pack retains the same massive advantage as HF pack: pure SQL graph traversal versus object loading.
 
-### HP optimization impact
+### History-preserving optimization impact
 
 The history-preserving optimization (v1.3.0) changed `object_history` from a full duplicate of every write to a copy-before-overwrite model.
 The before/after comparison shows the impact:
@@ -148,7 +177,10 @@ The before/after comparison shows the impact:
 | load uncached | 149 us | 123 us | **-17%** |
 
 The biggest win is batch writes (-33%), where the old dual-write approach wrote the same JSONB data twice.
-Storage overhead dropped by roughly 50% because `object_history` now contains only previous versions, not a copy of every current version.
+Storage overhead dropped by roughly 50% because `object_history` now contains only previous versions.
+It no longer holds a copy of every current version.
+
+(performance-plone-application-workloads)=
 
 ## Plone application workloads
 
@@ -162,10 +194,13 @@ Measured on Plone 6.2.1 (50 documents):
 | content modify/doc | 8.7 ms | 8.2 ms | 1.1x slower |
 
 Real Plone workloads land close together, with zodb-pgjsonb marginally slower on content operations (within roughly 20%).
-At the application level, ZODB's object cache handles the hot path, and per-object transcoding cost is small relative to Plone's own processing (security checks, event handling, catalog indexing, template rendering).
+At the application level, ZODB's object cache handles the hot path.
+Per-object transcoding cost is small relative to Plone's own processing (security checks, event handling, catalog indexing, template rendering).
 
 This is the expected result: zodb-pgjsonb's performance differences are visible at the storage API level, but Plone's application overhead dominates at the user-facing level.
-The value proposition of zodb-pgjsonb is not raw speed for Plone operations -- it is SQL queryability, faster pack/GC, and the ecosystem of PostgreSQL-native integrations.
+The value proposition of zodb-pgjsonb is SQL queryability, faster pack/GC, and the ecosystem of PostgreSQL-native integrations.
+
+(performance-optimization-history)=
 
 ## Optimization history
 
@@ -211,17 +246,23 @@ The packer's unreachable object deletion was changed from `NOT IN (SELECT zoid F
 On a 4.4M-object database, pack went from 48+ minutes (incomplete) to approximately 2 minutes.
 The same pattern was applied to all deletion phases (objects, blobs, transaction log cleanup).
 
+(performance-batch-object-loading)=
+
 ### Batch object loading (1.8.0)
 
 `load_multiple(oids)` on `PGJsonbStorageInstance` loads multiple objects in a single `SELECT ... WHERE zoid = ANY(...)` query instead of individual roundtrips.
-The method checks the per-instance LRU cache first and only queries misses.
+The method checks the per-connection L1 and the shared L2 caches first and only queries misses.
 This is the building block for the refs prefetch feature (1.9.0+).
+
+(performance-refs-prefetch)=
 
 ### Pluggable refs prefetch (1.9.0--1.9.2)
 
-When an object is loaded, its `refs` column (which lists OIDs of referenced objects such as annotations and sub-mappings) can be used to prefetch all *directly referenced* objects via `load_multiple()`.
+The `refs` column lists OIDs of referenced objects such as annotations and sub-mappings.
+When an object is loaded, its `refs` can be used to prefetch all *directly referenced* objects via `load_multiple()`.
 This turns the N+1 loads of an object's own sub-graph into 1+1 batch loads.
-(The distinct N+1 of a *result set* -- a collection of sibling objects that are not each other's refs -- is addressed by the ZODB `prefetch` hook in 1.15.0, below.)
+(A *result set* is a collection of sibling objects that are not each other's refs.
+Its distinct N+1 is addressed by the ZODB `prefetch` hook in 1.15.0, below.)
 
 The initial implementation (v1.9.0) prefetched unconditionally, which caused severe over-fetching for internal ZODB structures like BTrees and PersistentMappings whose refs cascade into thousands of objects.
 Cold-start performance was 40--84% slower than without prefetch.
@@ -229,7 +270,8 @@ v1.9.1 added a class-based blacklist, but maintaining a list of "non-content" cl
 v1.9.2 replaced the blacklist with a pluggable SQL expression via `register_prefetch_refs_expr()`.
 The expression is included in the `load()` query as a conditional `refs` column.
 When `None` (the default), no prefetch occurs.
-plone-pgcatalog registers `CASE WHEN idx IS NOT NULL THEN refs END`, which limits prefetch to rows that have catalog index data -- a reliable proxy for "is a content object".
+plone-pgcatalog registers `CASE WHEN idx IS NOT NULL THEN refs END`, which limits prefetch to rows that have catalog index data.
+That is a reliable proxy for "is a content object".
 
 ### Composite TID/ZOID index (1.5.3)
 
@@ -240,13 +282,18 @@ The index is created automatically on startup for existing databases.
 ### Process-wide shared cache (1.12.0)
 
 The per-instance load cache was split into two tiers: a small per-connection L1 in front of a single process-wide L2 (`SharedLoadCache`) shared by every connection.
-Before this, N connections each kept their own copy of the same hot objects -- roughly a gigabyte of duplication on a busy pod.
-The shared tier is gated by a consensus TID for MVCC correctness; a lagging reader is served an entry only when it is not newer than the reader's snapshot ({ref}`cache-tiers`).
+Before this, N connections each kept their own copy of the same hot objects.
+That duplication amounted to roughly a gigabyte on a busy pod.
+The shared tier is gated by a consensus TID for MVCC correctness.
+A lagging reader is served an entry only when it is not newer than the reader's snapshot ({ref}`cache-tiers`).
 
 ### Cache warmer (1.13.0)
 
-A learning cache warmer records the objects loaded right after startup and pre-loads the highest-scored ones into L2 on the next start, so a fresh pod is not cold.
-On rolling deploys the warmer is deliberately un-synchronized (baseline delay, jitter, a cluster-wide concurrency cap) so N replicas do not warm at once and multiply the database's startup load.
+A learning cache warmer records the objects loaded right after startup.
+On the next start it pre-loads the highest-scored ones into L2.
+A fresh pod therefore starts warm.
+On rolling deploys the warmer is deliberately un-synchronized (baseline delay, jitter, a cluster-wide concurrency cap).
+This keeps N replicas from warming at once and multiplying the database's startup load.
 
 ### Connection-pool hardening (1.14.1--1.14.2)
 
@@ -256,35 +303,42 @@ This adds one lightweight round-trip per connection checkout (visible in the con
 
 ### Per-entry L2 read gate (1.15.0)
 
-The shared cache previously denied a connection *all* of L2 whenever its snapshot was behind the consensus, so a lagging reader fell through to PostgreSQL for every object during a write burst.
-The gate is now per entry: a lagging reader keeps hitting L2 for every object unchanged since its snapshot and misses only genuinely newer ones ({ref}`cache-tiers`).
+The shared cache previously denied a connection *all* of L2 whenever its snapshot was behind the consensus.
+A lagging reader fell through to PostgreSQL for every object during a write burst.
+The gate is now per entry.
+A lagging reader keeps hitting L2 for every object unchanged since its snapshot and misses only genuinely newer ones ({ref}`cache-tiers`).
 
 ### ZODB prefetch hook (1.15.0)
 
 `PGJsonbStorageInstance.prefetch(oids)` implements ZODB's `Connection.prefetch` hook, delegating to `load_multiple`.
-Without it, `Connection.prefetch()` was a no-op on zodb-pgjsonb, so a result set (a collection listing, a tile) was loaded one object at a time -- N sequential round-trips.
-A caller that prefetches its result set turns those N round-trips into one; the micro-benchmark `benchmarks/bench_prefetch.py` shows 151 objects collapsing from 151 round-trips to 1 (about 130x faster at a 20 ms per-query latency).
+Without it, `Connection.prefetch()` was a no-op on zodb-pgjsonb.
+A result set (a collection listing, a tile) was loaded one object at a time, in N sequential round-trips.
+A caller that prefetches its result set turns those N round-trips into one.
+The micro-benchmark `benchmarks/bench_prefetch.py` shows 151 objects collapsing from 151 round-trips to 1 (about 130x faster at a 20 ms per-query latency).
 
 ### Load counters for observability
 
-Each connection instance exposes plain-int counters (read best-effort by tracing tools such as
-plone.observability, with no dependency added here):
+Each connection instance exposes plain-int counters (read best-effort by tracing tools such as plone.observability, with no dependency added here):
 
-- `_l2_load_hits` -- objects served from the shared (L2) cache.
-- `_pg_load_count` -- objects fetched from PostgreSQL.
-- `_pg_query_count` -- PostgreSQL round-trips (queries).
+- `_l2_load_hits`: objects served from the shared (L2) cache.
+- `_pg_load_count`: objects fetched from PostgreSQL.
+- `_pg_query_count`: PostgreSQL round-trips (queries).
 
-`_pg_load_count` counts *objects*; `_pg_query_count` counts *queries*. A single
-`load_multiple()` / `prefetch` that fetches N objects in one `WHERE zoid = ANY(...)` bumps
-`_pg_load_count` by N but `_pg_query_count` by 1 -- so their ratio makes the batching/prefetch
-win directly visible, where a per-object N+1 pattern keeps the ratio near 1.
+`_pg_load_count` counts *objects*.
+`_pg_query_count` counts *queries*.
+A single `load_multiple()` / `prefetch` that fetches N objects in one `WHERE zoid = ANY(...)` bumps `_pg_load_count` by N and `_pg_query_count` by 1.
+Their ratio makes the batching/prefetch win directly visible.
+A per-object N+1 pattern keeps the ratio near 1.
+
+(performance-scaling-characteristics)=
 
 ## Scaling characteristics
 
 ### Connection pool
 
 The psycopg3 `ConnectionPool` with configurable min/max size allows tuning for different deployment sizes.
-Each ZODB Connection gets its own storage instance with its own pool connection, so the pool max_size should match the expected number of concurrent ZODB Connections.
+Each ZODB Connection gets its own storage instance with its own pool connection.
+For the sizing rule, see {ref}`deploy-production-tune-connection-pool-settings`.
 
 ### Prepared statements
 
@@ -295,20 +349,32 @@ Since pool connections are reused across ZODB Connection cycles, the prepared st
 
 ### GIL convoy under concurrency
 
-Under CPython, a worker thread that has issued a query parks on the PostgreSQL socket while it waits for the response, releasing the GIL so other threads run.
+Under CPython, a worker thread that has issued a query parks on the PostgreSQL socket.
+While it waits for the response it releases the GIL so other threads can run.
 When the response arrives, the thread must re-acquire the GIL before `psycopg` returns the row to the caller.
-If the other threads in the same process are doing CPU-heavy work at that moment — template rendering, theme transformation, pickling — the returning thread queues behind them for the GIL.
-The wall-clock time attributed to a single object load then inflates from a few milliseconds of real query time to tens or hundreds of milliseconds of GIL-scheduling delay, even though PostgreSQL answered promptly.
+Other threads in the same process may be doing CPU-heavy work at that moment, such as template rendering, theme transformation, or pickling.
+The returning thread then queues behind them for the GIL.
+As a result, the wall-clock time attributed to a single object load inflates.
+It grows from a few milliseconds of real query time to tens or hundreds of milliseconds of GIL-scheduling delay.
+Yet PostgreSQL answered promptly.
 
-This is a property of the Python runtime, not of the storage.
-The database and the storage read path can both be fast — measured per-query latency on the server stays low — while a per-load timing at the application level looks slow.
-The effect is largest for requests that issue only a few loads interleaved with rendering; a request that issues many loads in a tight loop stays near the real per-query latency, because the thread spends almost all of that time parked on the socket and little of it contending for the GIL.
+This is a property of the Python runtime.
+It is not a property of the storage.
+The database and the storage read path can both be fast.
+Measured per-query latency on the server stays low.
+A per-load timing at the application level still looks slow.
+The effect is largest for requests that issue only a few loads interleaved with rendering.
+A request that issues many loads in a tight loop stays near the real per-query latency.
+The reason is that the thread spends almost all of that time parked on the socket and little of it contending for the GIL.
 
 Three levers reduce the exposure:
 
-- Reduce the number of round-trips per request, so fewer loads pay the GIL-scheduling delay.
+- Reduce the number of round-trips per request.
+  Fewer loads then pay the GIL-scheduling delay.
   Every load served from the per-instance (L1) or shared (L2) cache, or folded into a batched `load_multiple` / `prefetch`, skips the socket wait entirely.
-- Keep CPU-heavy work out of the request path, so fewer threads compete for the GIL while others wait on the socket — for example, cache compiled theme transforms instead of compiling them per request.
+- Keep CPU-heavy work out of the request path.
+  Fewer threads then compete for the GIL while others wait on the socket.
+  For example, cache compiled theme transforms instead of compiling them per request.
 - Size worker threads per process against replica count for GIL headroom, rather than maximizing threads per process.
 
 ```{seealso}
@@ -318,11 +384,13 @@ Three levers reduce the exposure:
 ### Write serialization
 
 The advisory lock serialization model (`pg_advisory_xact_lock(0)`) limits write throughput to one transaction at a time.
-This is rarely a bottleneck because ZODB write transactions are typically short (a few milliseconds) and the lock is held only during `tpc_vote` and `tpc_finish`.
+The lock is acquired in `tpc_begin()` and held until `tpc_finish()` commits.
+This is rarely a bottleneck because ZODB write transactions are typically short (a few milliseconds).
 For workloads with sustained high write concurrency, OID-range-based advisory locks could partition the lock space, but this has not been necessary in practice.
 
 ### Pack scaling
 
-Pack time scales with the size of the reachable object graph, not the total database size.
+Pack time scales with the size of the reachable object graph.
+It is not tied to the total database size.
 The recursive CTE operates on integer arrays (the `refs` column), which PostgreSQL can process efficiently in memory.
 For very large databases with deep reference chains, adequate `work_mem` and a `statement_timeout` should be configured to bound resource usage.

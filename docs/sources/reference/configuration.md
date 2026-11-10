@@ -2,14 +2,13 @@
 
 # Configuration options
 
-This page documents all configuration options for zodb-pgjsonb, including
-ZConfig directives, Python constructor parameters, S3 deployment modes,
-and dependencies.
+This page documents all configuration options for zodb-pgjsonb, including ZConfig directives, Python constructor parameters, S3 deployment modes, and dependencies.
+
+(configuration-zconfig-pgjsonb-section)=
 
 ## ZConfig `<pgjsonb>` section
 
-The storage is configured in `zope.conf` via a `<pgjsonb>` section after
-importing the package:
+The storage is configured in `zope.conf` via a `<pgjsonb>` section after importing the package:
 
 ```ini
 %import zodb_pgjsonb
@@ -34,11 +33,11 @@ It implements `ZODB.storage`.
 | `blob-temp-dir` | string | (auto-created tempdir) | no | Directory for temporary blob files. Auto-created if omitted. |
 | `cache-shared-mb` | integer | `256` | no | Size of the process-wide shared load cache (L2) in megabytes, shared across all connections in the process. Caches `load()` results (pickle bytes) to avoid repeated PostgreSQL round-trips and JSONB transcoding. Set to `0` to disable. See {ref}`cache-tiers`. |
 | `cache-per-connection-mb` | integer | `16` | no | Size of the per-connection L1 load cache in megabytes, a lock-free hot cache ahead of `cache-shared-mb`. Set to `0` to rely entirely on the shared cache. |
-| `cache-local-mb` | integer | -- | no | **Deprecated since 1.12.0.** Alias for `cache-shared-mb` that emits a `DeprecationWarning` when set. Use `cache-shared-mb` instead. |
+| `cache-local-mb` | integer | -- | no | Deprecated alias for `cache-shared-mb`; emits a `DeprecationWarning` when set. |
 | `pool-size` | integer | `1` | no | Minimum number of connections in the instance connection pool. Set to `0` for on-demand creation. |
 | `pool-max-size` | integer | `10` | no | Maximum number of connections in the instance connection pool. |
 | `pool-timeout` | float | `30.0` | no | Connection pool acquisition timeout in seconds. Raises `StorageError` if a connection cannot be acquired within this time. Also the `connect_timeout` (rounded up, at least 2) of the direct connections that apply startup DDL, unless the DSN or `PGCONNECT_TIMEOUT` sets one. |
-| `cache-warm-pct` | integer | `10` | no | Percentage of `cache-shared-mb` to pre-warm at startup from the most-accessed objects. Set to `0` to disable warming. See {ref}`cache-tiers`. |
+| `cache-warm-pct` | integer | `10` | no | Percentage of the cache's estimated object capacity to pre-warm at startup; the estimate derives from `cache-per-connection-mb` and the average object size. Set to `0` to disable warming. See {ref}`cache-tiers`. |
 | `cache-warm-decay` | float | `0.8` | no | Per-restart decay factor for historical access scores. `0.8` means scores from 10 restarts ago retain 10% of their weight. |
 | `cache-warm-delay` | integer | `15` | no | Baseline delay in seconds before the warmer starts, keeping it out of the pod's cold-start window. Set to `0` to disable. |
 | `cache-warm-jitter` | integer | `30` | no | Additional uniform-random delay (0 to `jitter` seconds) on top of `cache-warm-delay`, spreading warmer start across replicas. Set to `0` to disable. |
@@ -62,12 +61,20 @@ It implements `ZODB.storage`.
 | `blob-cache-dir` | string | (falls back to `blob-temp-dir`) | no | Local cache directory for S3 blobs. Recommended for production to avoid repeated S3 downloads. |
 | `blob-cache-size` | byte-size | `1GB` | no | Maximum size of the local blob cache directory. |
 
-Unset S3 timeout keys are not passed to `S3Client`, so the zodb-s3blobs defaults shown in parentheses apply.
-The read timeouts are inactivity timeouts per socket operation, not limits on the total transfer time.
+```{deprecated} 1.12.0
+`cache-local-mb`. Use `cache-shared-mb` instead.
+```
+
+Unset S3 timeout keys are not passed to `S3Client`.
+The zodb-s3blobs defaults shown in parentheses apply instead.
+The read timeouts are inactivity timeouts per socket operation.
+They do not limit the total transfer time.
 
 ```{versionadded} 1.19
 `s3-connect-timeout`, `s3-read-timeout`, `s3-download-connect-timeout`, `s3-download-read-timeout` and `s3-download-max-attempts`.
 ```
+
+(configuration-python-constructor)=
 
 ## Python constructor
 
@@ -79,13 +86,24 @@ PGJsonbStorage(
     name: str = "pgjsonb",
     history_preserving: bool = False,
     blob_temp_dir: str | None = None,
-    cache_local_mb: int = 16,
+    cache_local_mb: int | None = None,
+    cache_shared_mb: int = 256,
+    cache_per_connection_mb: int = 16,
     pool_size: int = 1,
     pool_max_size: int = 10,
     pool_timeout: float = 30.0,
     s3_client: S3Client | None = None,
     blob_cache: S3BlobCache | None = None,
+    blob_cache_size: int = 1024 * 1024 * 1024,
     blob_threshold: int = 102_400,
+    cache_warm_pct: int = 10,
+    cache_warm_decay: float = 0.8,
+    cache_warm_delay: int = 15,
+    cache_warm_jitter: int = 30,
+    cache_warm_concurrency: int = 2,
+    cache_warm_wait_max: int = 300,
+    cache_warm_batch_size: int = 500,
+    cache_warm_batch_pause: float = 0.5,
 )
 ```
 
@@ -95,16 +113,28 @@ PGJsonbStorage(
 | `name` | `str` | `"pgjsonb"` | Storage name. |
 | `history_preserving` | `bool` | `False` | Enable history-preserving mode. |
 | `blob_temp_dir` | `str \| None` | `None` | Blob temp directory. A temporary directory is auto-created when `None`. |
-| `cache_local_mb` | `int` | `16` | Per-instance LRU cache size in megabytes. |
+| `cache_local_mb` | `int \| None` | `None` | **Deprecated since 1.12.0.** Alias for `cache_shared_mb` that emits a `DeprecationWarning` when set. |
+| `cache_shared_mb` | `int` | `256` | Size of the process-wide shared load cache (L2) in megabytes, shared across all connections in the process. Caches `load()` results (pickle bytes) to avoid repeated PostgreSQL round-trips and JSONB transcoding. Set to `0` to disable. See {ref}`cache-tiers`. |
+| `cache_per_connection_mb` | `int` | `16` | Size of the per-connection L1 load cache in megabytes, a lock-free hot cache ahead of `cache_shared_mb`. Set to `0` to rely entirely on the shared cache. |
 | `pool_size` | `int` | `1` | Minimum pool connections. |
 | `pool_max_size` | `int` | `10` | Maximum pool connections. |
 | `pool_timeout` | `float` | `30.0` | Pool acquisition timeout in seconds. Also the `connect_timeout` of the startup DDL connections (see `pool-timeout`). |
 | `s3_client` | `S3Client \| None` | `None` | S3 client instance from `zodb-s3blobs`. |
 | `blob_cache` | `S3BlobCache \| None` | `None` | Local S3 blob cache instance from `zodb-s3blobs`. |
+| `blob_cache_size` | `int` | `1073741824` | Maximum size of the local blob cache in bytes. |
 | `blob_threshold` | `int` | `102400` | Byte threshold for S3 tiering. |
+| `cache_warm_pct` | `int` | `10` | Percentage of the cache's estimated object capacity to pre-warm at startup; the estimate derives from `cache_per_connection_mb` and the average object size. Set to `0` to disable warming. See {ref}`cache-tiers`. |
+| `cache_warm_decay` | `float` | `0.8` | Per-restart decay factor for historical access scores. `0.8` means scores from 10 restarts ago retain 10% of their weight. |
+| `cache_warm_delay` | `int` | `15` | Baseline delay in seconds before the warmer starts, keeping it out of the pod's cold-start window. Set to `0` to disable. |
+| `cache_warm_jitter` | `int` | `30` | Additional uniform-random delay (0 to `jitter` seconds) on top of `cache_warm_delay`, spreading warmer start across replicas. Set to `0` to disable. |
+| `cache_warm_concurrency` | `int` | `2` | Maximum number of pods warming concurrently cluster-wide, enforced by a PostgreSQL advisory-lock semaphore. Set to a very large value to effectively disable the cap. |
+| `cache_warm_wait_max` | `int` | `300` | Maximum seconds a pod waits for a warming slot before skipping warmup (logs a `WARNING`). |
+| `cache_warm_batch_size` | `int` | `500` | Number of object ids fetched per warmer `SELECT` batch. |
+| `cache_warm_batch_pause` | `float` | `0.5` | Seconds to pause between warmer batches, lowering per-pod peak query rate. Set to `0` to disable. |
 
-The ZConfig factory (`PGJsonbStorageFactory`) constructs `S3Client` and
-`S3BlobCache` from the ZConfig keys before passing them to the constructor.
+The ZConfig factory (`PGJsonbStorageFactory`) constructs `S3Client` and `S3BlobCache` from the ZConfig keys before passing them to the constructor.
+
+(configuration-s3-deployment-modes)=
 
 ## S3 deployment modes
 
@@ -114,9 +144,12 @@ The ZConfig factory (`PGJsonbStorageFactory`) constructs `S3Client` and
 | Tiered | `s3-bucket-name` set, `blob-threshold` > 0 | Blobs smaller than threshold stored in PG bytea; blobs at or above threshold stored in S3 with key in `blob_state.s3_key`. |
 | S3-only | `s3-bucket-name` set, `blob-threshold` = 0 | All blobs stored in S3. |
 
+(configuration-environment-variables)=
+
 ## Environment variables
 
-The storage reads these variables from the process environment, not from ZConfig.
+The storage reads these variables from the process environment.
+It does not read them from ZConfig.
 
 | Variable | Default | Description |
 |---|---|---|
@@ -127,6 +160,8 @@ The storage reads these variables from the process environment, not from ZConfig
 ```{versionadded} 1.14
 `ZODB_PGJSONB_FORCE_DDL` and the schema-version gate it controls.
 ```
+
+(configuration-dependencies)=
 
 ## Dependencies
 
