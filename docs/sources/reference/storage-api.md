@@ -2,17 +2,15 @@
 
 # Storage API
 
-This page documents the public API of `PGJsonbStorage` and
-`PGJsonbStorageInstance`, the two classes that implement ZODB storage.
+This page documents the public API of `PGJsonbStorage` and `PGJsonbStorageInstance`, the two classes that implement ZODB storage.
 
 `PGJsonbStorage` is the main storage (factory).
-It manages schema initialization, OID allocation, shared state, and
-creates per-connection instances.
+It manages schema initialization, OID allocation, shared state, and creates per-connection instances.
 
-`PGJsonbStorageInstance` is a per-connection MVCC instance created by
-`new_instance()`.
-Each ZODB Connection receives its own instance with an independent
-PostgreSQL connection for snapshot isolation.
+`PGJsonbStorageInstance` is a per-connection MVCC instance created by `new_instance()`.
+Each ZODB Connection receives its own instance with an independent PostgreSQL connection for snapshot isolation.
+
+(storage-api-pgjsonbstorage)=
 
 ## PGJsonbStorage
 
@@ -20,8 +18,7 @@ PostgreSQL connection for snapshot isolation.
 from zodb_pgjsonb.storage import PGJsonbStorage
 ```
 
-Declared interfaces: `IPGJsonbStorage`, `IMVCCStorage`, `IBlobStorage`,
-`IStorageUndoable`, `IStorageIteration`, `IStorageRestoreable`.
+Declared interfaces: `IPGJsonbStorage`, `IMVCCStorage`, `IBlobStorage`, `IStorageUndoable`, `IStorageIteration`, `IStorageRestoreable`.
 
 Inherits from: `ConflictResolvingStorage`, `BaseStorage`.
 
@@ -56,16 +53,13 @@ PGJsonbStorage(
 
 See {doc}`configuration` for parameter descriptions.
 
-The constructor connects to PostgreSQL, creates a connection pool,
-installs the schema, and restores max OID and last TID from
-existing data.
+The constructor connects to PostgreSQL, creates a connection pool, installs the schema, and restores max OID and last TID from existing data.
 
 ### IMVCCStorage methods
 
 `new_instance() -> PGJsonbStorageInstance`
 : Create a per-connection storage instance.
-  Each ZODB Connection gets its own instance with an independent
-  PostgreSQL connection.
+  Each ZODB Connection gets its own instance with an independent PostgreSQL connection.
 
 `release() -> None`
 : Release resources.
@@ -91,22 +85,19 @@ existing data.
 : Load object data before a given TID.
   Returns `(data, serial, end_serial)` or `None`.
   In history-preserving mode, queries `object_history`.
-  In history-free mode, returns the current state if its TID is less
-  than the requested TID.
+  In history-free mode, returns the current state if its TID is less than the requested TID.
 
 `loadSerial(oid: bytes, serial: bytes) -> bytes`
 : Load a specific revision of an object.
   Returns pickle bytes.
   Raises `POSKeyError` if the revision does not exist.
-  Checks the serial cache first (needed for conflict resolution in
-  history-free mode).
+  Checks the serial cache first (needed for conflict resolution in history-free mode).
 
 ### IStorage write methods
 
 `store(oid: bytes, serial: bytes, data: bytes, version: str, transaction) -> None`
 : Queue an object for storage during the current transaction.
-  Decodes pickle to JSON via `zodb-json-codec`, runs state processors,
-  and defers conflict detection to `_vote()`.
+  Decodes pickle to JSON via `zodb-json-codec`, runs state processors, and defers conflict detection to `_vote()`.
 
 `checkCurrentSerialInTransaction(oid: bytes, serial: bytes, transaction) -> None`
 : Queue a read-conflict check for batch verification in `_vote()`.
@@ -119,8 +110,7 @@ existing data.
 
 `tpc_vote(transaction) -> list | None`
 : Flush pending stores and blobs to PostgreSQL.
-  Performs batch conflict detection, writes transaction log, objects,
-  and blobs.
+  Performs batch conflict detection, writes transaction log, objects, and blobs.
   Calls `finalize()` on each registered state processor.
   Returns a list of resolved conflict OIDs, or `None`.
 
@@ -144,10 +134,8 @@ existing data.
 
 `history(oid: bytes, size: int = 1) -> list[dict]`
 : Return revision history for an object.
-  Each dict contains: `time`, `tid`, `serial`, `user_name`,
-  `description`, `size`.
-  In history-preserving mode, queries both `object_state` and
-  `object_history`.
+  Each dict contains: `time`, `tid`, `serial`, `user_name`, `description`, `size`.
+  In history-preserving mode, queries both `object_state` and `object_history`.
 
 `pack(t: float, referencesf) -> None`
 : Pack the storage by removing unreachable objects and their blobs.
@@ -155,8 +143,7 @@ existing data.
   Cleans up S3 blobs for deleted objects.
 
 `close() -> None`
-: Close all database connections, the connection pool, and remove
-  the blob temp directory.
+: Close all database connections, the connection pool, and remove the blob temp directory.
 
 ### IStorageUndoable methods
 
@@ -165,8 +152,7 @@ existing data.
 
 `undoLog(first: int = 0, last: int = -20, filter: callable | None = None) -> list[dict]`
 : Return a list of transaction descriptions for undo.
-  Each dict contains: `id` (TID bytes), `time`, `user_name` (bytes),
-  `description` (bytes), plus any extension metadata.
+  Each dict contains: `id` (TID bytes), `time`, `user_name` (bytes), `description` (bytes), plus any extension metadata.
   Returns `[]` in history-free mode.
   Excludes transactions at or before the last pack time.
 
@@ -197,35 +183,30 @@ existing data.
 : Copy all transactions from another storage.
 
   **Parameters:**
-  - `other` — source storage (must implement `IStorageIteration`)
-  - `workers` — number of parallel writer threads (default: 1 = sequential)
-  - `start_tid` — resume from this TID (bytes, optional)
-  - `blob_mode` — S3 blob upload strategy:
-    - `"inline"` (default) — upload synchronously in worker threads
-    - `"background"` — upload via background thread pool (PG writes continue)
-    - `"deferred:/path/to/manifest.tsv"` — write manifest, upload later
+  - `other`: source storage (must implement `IStorageIteration`)
+  - `workers`: number of parallel writer threads (default: 1 = sequential)
+  - `start_tid`: resume from this TID (bytes, optional)
+  - `blob_mode`: S3 blob upload strategy:
+    - `"inline"` (default): upload synchronously in worker threads
+    - `"background"`: upload via background thread pool (PG writes continue)
+    - `"deferred:/path/to/manifest.tsv"`: write manifest, upload later
 
   Blob files are copied (not moved) to preserve source storage integrity.
   When `workers` > 1, uses parallel PostgreSQL connections for concurrent writes.
-  The main thread reads from the source, decodes pickles, and tracks OID-level
-  dependencies to guarantee correct write ordering.
+  The main thread reads from the source, decodes pickles, and tracks OID-level dependencies to guarantee correct write ordering.
   When `start_tid` is set, iteration begins at that TID (for incremental imports).
-  A `migration_watermark` table tracks contiguous commit progress during parallel
-  copies so interrupted imports can resume safely without losing transactions.
+  A `migration_watermark` table tracks contiguous commit progress during parallel copies so interrupted imports can resume safely without losing transactions.
 
 ### IBlobStorage methods
 
 `storeBlob(oid: bytes, oldserial: bytes, data: bytes, blobfilename: str, version: str, transaction) -> None`
 : Store object data and a blob file.
-  Calls `store()` for the object data and stages the blob file
-  to a stable temp location.
+  Calls `store()` for the object data and stages the blob file to a stable temp location.
 
 `loadBlob(oid: bytes, serial: bytes) -> str`
 : Return the path to a file containing the blob data.
-  Uses deterministic filenames (`{oid:016x}-{tid:016x}.blob`) so
-  repeated calls return the same path.
-  Checks pending blobs, the local cache, the S3 blob cache, and then
-  the database in that order.
+  Uses deterministic filenames (`{oid:016x}-{tid:016x}.blob`) so repeated calls return the same path.
+  Checks pending blobs, the local cache, the S3 blob cache, and then the database in that order.
 
 `openCommittedBlobFile(oid: bytes, serial: bytes, blob=None) -> IO`
 : Open a committed blob file for reading.
@@ -281,12 +262,9 @@ existing data.
 
 `convert_to_history_free() -> dict`
 : Convert a history-preserving database to history-free mode.
-  Drops `object_history`, `pack_state`, and the deprecated
-  `blob_history` table.
-  Removes old blob versions from `blob_state` (keeps only the latest
-  tid per zoid) and orphaned `transaction_log` entries.
-  Returns a dict with counts: `history_rows`, `pack_rows`,
-  `blob_history_rows`, `old_blob_versions`, `orphan_transactions`.
+  Drops `object_history`, `pack_state`, and the deprecated `blob_history` table.
+  Removes old blob versions from `blob_state` (keeps only the latest tid per zoid) and orphaned `transaction_log` entries.
+  Returns a dict with counts: `history_rows`, `pack_rows`, `blob_history_rows`, `old_blob_versions`, `orphan_transactions`.
   Raises `RuntimeError` if no history tables exist.
 
 `convert_to_history_preserving() -> None`
@@ -304,30 +282,25 @@ existing data.
 
 `register_prefetch_refs_expr(sql_expr: str | None) -> None`
 : Register a SQL expression for automatic refs prefetching on `load()`.
-  *Added in v1.9.2.*
 
-  When set, `load()` includes the expression as an extra column aliased
-  `refs` in its SELECT query.
-  If the expression evaluates to a non-NULL integer array, the referenced
-  objects are prefetched into the load cache via `load_multiple()`.
-  This turns N+1 individual loads into 1+1 batch loads when traversing
-  object trees.
+  When set, `load()` includes the expression as an extra column aliased `refs` in its SELECT query.
+  If the expression evaluates to a non-NULL integer array, the referenced objects are prefetched into the load cache via `load_multiple()`.
+  This turns N+1 individual loads into 1+1 batch loads when traversing object trees.
 
   Call with `None` to disable prefetching (the default).
 
-  The expression is arbitrary SQL evaluated per row, so it can filter
-  which objects trigger prefetch.
-  For example, plone-pgcatalog registers an expression that only
-  prefetches for cataloged content objects:
+  The expression is arbitrary SQL evaluated per row, so it can filter which objects trigger prefetch.
+  For example, plone-pgcatalog registers an expression that only prefetches for cataloged content objects:
 
   ```python
   storage.register_prefetch_refs_expr("CASE WHEN idx IS NOT NULL THEN refs END")
   ```
 
-  Non-content objects (BTrees, PersistentMappings, etc.) have
-  `idx IS NULL` and produce a NULL result, suppressing prefetch.
-  This avoids the cascade problem where internal ZODB structures
-  reference thousands of objects that are never accessed.
+  Non-content objects (BTrees, PersistentMappings, etc.) have `idx IS NULL` and produce a NULL result, suppressing prefetch.
+  This avoids the cascade problem where internal ZODB structures reference thousands of objects that are never accessed.
+
+  ```{versionadded} 1.9.2
+  ```
 
 ### State processor registration
 
@@ -339,22 +312,14 @@ existing data.
 
 `defer_startup_action(action: callable, name: str, version: str | None = None) -> None`
 : Defer a callable until the next `poll_invalidations()` or `tpc_begin()` after startup.
-  *Added in v1.10.3.*
 
-  At Zope startup, a ZODB Connection holds an open `REPEATABLE READ`
-  snapshot with `ACCESS SHARE` on `object_state`.  DDL statements
-  (`ALTER TABLE`, `CREATE INDEX`) need `ACCESS EXCLUSIVE`, which would
-  deadlock against that snapshot.
+  At Zope startup, a ZODB Connection holds an open `REPEATABLE READ` snapshot with `ACCESS SHARE` on `object_state`.
+  DDL statements (`ALTER TABLE`, `CREATE INDEX`) need `ACCESS EXCLUSIVE`, which would deadlock against that snapshot.
 
-  This method queues a callable that will be executed during the first
-  `poll_invalidations()` or `tpc_begin()` call after the read snapshot
-  has ended, and again on later calls while entries remain queued.  The callable receives the DSN string as its
-  only argument and should open its own autocommit connection.  Since
-  v1.19.2 that DSN carries a `connect_timeout` (`pool_timeout`), unless
-  the configured DSN or `PGCONNECT_TIMEOUT` already sets one.  If the
-  callable raises `psycopg.OperationalError`, it is queued again and
-  retried on the next transaction; any other exception drops it until
-  the next startup.
+  This method queues a callable that will be executed during the first `poll_invalidations()` or `tpc_begin()` call after the read snapshot has ended, and again on later calls while entries remain queued.
+  The callable receives the DSN string as its only argument and should open its own autocommit connection.
+  That DSN carries a `connect_timeout` (`pool_timeout`), unless the configured DSN or `PGCONNECT_TIMEOUT` already sets one.
+  If the callable raises `psycopg.OperationalError`, it is queued again and retried on the next transaction; any other exception drops it until the next startup.
 
   ```python
   def create_my_index(dsn):
@@ -372,9 +337,16 @@ existing data.
   storage.defer_startup_action(create_my_index, "my_plugin_indexes")
   ```
 
-  State processor DDL (from `get_schema_sql()`) is automatically
-  deferred — plugins only need this method for additional DDL that
-  is not part of the processor's schema.
+  State processor DDL (from `get_schema_sql()`) is automatically deferred — plugins only need this method for additional DDL that is not part of the processor's schema.
+
+  ```{versionadded} 1.10.3
+  ```
+
+  ```{versionchanged} 1.19.2
+  The DSN carries a `connect_timeout`.
+  ```
+
+(storage-api-pgjsonbstorageinstance)=
 
 ## PGJsonbStorageInstance
 
@@ -390,8 +362,7 @@ Inherits from: `ConflictResolvingStorage`.
 
 `pg_connection -> psycopg.Connection`
 : The underlying psycopg connection (read-only).
-  Shares the same `REPEATABLE READ` snapshot used for ZODB loads, so
-  external queries see a consistent point-in-time view.
+  Shares the same `REPEATABLE READ` snapshot used for ZODB loads, so external queries see a consistent point-in-time view.
 
 ### IMVCCStorage methods
 
@@ -399,17 +370,13 @@ Inherits from: `ConflictResolvingStorage`.
 : Delegate to the main storage's `new_instance()`.
 
 `release() -> None`
-: Return the connection to the pool, end any active read transaction,
-  and remove the blob temp directory.
+: Return the connection to the pool, end any active read transaction, and remove the blob temp directory.
 
 `poll_invalidations() -> list[bytes] | None`
 : Return OIDs changed since the last poll.
-  Ends any previous read snapshot, starts a new `REPEATABLE READ`
-  snapshot, queries for changes, and invalidates affected cache entries.
+  Ends any previous read snapshot, starts a new `REPEATABLE READ` snapshot, queries for changes, and invalidates affected cache entries.
   Returns `[]` if nothing changed.
-  Returns `None` if the poll fails with `psycopg.OperationalError`, which
-  includes an unreachable server and `psycopg_pool.PoolTimeout`: ZODB then
-  invalidates its whole cache, and the next read repeats the poll first.
+  Returns `None` if the poll fails with `psycopg.OperationalError`, which includes an unreachable server and `psycopg_pool.PoolTimeout`: ZODB then invalidates its whole cache, and the next read repeats the poll first.
 
 `sync(force: bool = True) -> None`
 : Sync snapshot.
@@ -421,25 +388,21 @@ Inherits from: `ConflictResolvingStorage`.
 : Load the current object state.
   Returns `(pickle_bytes, tid_bytes)`.
   Results are cached in the per-instance LRU cache.
-  When a prefetch refs expression is registered (see
-  `register_prefetch_refs_expr()`), load also fetches the `refs`
-  column and prefetches all referenced objects via `load_multiple()`.
+  When a prefetch refs expression is registered (see `register_prefetch_refs_expr()`), load also fetches the `refs` column and prefetches all referenced objects via `load_multiple()`.
 
 `load_multiple(oids: Iterable[bytes]) -> dict[bytes, tuple[bytes, bytes]]`
 : Load multiple objects in a single SQL query.
-  *Added in v1.8.0.*
 
   Returns a dict mapping `oid_bytes -> (pickle_bytes, tid_bytes)`.
   Only includes OIDs that exist; missing OIDs are silently omitted.
-  Checks the per-instance LRU cache first and only queries the
-  database for cache misses using a single
-  `SELECT ... WHERE zoid = ANY(...)` statement.
+  Checks the per-instance LRU cache first and only queries the database for cache misses using a single `SELECT ... WHERE zoid = ANY(...)` statement.
   All results are cached.
 
   This method is the foundation for batch object loading.
-  plone-pgcatalog uses it to prefetch the next N objects when
-  `brain.getObject()` is called on a search result, reducing
-  per-object SQL roundtrips from N individual queries to 1 batch query.
+  plone-pgcatalog uses it to prefetch the next N objects when `brain.getObject()` is called on a search result, reducing per-object SQL roundtrips from N individual queries to 1 batch query.
+
+  ```{versionadded} 1.8.0
+  ```
 
 `loadBefore(oid: bytes, tid: bytes) -> tuple[bytes, bytes, bytes] | None`
 : Load object data before a given TID.
@@ -463,13 +426,11 @@ Inherits from: `ConflictResolvingStorage`.
 
 `tpc_begin(transaction, tid: bytes | None = None, status: str = " ") -> None`
 : Begin a two-phase commit.
-  Ends any active read snapshot, applies deferred DDL, starts a
-  PostgreSQL transaction, acquires advisory lock 0, and generates a TID.
+  Ends any active read snapshot, applies deferred DDL, starts a PostgreSQL transaction, acquires advisory lock 0, and generates a TID.
 
 `tpc_vote(transaction) -> list | None`
 : Flush pending stores and blobs to PostgreSQL.
-  Performs batch conflict detection, writes all data, and calls
-  `finalize()` on each state processor.
+  Performs batch conflict detection, writes all data, and calls `finalize()` on each state processor.
 
 `tpc_finish(transaction, f: callable | None = None) -> bytes`
 : Commit the PostgreSQL transaction.
@@ -549,6 +510,8 @@ Inherits from: `ConflictResolvingStorage`.
 `close() -> None`
 : Calls `release()`.
 
+(storage-api-loadcache)=
+
 ## LoadCache
 
 ```python
@@ -595,6 +558,8 @@ LoadCache(max_mb: int = 16)
 `misses: int`
 : Number of cache misses.
 
+(storage-api-packer)=
+
 ## Packer
 
 ```python
@@ -607,21 +572,17 @@ from zodb_pgjsonb.packer import pack
   Returns `(deleted_objects, deleted_blobs, s3_keys_to_delete)`.
   The caller is responsible for deleting S3 objects in the returned key list.
 
-  In history-preserving mode with `pack_time`, objects created or modified
-  after `pack_time` are preserved even if currently unreachable.
-  Old revisions in `object_history` and `blob_state` before `pack_time`
-  are removed for reachable objects.
+  In history-preserving mode with `pack_time`, objects created or modified after `pack_time` are preserved even if currently unreachable.
+  Old revisions in `object_history` and `blob_state` before `pack_time` are removed for reachable objects.
   Orphaned `transaction_log` entries at or before `pack_time` are deleted.
+
+(storage-api-zmi-integration)=
 
 ## ZMI integration
 
-The `zodb_pgjsonb.zmi` module patches `App.ApplicationManager.AltDatabaseManager`
-to add a "Blob Storage" tab in the Zope Management Interface when the database
-uses `PGJsonbStorage`.
+The `zodb_pgjsonb.zmi` module patches `App.ApplicationManager.AltDatabaseManager` to add a "Blob Storage" tab in the Zope Management Interface when the database uses `PGJsonbStorage`.
 
-The patch is applied automatically during ZConfig factory initialization when
-Zope (`App` package) is available.
+The patch is applied automatically during ZConfig factory initialization when Zope (`App` package) is available.
 
-The tab displays blob statistics from `get_blob_stats()` and
-`get_blob_histogram()`.
+The tab displays blob statistics from `get_blob_stats()` and `get_blob_histogram()`.
 Access requires the `Manager` role.

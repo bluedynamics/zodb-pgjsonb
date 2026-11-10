@@ -2,14 +2,13 @@
 
 # Configuration options
 
-This page documents all configuration options for zodb-pgjsonb, including
-ZConfig directives, Python constructor parameters, S3 deployment modes,
-and dependencies.
+This page documents all configuration options for zodb-pgjsonb, including ZConfig directives, Python constructor parameters, S3 deployment modes, and dependencies.
+
+(configuration-zconfig-pgjsonb-section)=
 
 ## ZConfig `<pgjsonb>` section
 
-The storage is configured in `zope.conf` via a `<pgjsonb>` section after
-importing the package:
+The storage is configured in `zope.conf` via a `<pgjsonb>` section after importing the package:
 
 ```ini
 %import zodb_pgjsonb
@@ -34,7 +33,7 @@ It implements `ZODB.storage`.
 | `blob-temp-dir` | string | (auto-created tempdir) | no | Directory for temporary blob files. Auto-created if omitted. |
 | `cache-shared-mb` | integer | `256` | no | Size of the process-wide shared load cache (L2) in megabytes, shared across all connections in the process. Caches `load()` results (pickle bytes) to avoid repeated PostgreSQL round-trips and JSONB transcoding. Set to `0` to disable. See {ref}`cache-tiers`. |
 | `cache-per-connection-mb` | integer | `16` | no | Size of the per-connection L1 load cache in megabytes, a lock-free hot cache ahead of `cache-shared-mb`. Set to `0` to rely entirely on the shared cache. |
-| `cache-local-mb` | integer | -- | no | **Deprecated since 1.12.0.** Alias for `cache-shared-mb` that emits a `DeprecationWarning` when set. Use `cache-shared-mb` instead. |
+| `cache-local-mb` | integer | -- | no | Deprecated alias for `cache-shared-mb`; emits a `DeprecationWarning` when set. |
 | `pool-size` | integer | `1` | no | Minimum number of connections in the instance connection pool. Set to `0` for on-demand creation. |
 | `pool-max-size` | integer | `10` | no | Maximum number of connections in the instance connection pool. |
 | `pool-timeout` | float | `30.0` | no | Connection pool acquisition timeout in seconds. Raises `StorageError` if a connection cannot be acquired within this time. Also the `connect_timeout` (rounded up, at least 2) of the direct connections that apply startup DDL, unless the DSN or `PGCONNECT_TIMEOUT` sets one. |
@@ -62,12 +61,18 @@ It implements `ZODB.storage`.
 | `blob-cache-dir` | string | (falls back to `blob-temp-dir`) | no | Local cache directory for S3 blobs. Recommended for production to avoid repeated S3 downloads. |
 | `blob-cache-size` | byte-size | `1GB` | no | Maximum size of the local blob cache directory. |
 
+```{deprecated} 1.12.0
+`cache-local-mb`. Use `cache-shared-mb` instead.
+```
+
 Unset S3 timeout keys are not passed to `S3Client`, so the zodb-s3blobs defaults shown in parentheses apply.
 The read timeouts are inactivity timeouts per socket operation, not limits on the total transfer time.
 
 ```{versionadded} 1.19
 `s3-connect-timeout`, `s3-read-timeout`, `s3-download-connect-timeout`, `s3-download-read-timeout` and `s3-download-max-attempts`.
 ```
+
+(configuration-python-constructor)=
 
 ## Python constructor
 
@@ -125,8 +130,9 @@ PGJsonbStorage(
 | `cache_warm_batch_size` | `int` | `500` | Number of object ids fetched per warmer `SELECT` batch. |
 | `cache_warm_batch_pause` | `float` | `0.5` | Seconds to pause between warmer batches, lowering per-pod peak query rate. Set to `0` to disable. |
 
-The ZConfig factory (`PGJsonbStorageFactory`) constructs `S3Client` and
-`S3BlobCache` from the ZConfig keys before passing them to the constructor.
+The ZConfig factory (`PGJsonbStorageFactory`) constructs `S3Client` and `S3BlobCache` from the ZConfig keys before passing them to the constructor.
+
+(configuration-s3-deployment-modes)=
 
 ## S3 deployment modes
 
@@ -135,6 +141,8 @@ The ZConfig factory (`PGJsonbStorageFactory`) constructs `S3Client` and
 | PG-only | `s3-bucket-name` omitted | All blobs stored as PostgreSQL bytea in `blob_state.data`. |
 | Tiered | `s3-bucket-name` set, `blob-threshold` > 0 | Blobs smaller than threshold stored in PG bytea; blobs at or above threshold stored in S3 with key in `blob_state.s3_key`. |
 | S3-only | `s3-bucket-name` set, `blob-threshold` = 0 | All blobs stored in S3. |
+
+(configuration-environment-variables)=
 
 ## Environment variables
 
@@ -149,6 +157,8 @@ The storage reads these variables from the process environment, not from ZConfig
 ```{versionadded} 1.14
 `ZODB_PGJSONB_FORCE_DDL` and the schema-version gate it controls.
 ```
+
+(configuration-dependencies)=
 
 ## Dependencies
 
