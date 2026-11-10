@@ -22,18 +22,19 @@ A read that misses every cache travels the full stack.
    When an object is active here, no `setstate` happens at all and none of the layers below are consulted.
    This handles the large majority of reads in a warm process.
 
-2. **L1: the per-connection load cache** comes into play once an object is ghosted out of the ZODB object cache.
+2. **L1: the per-connection load cache** is consulted next once an object is ghosted out of the ZODB object cache.
    The next access calls `setstate`, which calls the storage's `load()`.
    Each storage instance (one per ZODB connection) keeps its own `LoadCache`.
    The `LoadCache` is an LRU of already-transcoded pickle bytes keyed by object id, sized by `cache-per-connection-mb` (default 16 MB).
    It is cheap because it is a lock-free hot path with no cross-thread coordination.
-   It is duplicated per connection and cold on a fresh one.
+   Its drawback is that it is duplicated per connection and cold on a fresh one.
 
 3. **L2: the process-wide shared cache** sits behind L1.
    It is a single `SharedLoadCache` shared by every connection in the process, sized by `cache-shared-mb` (default 256 MB).
    It exists so that N connections do not each keep their own copy of the same hot objects.
    Before the shared cache was introduced, a busy pod could waste roughly a gigabyte on duplicated per-connection caches.
-   An L2 hit still costs a lock acquisition and an L1 fill, but it avoids a PostgreSQL round-trip and the pickle-to-JSON transcode.
+   An L2 hit still costs a lock acquisition and an L1 fill.
+   It still avoids a PostgreSQL round-trip and the pickle-to-JSON transcode.
 
 4. **PostgreSQL** handles a full miss.
    A full miss runs a single-row `SELECT` on `object_state` and transcodes the JSONB back to pickle bytes.
@@ -61,14 +62,13 @@ Such a connection could insert an older version that a newer reader would then r
 
 **Reads** are gated per entry rather than wholesale.
 A cached entry carries the committed TID of the version it holds.
-Every commit drops its changed objects from L2 at commit time.
-A present entry is always the object's current version.
-L2 serves an entry to a reader when the entry's TID is at or below the reader's snapshot.
+Because every commit drops its changed objects from L2 at commit time, a present entry is always the object's current version.
+L2 therefore serves an entry to a reader when the entry's TID is at or below the reader's snapshot.
 In that case the object has not changed through that snapshot.
 The entry is exactly the version the reader must see.
 L2 skips the entry when its TID is newer than the reader's snapshot.
 That entry is a version the reader must not see yet.
-This keeps the shared cache correct without per-object locking or versioning.
+This per-entry gate keeps the shared cache correct without per-object locking or versioning.
 A reader is never handed a version newer than its snapshot.
 
 The gate is precise.
@@ -92,9 +92,10 @@ It reads the most-accessed object ids and loads them in paced batches before the
 Warming every replica at once would multiply the database's startup load by the replica count.
 The warmer is deliberately un-synchronized to avoid that.
 A baseline delay (`cache-warm-delay`) and random jitter (`cache-warm-jitter`) spread the work out.
-A cluster-wide concurrency cap enforced by an advisory-lock semaphore (`cache-warm-concurrency`) and batch pacing (`cache-warm-batch-size`, `cache-warm-batch-pause`) do the same.
+A cluster-wide concurrency cap enforced by an advisory-lock semaphore (`cache-warm-concurrency`) and batch pacing (`cache-warm-batch-size`, `cache-warm-batch-pause`) also spread it out.
 The trade-off is that a pod's L2 is warm roughly 15–45 seconds after startup rather than instantly.
-It serves traffic from the first second, but the first requests for a cold working set still pay the PostgreSQL path.
+It serves traffic from the first second.
+Yet the first requests for a cold working set still pay the PostgreSQL path.
 
 (caching-observing-cache-effectiveness)=
 
@@ -133,14 +134,15 @@ The sequential, one-object-at-a-time load pattern is the amplifier.
 A page that wakes 150 ghosts issues 150 round-trips.
 Anything that raises per-round-trip latency, such as a connection pooler or a cross-zone network hop, is multiplied by the object count.
 Loading a working set in a single batched query collapses those round-trips.
-`load_multiple` and plone-pgcatalog's reference prefetch do this.
+The `load_multiple` method and plone-pgcatalog's reference prefetch do this.
 Batching is the most reliable fix because it helps even when the cache is cold.
 
 Cache sizing keeps the warm state warm.
 If the working set is larger than `cache-shared-mb`, L2 evicts hot objects and cold requests recur.
 Raising `cache-shared-mb` trades memory for fewer round-trips.
 
-The warmer keeps fresh pods from starting cold, and tuning its pacing trades startup database load against time-to-warm.
+The warmer keeps fresh pods from starting cold.
+Tuning its pacing trades startup database load against time-to-warm.
 
 None of these change the per-entry read gate.
 Under sustained writes a reader still falls through to PostgreSQL for the objects that changed since its snapshot, which is correct.
