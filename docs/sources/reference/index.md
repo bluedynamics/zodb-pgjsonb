@@ -1,10 +1,5 @@
 ---
-myst:
-  html_meta:
-    "description": "Configuration keys, database schema, storage API and state processor API of zodb-pgjsonb."
-    "property=og:description": "Configuration keys, database schema, storage API and state processor API of zodb-pgjsonb."
-    "property=og:title": "Reference"
-    "keywords": "ZODB, PostgreSQL, JSONB, Plone, zodb-pgjsonb, reference"
+description: "Configuration keys, database schema, storage API and state processor API of zodb-pgjsonb."
 ---
 
 # Reference

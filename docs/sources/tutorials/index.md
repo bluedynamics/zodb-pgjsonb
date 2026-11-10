@@ -1,10 +1,5 @@
 ---
-myst:
-  html_meta:
-    "description": "Step-by-step lessons that take you from a fresh Docker setup to a migrated Plone site on zodb-pgjsonb."
-    "property=og:description": "Step-by-step lessons that take you from a fresh Docker setup to a migrated Plone site on zodb-pgjsonb."
-    "property=og:title": "Tutorials"
-    "keywords": "ZODB, PostgreSQL, JSONB, Plone, zodb-pgjsonb, tutorial"
+description: "Step-by-step lessons that take you from a fresh Docker setup to a migrated Plone site on zodb-pgjsonb."
 ---
 
 # Tutorials

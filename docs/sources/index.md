@@ -1,10 +1,5 @@
 ---
-myst:
-  html_meta:
-    "description": "ZODB storage for PostgreSQL that stores object state as queryable JSONB, with tiered blob storage and SQL access to every object."
-    "property=og:description": "ZODB storage for PostgreSQL that stores object state as queryable JSONB, with tiered blob storage and SQL access to every object."
-    "property=og:title": "zodb-pgjsonb"
-    "keywords": "ZODB, PostgreSQL, JSONB, Plone, zodb-pgjsonb"
+description: "ZODB storage for PostgreSQL that stores object state as queryable JSONB, with tiered blob storage and SQL access to every object."
 ---
 
 # zodb-pgjsonb
