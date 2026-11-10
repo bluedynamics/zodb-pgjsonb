@@ -17,7 +17,7 @@ By the end we will have a working Plone instance backed by zodb-pgjsonb and the 
 
 - Docker and Docker Compose v2+
 - Python 3.12+
-- [uv](https://docs.astral.sh/uv/) (recommended) or pip
+- [uv](https://docs.astral.sh/uv/)
 
 (quickstart-docker-step-1-clone-the-repository)=
 
@@ -238,32 +238,9 @@ docker compose exec garage /garage bucket info zodb-blobs
 
 The `Objects` and `Size` lines should count the uploaded image.
 
-(quickstart-docker-step-9-start-pgadmin-optional)=
+(quickstart-docker-step-9-clean-up)=
 
-## Step 9: start pgAdmin (optional)
-
-For a graphical SQL interface, start the pgAdmin container:
-
-```shell
-docker compose --profile tools up -d
-```
-
-Open <http://localhost:5050> and log in with `admin@example.com` / `admin`.
-Add a server connection with these settings:
-
-- **Host**: `postgres`
-- **Port**: `5432`
-- **Username**: `zodb`
-- **Password**: `zodb`
-- **Database**: `zodb`
-
-:::{note}
-Use `postgres` (the Docker service name) as the host and port `5432` (the internal port), because pgAdmin runs inside the same Docker network.
-:::
-
-(quickstart-docker-step-10-clean-up)=
-
-## Step 10: clean up
+## Step 9: clean up
 
 Stop Zope with `Ctrl+C` in the terminal where it is running.
 
@@ -275,18 +252,7 @@ docker compose --profile tools down -v
 
 Omit `-v` to keep the data volumes for next time.
 
-(quickstart-docker-what-we-learned)=
-
-## What we learned
-
-- zodb-pgjsonb stores ZODB object state as queryable JSONB in PostgreSQL
-- Blobs are tiered between PostgreSQL `bytea` (small) and S3/Garage (large)
-- Every ZODB object is directly queryable with standard SQL and JSONB operators
-- The `<pgjsonb>` ZConfig section plugs into any standard Zope/Plone deployment
-
-(quickstart-docker-next-steps)=
-
-## Next steps
-
-- {doc}`migrate-from-filestorage` to migrate an existing Plone site from FileStorage
-- {doc}`/reference/configuration` for the complete list of configuration options
+```{seealso}
+{doc}`migrate-from-filestorage` migrates an existing Plone site from FileStorage.
+{doc}`/reference/configuration` lists every configuration option.
+```

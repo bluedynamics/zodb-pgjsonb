@@ -17,7 +17,7 @@ By the end we will have a running Plone site backed entirely by PostgreSQL, with
 - A working Plone 6 site using FileStorage (the default storage)
 - PostgreSQL 15+ running and accessible
 - Python 3.12+ with the same virtual environment as the Plone site
-- [uv](https://docs.astral.sh/uv/) (recommended) or pip
+- [uv](https://docs.astral.sh/uv/)
 
 (migrate-from-filestorage-step-1-install-zodb-pgjsonb)=
 
@@ -103,59 +103,7 @@ Run `zodb-convert` to copy all transactions from FileStorage to PostgreSQL:
 
 zodb-convert logs progress while it copies and logs a summary when it finishes.
 
-### Parallel migration for large databases
-
-For large databases, zodb-pgjsonb supports parallel migration using multiple PostgreSQL connections.
-The `zodb-convert` CLI does not expose a `--workers` flag, so we use a short Python script instead:
-
-Create a file called `migrate_parallel.py`:
-
-```python
-from ZODB.FileStorage import FileStorage
-from ZODB.blob import BlobStorage
-from zodb_pgjsonb import PGJsonbStorage
-
-# Open the source FileStorage (read-only)
-fs = FileStorage("/path/to/var/filestorage/Data.fs", read_only=True)
-source = BlobStorage("/path/to/var/blobstorage", fs)
-
-# Open the destination with a larger connection pool
-dest = PGJsonbStorage(
-    dsn="dbname=zodb user=zodb password=zodb host=localhost port=5432",
-    pool_max_size=8,
-)
-
-# Copy with 4 parallel workers
-dest.copyTransactionsFrom(source, workers=4)
-
-source.close()
-dest.close()
-```
-
-Run the script:
-
-```shell
-python migrate_parallel.py
-```
-
-The main thread reads from FileStorage and decodes pickles.
-Worker threads write to PostgreSQL concurrently.
-OID ordering is preserved automatically.
-
-We should see progress output with throughput and ETA:
-
-```text
-Copying transactions with 4 parallel workers (total OIDs: 128,503)
-[00:12] 15,200 / 128,503 OIDs (11.8%) | 1,267 obj/s | ETA 01:30
-[00:24] 31,400 / 128,503 OIDs (24.4%) | 1,350 obj/s | ETA 01:12
-[00:48] 72,100 / 128,503 OIDs (56.1%) | 1,502 obj/s | ETA 00:38
-[01:38] All 8,421 transactions copied with 4 workers.
-```
-
-:::{tip}
-Set `pool_max_size` to at least the number of workers.
-Using 4 to 6 workers provides the best throughput for most deployments.
-:::
+For large databases, {doc}`/how-to/migrate-with-zodbconvert` shows how to run the copy with several workers.
 
 (migrate-from-filestorage-step-6-update-zope-conf)=
 
@@ -236,19 +184,7 @@ LIMIT 10;
 
 We should see the same objects that existed in the original FileStorage.
 
-(migrate-from-filestorage-what-we-learned)=
-
-## What we learned
-
-- zodb-pgjsonb implements `IStorageRestoreable`, making it compatible with `zodb-convert`
-- The standard `zodb-convert` tool copies all transactions, including blobs
-- For large databases, the Python API `copyTransactionsFrom(source, workers=N)` uses parallel PostgreSQL connections for higher throughput
-- After migration, we swap the `<filestorage>` section for `<pgjsonb>` in `zope.conf`
-- All ZODB data is now queryable JSON in PostgreSQL
-
-(migrate-from-filestorage-next-steps)=
-
-## Next steps
-
-- {doc}`quickstart-docker` to explore SQL queryability and S3 blob tiering
-- {doc}`/reference/configuration` for the complete list of configuration options
+```{seealso}
+{doc}`quickstart-docker` explores SQL queryability and S3 blob tiering.
+{doc}`/reference/configuration` lists every configuration option.
+```
