@@ -159,7 +159,7 @@ If any upload fails (after retries), the migration aborts.
 ### Deferred mode
 
 Skips S3 uploads entirely during migration, writing a manifest file instead.
-Upload blobs later in a separate step:
+Upload blobs later in a separate step.
 
 First, run a fast PG-only migration:
 
@@ -176,7 +176,7 @@ zodb-convert --upload-blobs /tmp/blob-manifest.tsv --dest-zope-conf zope.conf -w
 This is useful when S3 is temporarily unavailable or when you want to run the PG import at maximum speed and handle S3 as a separate operational step.
 
 ```{note}
-Temp blob files are preserved during deferred mode.
+Temp blob files are preserved during deferred mode because the upload step needs them.
 The staging directory needs enough disk space for them.
 ```
 
