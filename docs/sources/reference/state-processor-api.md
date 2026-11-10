@@ -40,9 +40,8 @@ A processor must implement the following methods:
   `CREATE INDEX`).
   Called once during `register_state_processor()`.
   The DDL is always deferred: registration only queues it.
-  It is executed from the first `tpc_begin()` and from
-  `poll_invalidations()` retries, each statement on its own direct
-  autocommit connection.
+  It is executed at the next `poll_invalidations()` or `tpc_begin()` after the read snapshot has ended, and again on later calls while entries remain queued;
+  each queue entry runs on its own direct autocommit connection.
   Returns `None` if no DDL is needed.
 
 `finalize(cursor) -> None`
@@ -173,12 +172,12 @@ ZODB Connection still holds an `ACCESS SHARE` lock via its
 `REPEATABLE READ` snapshot.
 `ALTER TABLE` requires `ACCESS EXCLUSIVE`, which would deadlock.
 
-`_apply_pending_ddl()` runs the queue from the first `tpc_begin()` and
-from `poll_invalidations()` retries, after the read snapshot has ended:
+`_apply_pending_ddl()` runs the queue at the next `poll_invalidations()` or `tpc_begin()` after the read snapshot has ended, and again on later calls while entries remain queued:
 
+- The schema-version gate skips entries whose version marker is current.
+  It runs before the lock and is checked again under the lock.
 - It takes a session-level advisory lock.
   Acquiring it waits at most `lock_timeout` = `ZODB_PGJSONB_DDL_LOCK_TIMEOUT` (default `15min`).
-- The schema-version gate skips entries whose version marker is current.
-- Each DDL statement runs on its own direct autocommit connection (not the pool connection) with `lock_timeout = '30s'`.
+- Each queue entry (one processor's whole `get_schema_sql()` text) runs on its own direct autocommit connection (not the pool connection) with `lock_timeout = '30s'`.
 - An entry that fails with `psycopg.OperationalError` is requeued.
   Any other error drops the entry until the next startup.

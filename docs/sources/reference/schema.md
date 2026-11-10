@@ -149,4 +149,5 @@ The installation sequence:
 
 State processor DDL (from `get_schema_sql()`) is applied separately.
 `register_state_processor()` only queues it, tagged with a version of `sha256` of its text.
-The queue runs from the first `tpc_begin()` and from `poll_invalidations()` retries, each DDL statement on its own direct autocommit connection.
+The queue runs at the next `poll_invalidations()` or `tpc_begin()` after the read snapshot has ended, and again on later calls while entries remain queued.
+Each queue entry runs on its own direct autocommit connection.

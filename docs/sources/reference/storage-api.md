@@ -337,8 +337,8 @@ existing data.
 
 ### Deferred startup actions
 
-`defer_startup_action(action: callable, name: str) -> None`
-: Defer a callable to the first write transaction.
+`defer_startup_action(action: callable, name: str, version: str | None = None) -> None`
+: Defer a callable until the next `poll_invalidations()` or `tpc_begin()` after startup.
   *Added in v1.10.3.*
 
   At Zope startup, a ZODB Connection holds an open `REPEATABLE READ`
@@ -347,8 +347,8 @@ existing data.
   deadlock against that snapshot.
 
   This method queues a callable that will be executed during the first
-  `tpc_begin()` call and on `poll_invalidations()` retries, after the
-  read snapshot has ended.  The callable receives the DSN string as its
+  `poll_invalidations()` or `tpc_begin()` call after the read snapshot
+  has ended, and again on later calls while entries remain queued.  The callable receives the DSN string as its
   only argument and should open its own autocommit connection.  Since
   v1.19.2 that DSN carries a `connect_timeout` (`pool_timeout`), unless
   the configured DSN or `PGCONNECT_TIMEOUT` already sets one.  If the

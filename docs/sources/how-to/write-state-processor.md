@@ -86,7 +86,7 @@ The `process` method may modify `state` in place (for example, to pop annotation
 
 Return a SQL string with `ALTER TABLE`, `CREATE INDEX`, or other DDL statements.
 Registration only queues this DDL.
-The storage applies it from the first `tpc_begin()` and from `poll_invalidations()` retries, on a separate autocommit connection.
+The storage applies it at the next `poll_invalidations()` or `tpc_begin()` after the read snapshot has ended, and again on later calls while entries remain queued, on a separate autocommit connection.
 
 Use `IF NOT EXISTS` clauses to make the DDL idempotent:
 

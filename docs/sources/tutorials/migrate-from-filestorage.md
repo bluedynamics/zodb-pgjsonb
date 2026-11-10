@@ -90,7 +90,7 @@ Run `zodb-convert` to copy all transactions from FileStorage to PostgreSQL:
 .venv/bin/zodb-convert migrate.cfg
 ```
 
-zodb-convert logs progress while it copies and prints a summary when it finishes.
+zodb-convert logs progress while it copies and logs a summary when it finishes.
 
 :::{note}
 The migration speed depends on database size, network latency, and disk I/O.

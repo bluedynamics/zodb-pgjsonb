@@ -38,7 +38,7 @@ It implements `ZODB.storage`.
 | `pool-size` | integer | `1` | no | Minimum number of connections in the instance connection pool. Set to `0` for on-demand creation. |
 | `pool-max-size` | integer | `10` | no | Maximum number of connections in the instance connection pool. |
 | `pool-timeout` | float | `30.0` | no | Connection pool acquisition timeout in seconds. Raises `StorageError` if a connection cannot be acquired within this time. Also the `connect_timeout` (rounded up, at least 2) of the direct connections that apply startup DDL, unless the DSN or `PGCONNECT_TIMEOUT` sets one. |
-| `cache-warm-pct` | integer | `10` | no | Percentage of `cache-shared-mb` to pre-warm at startup from the most-accessed objects. Set to `0` to disable warming. See {ref}`cache-tiers`. |
+| `cache-warm-pct` | integer | `10` | no | Percentage of the cache's estimated object capacity to pre-warm at startup; the estimate derives from `cache-per-connection-mb` and the average object size. Set to `0` to disable warming. See {ref}`cache-tiers`. |
 | `cache-warm-decay` | float | `0.8` | no | Per-restart decay factor for historical access scores. `0.8` means scores from 10 restarts ago retain 10% of their weight. |
 | `cache-warm-delay` | integer | `15` | no | Baseline delay in seconds before the warmer starts, keeping it out of the pod's cold-start window. Set to `0` to disable. |
 | `cache-warm-jitter` | integer | `30` | no | Additional uniform-random delay (0 to `jitter` seconds) on top of `cache-warm-delay`, spreading warmer start across replicas. Set to `0` to disable. |
@@ -116,7 +116,7 @@ PGJsonbStorage(
 | `blob_cache` | `S3BlobCache \| None` | `None` | Local S3 blob cache instance from `zodb-s3blobs`. |
 | `blob_cache_size` | `int` | `1073741824` | Maximum size of the local blob cache in bytes. |
 | `blob_threshold` | `int` | `102400` | Byte threshold for S3 tiering. |
-| `cache_warm_pct` | `int` | `10` | Percentage of `cache_shared_mb` to pre-warm at startup from the most-accessed objects. Set to `0` to disable warming. See {ref}`cache-tiers`. |
+| `cache_warm_pct` | `int` | `10` | Percentage of the cache's estimated object capacity to pre-warm at startup; the estimate derives from `cache_per_connection_mb` and the average object size. Set to `0` to disable warming. See {ref}`cache-tiers`. |
 | `cache_warm_decay` | `float` | `0.8` | Per-restart decay factor for historical access scores. `0.8` means scores from 10 restarts ago retain 10% of their weight. |
 | `cache_warm_delay` | `int` | `15` | Baseline delay in seconds before the warmer starts, keeping it out of the pod's cold-start window. Set to `0` to disable. |
 | `cache_warm_jitter` | `int` | `30` | Additional uniform-random delay (0 to `jitter` seconds) on top of `cache_warm_delay`, spreading warmer start across replicas. Set to `0` to disable. |
