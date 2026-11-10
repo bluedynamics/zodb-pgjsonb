@@ -4,6 +4,11 @@
 
 This guide shows you how to write a state processor that adds custom columns to the `object_state` table, written atomically alongside ZODB object state.
 
+```{warning}
+Only register processors from trusted, audited code.
+A processor's SQL expressions are interpolated unescaped, as {ref}`state-processor-api-security` describes.
+```
+
 (write-state-processor-define-the-processor-class)=
 
 ## Define the processor class
@@ -140,17 +145,3 @@ storage.register_state_processor(MyProcessor())
 ```
 
 In a Zope/Plone application, register the processor in an `IDatabaseOpenedWithRoot` subscriber so it runs after the storage is initialized.
-
-(write-state-processor-security-considerations)=
-
-## Security considerations
-
-```{warning}
-State processors run with full SQL injection capability.
-`value_expr` and `update_expr` are interpolated directly into INSERT statements without escaping.
-Only register processors from trusted, audited code.
-A compromised processor can read, modify, or delete any data in the database.
-```
-
-Column names are validated against a strict SQL identifier pattern.
-SQL expressions in `value_expr` and `update_expr` are not validated because they may legitimately contain function calls and casts.

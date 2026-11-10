@@ -102,10 +102,7 @@ If a migration is interrupted (Ctrl-C, crash, network failure), resume with `--i
 zodb-convert --incremental -w 4 migrate.cfg
 ```
 
-During parallel copy, the storage tracks a *watermark* — the highest TID where all prior TIDs are also committed.
-On resume, iteration starts from the watermark (not `lastTransaction()`) to fill any gaps left by out-of-order worker commits.
-Already-committed transactions are skipped automatically.
-The watermark table is dropped on successful completion, adding zero overhead to non-incremental imports.
+Already committed transactions are skipped.
 
 ### Python API
 

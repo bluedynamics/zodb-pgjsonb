@@ -70,13 +70,6 @@ See {ref}`cache-tiers` for the model.
 ## Roll out without a DDL stampede
 
 When you run several replicas and deploy with a rolling update, every pod starts up and wants to apply its deferred schema DDL.
-The storage coordinates this with a session-level advisory lock so only one pod runs the DDL at a time.
-A schema-version gate runs a cheap `SELECT` *before* taking that lock, so replicas whose DDL is already current return immediately instead of all queuing on the lock.
-
-You do not need to configure anything for this — it is on by default.
-The first deploy after upgrading records the version markers; from then on, deploys that do not change the schema skip the lock entirely.
-
-Two environment variables let you tune the behavior:
 
 - Set `ZODB_PGJSONB_DDL_LOCK_TIMEOUT` (default `15min`) to bound how long a pod waits for the lock before requeuing its DDL for the next transaction.
 - Set `ZODB_PGJSONB_FORCE_DDL=1` on a single pod to bypass the gate and re-apply all deferred DDL, for example after you manually dropped an index.
@@ -138,9 +131,9 @@ storage.close()
 
 When running under Zope, blob statistics are available in the ZMI database management tab.
 
-(deploy-production-postgresql-tuning)=
+(deploy-production-tune-postgresql)=
 
-## PostgreSQL tuning
+## Tune PostgreSQL
 
 Key `postgresql.conf` settings for a dedicated PostgreSQL instance:
 
@@ -166,9 +159,9 @@ Configure autovacuum for `object_state` if you have high write throughput:
 ALTER TABLE object_state SET (autovacuum_analyze_threshold = 5000);
 ```
 
-(deploy-production-backup-strategy)=
+(deploy-production-back-up-the-database-and-blobs)=
 
-## Backup strategy
+## Back up the database and blobs
 
 ### PostgreSQL backup
 
@@ -194,9 +187,9 @@ aws s3api put-bucket-versioning \
 Set up S3 cross-region replication or lifecycle rules for additional durability.
 Pack deletes orphaned S3 blobs, so versioning preserves a safety net.
 
-(deploy-production-monitoring-queries)=
+(deploy-production-monitor-the-database)=
 
-## Monitoring queries
+## Monitor the database
 
 Key PostgreSQL views for monitoring:
 

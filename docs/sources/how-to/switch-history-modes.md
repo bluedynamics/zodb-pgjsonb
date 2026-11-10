@@ -4,12 +4,7 @@
 
 This guide shows you how to switch between history-free and history-preserving modes, and how to compact history without switching modes.
 
-zodb-pgjsonb supports two history modes:
-
-- **History-free** (default): only the current object state is kept.
-  Pack removes unreachable objects.
-- **History-preserving**: previous revisions are stored in `object_history`.
-  Enables undo and `loadBefore` for historical queries.
+{ref}`architecture-history-modes` explains the difference between the history-free and the history-preserving mode.
 
 (switch-history-modes-enable-history-preserving-mode)=
 
