@@ -28,7 +28,7 @@ git clone https://github.com/bluedynamics/zodb-pgjsonb.git
 cd zodb-pgjsonb/example
 ```
 
-All remaining commands assume we are inside the `example/` directory.
+The commands of this step assume we are inside the `example/` directory.
 
 (quickstart-docker-step-2-start-the-infrastructure)=
 
@@ -234,7 +234,7 @@ Garage has no web console.
 We ask its CLI for the bucket contents:
 
 ```shell
-docker compose exec garage /garage bucket info zodb-blobs
+docker compose -f example/docker-compose.yml exec garage /garage bucket info zodb-blobs
 ```
 
 The `Objects` and `Size` lines should count the uploaded image.
@@ -248,7 +248,7 @@ Stop Zope with `Ctrl+C` in the terminal where it is running.
 Remove all Docker containers and volumes:
 
 ```shell
-docker compose down -v
+docker compose -f example/docker-compose.yml down -v
 ```
 
 ```{seealso}

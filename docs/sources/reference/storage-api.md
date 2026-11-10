@@ -80,7 +80,7 @@ The constructor connects to PostgreSQL, creates a connection pool, installs the 
 : Load the current object state.
   Returns `(pickle_bytes, tid_bytes)`.
   Raises `POSKeyError` if the object does not exist.
-  Checks the per-connection L1 cache and the shared L2 cache before querying PostgreSQL.
+  Results are cached in the storage's own LRU load cache.
 
 `loadBefore(oid: bytes, tid: bytes) -> tuple[bytes, bytes, bytes] | None`
 : Load object data before a given TID.
@@ -393,7 +393,7 @@ Inherits from: `ConflictResolvingStorage`.
 `load(oid: bytes, version: str = "") -> tuple[bytes, bytes]`
 : Load the current object state.
   Returns `(pickle_bytes, tid_bytes)`.
-  Results are cached in the storage's own LRU load cache.
+  Checks the per-connection L1 cache and the shared L2 cache before querying PostgreSQL.
   When a prefetch refs expression is registered (see `register_prefetch_refs_expr()`), load also fetches the `refs` column and prefetches all referenced objects via `load_multiple()`.
 
 `load_multiple(oids: Iterable[bytes]) -> dict[bytes, tuple[bytes, bytes]]`

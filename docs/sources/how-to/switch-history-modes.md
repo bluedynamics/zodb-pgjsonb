@@ -74,7 +74,7 @@ All undo history is permanently deleted.
 
 ## Compact history without switching modes
 
-Older versions used dual-write mode, writing the same data to both `object_state` and `object_history`.
+Some older versions used dual-write mode, writing the same data to both `object_state` and `object_history`.
 If you upgraded from such a version, run `compact_history()` to remove the duplicate entries and reclaim disk space:
 
 ```python

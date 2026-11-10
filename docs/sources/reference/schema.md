@@ -148,12 +148,13 @@ The installation sequence:
 
 1. Check whether `transaction_log` exists.
 2. If absent, execute the full history-free schema DDL (tables, indexes, trigger).
-3. If present, create indexes added in later schema versions if they are missing (lightweight `CREATE INDEX IF NOT EXISTS`).
+3. If present, add any missing indexes from later schema versions (lightweight `CREATE INDEX IF NOT EXISTS`).
 4. If `history_preserving=True` and `object_history` does not exist, execute the history-preserving additions.
 5. Commit.
 
 State processor DDL (from `get_schema_sql()`) is applied separately.
 `register_state_processor()` only queues it, tagged with a version of `sha256` of its text.
-The queue runs at the next `poll_invalidations()` or `tpc_begin()` after the read snapshot has ended, and again on later calls while entries remain queued.
+The queue runs at the next `poll_invalidations()` or `tpc_begin()` after the read snapshot has ended.
+It runs again on later calls while entries remain queued.
 Each queue entry runs on its own direct autocommit connection.
 For why this DDL is deferred, see {ref}`startup-ddl-gate`.

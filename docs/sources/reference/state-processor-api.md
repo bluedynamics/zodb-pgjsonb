@@ -51,7 +51,7 @@ A processor must implement the following methods:
 `undone(cursor, tid, restored, deleted, entries) -> None`
 : Called from `undo()` in history-preserving mode, once per undone transaction.
   Use it when your columns do not derive from the object state alone.
-  Undo re-runs `process()` on the restored state, which is enough for processors whose columns do.
+  Undo re-runs `process()` on the restored state, which is enough for processors whose columns derive from the state alone.
   `tid` is the undone transaction id as an `int`.
   `restored` is a list of `int` zoids whose previous revision will be written.
   `deleted` is a list of `int` zoids whose rows will be deleted (created in the undone transaction).
@@ -61,8 +61,8 @@ A processor must implement the following methods:
   Compare `before` and `after` to see what the undone transaction changed.
   Do not read `object_state.state` for that, because with several transactions undone together the row may still hold another transaction's revision.
   The hook runs before anything of the undo is queued or written.
-  It runs on the cursor of the PostgreSQL transaction that will carry the undo (the advisory write lock is held).
   `object_state` therefore still shows the pre-undo rows, including those of `deleted` zoids and the current `path`-like data of `restored` ones.
+  It runs on the cursor of the PostgreSQL transaction that will carry the undo (the advisory write lock is held).
   SQL executed here is atomic with the undo and is rolled back with it.
   An exception aborts the undo.
   Raise `UndoError` if the processor cannot undo safely.
@@ -71,7 +71,7 @@ A processor must implement the following methods:
 
   Only zoids written by the undone transaction are reported.
   Rows that its `finalize()` changed without writing them are not reported.
-  A processor that changes unwritten rows in `finalize()` has to find them itself.
+  A processor that changes unwritten rows in `finalize()` therefore has to find them itself.
 
 (state-processor-api-extracolumn)=
 
@@ -150,7 +150,7 @@ The following sequence describes when each method is called during a ZODB write 
    `get_extra_columns()` is called to collect column definitions.
    Objects are grouped by the set of columns to write (the columns of every processor that answered) and written with one batched `executemany()` per group.
    A processor that returned `None` has its columns left out of the statement.
-   Their stored values stay.
+   As a result, their stored values stay.
    After all writes, `finalize(cursor)` is called on each processor that implements it.
 
 5. **Finish** (`tpc_finish()`):
@@ -168,7 +168,9 @@ The following sequence describes when each method is called during a ZODB write 
 `register_state_processor()` does not execute DDL from `get_schema_sql()`.
 It queues the DDL, tagged with a version of `sha256` of its text.
 
-`_apply_pending_ddl()` runs the queue at the next `poll_invalidations()` or `tpc_begin()` after the read snapshot has ended, and again on later calls while entries remain queued:
+`_apply_pending_ddl()` runs the queue at the next `poll_invalidations()` or `tpc_begin()` after the read snapshot has ended.
+It runs again on later calls while entries remain queued.
+The queue is processed as follows:
 
 - The schema-version gate skips entries whose version marker is current.
   It runs before the lock and is checked again under the lock.
