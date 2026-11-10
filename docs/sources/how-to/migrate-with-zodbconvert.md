@@ -70,7 +70,8 @@ zodb-convert -w 4 migrate.cfg
 ```
 
 This delegates to the destination storage's `copyTransactionsFrom(source, workers=4)`.
-The main thread iterates the source and decodes pickles; worker threads write to PostgreSQL concurrently.
+The main thread iterates the source and decodes pickles.
+Worker threads write to PostgreSQL concurrently.
 Set `pool-max-size` in your destination config to at least the number of workers plus one.
 
 ### Python API
@@ -170,7 +171,8 @@ Then upload the blobs from the manifest:
 zodb-convert --upload-blobs /tmp/blob-manifest.tsv --dest-zope-conf zope.conf -w 16
 ```
 
-This is useful when S3 is temporarily unavailable or when you want to run the PG import at maximum speed and handle S3 as a separate operational step.
+This is useful when S3 is temporarily unavailable.
+It is also useful when you want to run the PG import at maximum speed and handle S3 as a separate operational step.
 
 ```{note}
 Temp blob files are preserved during deferred mode because the upload step needs them.

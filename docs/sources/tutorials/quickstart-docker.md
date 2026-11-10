@@ -230,7 +230,8 @@ If we uploaded an image larger than 100 KB, we should see at least one row for "
 
 ### Check blobs in Garage
 
-Garage has no web console, so we ask its CLI for the bucket contents:
+Garage has no web console.
+We ask its CLI for the bucket contents:
 
 ```shell
 docker compose exec garage /garage bucket info zodb-blobs
@@ -247,12 +248,10 @@ Stop Zope with `Ctrl+C` in the terminal where it is running.
 Remove all Docker containers and volumes:
 
 ```shell
-docker compose --profile tools down -v
+docker compose down -v
 ```
 
-Omit `-v` to keep the data volumes for next time.
-
 ```{seealso}
-{doc}`migrate-from-filestorage` migrates an existing Plone site from FileStorage.
+To move an existing site off FileStorage, continue with {doc}`migrate-from-filestorage`.
 {doc}`/reference/configuration` lists every configuration option.
 ```

@@ -67,7 +67,8 @@ The constructor connects to PostgreSQL, creates a connection pool, installs the 
 
 `poll_invalidations() -> list[bytes]`
 : Poll for invalidations.
-  No-op on the main storage; returns `[]`.
+  No-op on the main storage.
+  Returns `[]`.
 
 `sync(force: bool = True) -> None`
 : Sync snapshot.
@@ -79,7 +80,7 @@ The constructor connects to PostgreSQL, creates a connection pool, installs the 
 : Load the current object state.
   Returns `(pickle_bytes, tid_bytes)`.
   Raises `POSKeyError` if the object does not exist.
-  Results are cached in the per-instance LRU cache.
+  Checks the per-connection L1 cache and the shared L2 cache before querying PostgreSQL.
 
 `loadBefore(oid: bytes, tid: bytes) -> tuple[bytes, bytes, bytes] | None`
 : Load object data before a given TID.
@@ -314,10 +315,12 @@ The constructor connects to PostgreSQL, creates a connection pool, installs the 
 `defer_startup_action(action: callable, name: str, version: str | None = None) -> None`
 : Defer a callable until the next `poll_invalidations()` or `tpc_begin()` after startup.
 
-  This method queues a callable that will be executed during the first `poll_invalidations()` or `tpc_begin()` call after the read snapshot has ended, and again on later calls while entries remain queued.
+  This method queues a callable that will be executed during the first `poll_invalidations()` or `tpc_begin()` call after the read snapshot has ended.
+  It is executed again on later calls while entries remain queued.
   The callable receives the DSN string as its only argument and should open its own autocommit connection.
   That DSN carries a `connect_timeout` (`pool_timeout`), unless the configured DSN or `PGCONNECT_TIMEOUT` already sets one.
-  If the callable raises `psycopg.OperationalError`, it is queued again and retried on the next transaction; any other exception drops it until the next startup.
+  If the callable raises `psycopg.OperationalError`, it is queued again and retried on the next transaction.
+  Any other exception drops it until the next startup.
 
   ```python
   def create_my_index(dsn):
@@ -335,7 +338,8 @@ The constructor connects to PostgreSQL, creates a connection pool, installs the 
   storage.defer_startup_action(create_my_index, "my_plugin_indexes")
   ```
 
-  State processor DDL (from `get_schema_sql()`) is automatically deferred — plugins only need this method for additional DDL that is not part of the processor's schema.
+  State processor DDL (from `get_schema_sql()`) is automatically deferred.
+  Plugins only need this method for additional DDL that is not part of the processor's schema.
   For why startup DDL is deferred and how the schema-version gate skips it, see {ref}`startup-ddl-gate`.
 
   ```{versionadded} 1.10.3
@@ -361,7 +365,8 @@ Inherits from: `ConflictResolvingStorage`.
 
 `pg_connection -> psycopg.Connection`
 : The underlying psycopg connection (read-only).
-  Shares the same `REPEATABLE READ` snapshot used for ZODB loads, so external queries see a consistent point-in-time view.
+  Shares the same `REPEATABLE READ` snapshot used for ZODB loads.
+  External queries therefore see a consistent point-in-time view.
 
 ### IMVCCStorage methods
 
@@ -375,7 +380,9 @@ Inherits from: `ConflictResolvingStorage`.
 : Return OIDs changed since the last poll.
   Ends any previous read snapshot, starts a new `REPEATABLE READ` snapshot, queries for changes, and invalidates affected cache entries.
   Returns `[]` if nothing changed.
-  Returns `None` if the poll fails with `psycopg.OperationalError`, which includes an unreachable server and `psycopg_pool.PoolTimeout`: ZODB then invalidates its whole cache, and the next read repeats the poll first.
+  Returns `None` if the poll fails with `psycopg.OperationalError`, which includes an unreachable server and `psycopg_pool.PoolTimeout`.
+  ZODB then invalidates its whole cache.
+  The next read repeats the poll first.
 
 `sync(force: bool = True) -> None`
 : Sync snapshot.
@@ -386,15 +393,17 @@ Inherits from: `ConflictResolvingStorage`.
 `load(oid: bytes, version: str = "") -> tuple[bytes, bytes]`
 : Load the current object state.
   Returns `(pickle_bytes, tid_bytes)`.
-  Results are cached in the per-instance LRU cache.
+  Results are cached in the storage's own LRU load cache.
   When a prefetch refs expression is registered (see `register_prefetch_refs_expr()`), load also fetches the `refs` column and prefetches all referenced objects via `load_multiple()`.
 
 `load_multiple(oids: Iterable[bytes]) -> dict[bytes, tuple[bytes, bytes]]`
 : Load multiple objects in a single SQL query.
 
   Returns a dict mapping `oid_bytes -> (pickle_bytes, tid_bytes)`.
-  Only includes OIDs that exist; missing OIDs are silently omitted.
-  Checks the per-instance LRU cache first and only queries the database for cache misses using a single `SELECT ... WHERE zoid = ANY(...)` statement.
+  Only includes OIDs that exist.
+  Missing OIDs are silently omitted.
+  Checks the per-connection L1 cache and the shared L2 cache first.
+  Only queries the database for cache misses, using a single `SELECT ... WHERE zoid = ANY(...)` statement.
   All results are cached.
   For its role in batch loading and refs prefetch, see {ref}`performance-batch-object-loading`.
 
@@ -468,7 +477,7 @@ Inherits from: `ConflictResolvingStorage`.
 : Delegate to main storage.
 
 `__name__ -> str`
-: Property; delegates to main storage.
+: Property that delegates to main storage.
 
 `isReadOnly() -> bool`
 : Returns `False`.
@@ -517,7 +526,8 @@ from zodb_pgjsonb.storage import LoadCache
 
 Bounded LRU cache for `load()` results.
 Stores `(pickle_bytes, tid_bytes)` keyed by zoid (int).
-Each `PGJsonbStorageInstance` has its own cache; thread safety is not required.
+Each `PGJsonbStorageInstance` has its own cache.
+Thread safety is not required.
 
 ### Constructor
 

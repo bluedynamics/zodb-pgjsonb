@@ -127,13 +127,14 @@ CREATE TRIGGER trg_notify_commit
 Object state is stored as a JSONB document in the `state` column of `object_state` (and `object_history`).
 The JSONB is produced by [zodb-json-codec](https://bluedynamics.github.io/zodb-json-codec/)'s `decode_zodb_record_for_pg_json()` function, which converts ZODB pickle data to JSON.
 
-The class information (`class_mod`, `class_name`) is stored in separate columns, not inside the JSONB.
+The class information (`class_mod`, `class_name`) is stored in separate columns.
 The JSONB contains only the object's instance state.
 
 For the full list of JSON marker keys (`@ref`, `@t`, `@b`, `@pkl`, `@dt`, and others), see the [zodb-json-codec JSON format reference](https://bluedynamics.github.io/zodb-json-codec/reference/json-format.html).
 
 The only marker specific to zodb-pgjsonb is `@ns` (null-byte sanitization).
-PostgreSQL JSONB cannot store `\u0000` characters, so strings containing null bytes are base64-encoded and wrapped in an `@ns` marker.
+PostgreSQL JSONB cannot store `\u0000` characters.
+Strings containing null bytes are therefore base64-encoded and wrapped in an `@ns` marker.
 The storage sanitizes on write and unsanitizes on read automatically.
 
 (schema-schema-installation)=
@@ -147,7 +148,7 @@ The installation sequence:
 
 1. Check whether `transaction_log` exists.
 2. If absent, execute the full history-free schema DDL (tables, indexes, trigger).
-3. If present, ensure indexes added in later schema versions exist (lightweight `CREATE INDEX IF NOT EXISTS`).
+3. If present, create indexes added in later schema versions if they are missing (lightweight `CREATE INDEX IF NOT EXISTS`).
 4. If `history_preserving=True` and `object_history` does not exist, execute the history-preserving additions.
 5. Commit.
 

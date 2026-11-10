@@ -11,7 +11,8 @@
 ZODB storage adapter for PostgreSQL using JSONB, powered by [zodb-json-codec](https://github.com/bluedynamics/zodb-json-codec).
 
 Stores ZODB object state as queryable PostgreSQL JSONB instead of opaque pickle bytea blobs.
-ZODB sees pickle bytes at its boundaries; PostgreSQL sees queryable JSON internally.
+ZODB sees pickle bytes at its boundaries.
+PostgreSQL sees queryable JSON internally.
 
 **Key capabilities:**
 

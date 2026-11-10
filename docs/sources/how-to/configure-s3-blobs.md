@@ -167,7 +167,8 @@ docker run -d --name garage \
   /garage server --single-node --default-access-key --default-bucket
 ```
 
-Garage access keys are `GK` followed by 24 hex characters; secret keys are 64 hex characters.
+Garage access keys are `GK` followed by 24 hex characters.
+Secret keys are 64 hex characters.
 
 Configure the storage to use Garage:
 

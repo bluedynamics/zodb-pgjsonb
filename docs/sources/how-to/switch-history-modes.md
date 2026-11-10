@@ -74,7 +74,8 @@ All undo history is permanently deleted.
 
 ## Compact history without switching modes
 
-If you upgraded from an older version that used dual-write mode (writing the same data to both `object_state` and `object_history`), run `compact_history()` to remove the duplicate entries and reclaim disk space:
+Older versions used dual-write mode, writing the same data to both `object_state` and `object_history`.
+If you upgraded from such a version, run `compact_history()` to remove the duplicate entries and reclaim disk space:
 
 ```python
 from zodb_pgjsonb.storage import PGJsonbStorage
@@ -90,4 +91,5 @@ storage.close()
 ```
 
 This is an optional maintenance operation.
-The storage handles the overlap correctly at runtime, so compaction only saves disk space.
+The storage handles the overlap correctly at runtime.
+Compaction therefore only saves disk space.

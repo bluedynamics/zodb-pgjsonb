@@ -15,12 +15,12 @@ A processor's SQL expressions are interpolated unescaped, as {ref}`state-process
 
 A state processor must implement two methods:
 
-- `get_extra_columns()` -- return a list of `ExtraColumn` declarations.
-- `process(zoid, class_mod, class_name, state)` -- extract data and return a dict of column values, or `None` if no extra data applies.
+- `get_extra_columns()`: return a list of `ExtraColumn` declarations.
+- `process(zoid, class_mod, class_name, state)`: extract data and return a dict of column values, or `None` if no extra data applies.
 
 Optionally implement:
 
-- `get_schema_sql()` -- return DDL to apply at registration time (for example, `ALTER TABLE` or `CREATE INDEX` statements).
+- `get_schema_sql()`: return DDL to apply at registration time (for example, `ALTER TABLE` or `CREATE INDEX` statements).
 
 ```python
 from zodb_pgjsonb import ExtraColumn
@@ -99,7 +99,9 @@ The `process` method may modify `state` in place (for example, to pop annotation
 
 Return a SQL string with `ALTER TABLE`, `CREATE INDEX`, or other DDL statements.
 Registration only queues this DDL.
-The storage applies it at the next `poll_invalidations()` or `tpc_begin()` after the read snapshot has ended, and again on later calls while entries remain queued, on a separate autocommit connection.
+The storage applies it at the next `poll_invalidations()` or `tpc_begin()` after the read snapshot has ended.
+It applies it again on later calls while entries remain queued.
+The storage runs it on a separate autocommit connection.
 
 Use `IF NOT EXISTS` clauses to make the DDL idempotent:
 
@@ -126,9 +128,11 @@ def undone(self, cursor, tid, restored, deleted, entries):
 ```
 
 It is called once per undone transaction, before the undo is written, in the PostgreSQL transaction that carries the undo.
-`object_state` still shows the pre-undo rows, so the rows of `deleted` zoids can still be read.
+`object_state` still shows the pre-undo rows.
+The rows of `deleted` zoids can therefore still be read.
 Raise an exception to abort the undo.
-`entries` gives, per zoid, the revision the undone transaction wrote (`before`) and the one the undo writes (`after`, `None` for a delete), each with `class_mod`, `class_name`, `state` and `refs`.
+`entries` gives, per zoid, the revision the undone transaction wrote (`before`) and the one the undo writes (`after`, `None` for a delete).
+Each revision has `class_mod`, `class_name`, `state` and `refs`.
 Objects that the undone transaction changed only in `finalize` are not listed in `restored`.
 
 (write-state-processor-register-the-processor-with-the-storage)=

@@ -34,13 +34,17 @@ Each ZODB connection gets its own `PGJsonbStorageInstance` with a dedicated Post
 ## Size worker threads for GIL headroom
 
 A single process runs its worker threads under one CPython GIL.
-When several threads render responses concurrently while others wait on PostgreSQL, a thread returning from a query queues behind the CPU-bound ones for the GIL, which inflates per-load wall time even when the database is fast.
+When several threads render responses concurrently while others wait on PostgreSQL, a thread returning from a query queues behind the CPU-bound ones for the GIL.
+This inflates per-load wall time even when the database is fast.
 
 Prefer more processes with fewer threads each over fewer processes with many threads:
 
-- Keep the thread count per process modest — a small number such as 2 to 4 — and scale out with more processes or replicas to serve the same concurrency.
-- Match `pool-size` to the thread count per process, as described above, so each thread still has its own pooled connection.
-- Cache CPU-heavy per-request work such as theme compilation out of the request path, so waiting threads re-acquire the GIL sooner.
+- Keep the thread count per process modest, at a small number such as 2 to 4.
+  Scale out with more processes or replicas to serve the same concurrency.
+- Match `pool-size` to the thread count per process, as described above.
+  Each thread then still has its own pooled connection.
+- Cache CPU-heavy per-request work such as theme compilation out of the request path.
+  Waiting threads then re-acquire the GIL sooner.
 
 ```{seealso}
 {ref}`gil-convoy` explains why per-load timings inflate under concurrency even when PostgreSQL is fast.
@@ -75,7 +79,8 @@ To tune it, use two environment variables:
 
 - Set `ZODB_PGJSONB_DDL_LOCK_TIMEOUT` (default `15min`) to bound how long a pod waits for the lock before requeuing its DDL for the next transaction.
 - Set `ZODB_PGJSONB_FORCE_DDL=1` on a single pod to bypass the schema check and re-apply all deferred DDL, for example after you manually dropped an index.
-  Remove it again once that pod has started, so the rest of the fleet keeps skipping DDL that is already current.
+  Remove it again once that pod has started.
+  The rest of the fleet then keeps skipping DDL that is already current.
 
 ```{seealso}
 {ref}`startup-ddl-gate` explains how the gate works and why it trades re-running idempotent DDL for skipping the lock.
@@ -187,7 +192,8 @@ aws s3api put-bucket-versioning \
 ```
 
 Set up S3 cross-region replication or lifecycle rules for additional durability.
-Pack deletes orphaned S3 blobs, so versioning preserves a safety net.
+Pack deletes orphaned S3 blobs.
+Versioning therefore preserves a safety net.
 
 (deploy-production-monitor-the-database)=
 

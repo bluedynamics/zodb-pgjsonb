@@ -65,8 +65,10 @@ It implements `ZODB.storage`.
 `cache-local-mb`. Use `cache-shared-mb` instead.
 ```
 
-Unset S3 timeout keys are not passed to `S3Client`, so the zodb-s3blobs defaults shown in parentheses apply.
-The read timeouts are inactivity timeouts per socket operation, not limits on the total transfer time.
+Unset S3 timeout keys are not passed to `S3Client`.
+The zodb-s3blobs defaults shown in parentheses apply instead.
+The read timeouts are inactivity timeouts per socket operation.
+They do not limit the total transfer time.
 
 ```{versionadded} 1.19
 `s3-connect-timeout`, `s3-read-timeout`, `s3-download-connect-timeout`, `s3-download-read-timeout` and `s3-download-max-attempts`.
@@ -146,7 +148,8 @@ The ZConfig factory (`PGJsonbStorageFactory`) constructs `S3Client` and `S3BlobC
 
 ## Environment variables
 
-The storage reads these variables from the process environment, not from ZConfig.
+The storage reads these variables from the process environment.
+It does not read them from ZConfig.
 
 | Variable | Default | Description |
 |---|---|---|

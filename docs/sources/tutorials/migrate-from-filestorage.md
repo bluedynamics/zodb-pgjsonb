@@ -6,7 +6,8 @@
 
 ## What we will build
 
-In this tutorial we will migrate an existing Plone site from FileStorage (the default `Data.fs` + blob directory) to zodb-pgjsonb, storing all object state as queryable JSONB in PostgreSQL.
+In this tutorial we will migrate an existing Plone site from FileStorage (the default `Data.fs` + blob directory) to zodb-pgjsonb.
+We will store all object state as queryable JSONB in PostgreSQL.
 
 By the end we will have a running Plone site backed entirely by PostgreSQL, with the original FileStorage preserved as a backup.
 
@@ -63,7 +64,7 @@ zodb-pgjsonb creates all required tables (`object_state`, `transaction_log`, `bl
 ## Step 3: stop the Plone site
 
 We must stop Plone before migrating to avoid writes to the source FileStorage during the copy.
-Use `Ctrl+C` in the terminal where Zope is running, or stop the process through your process manager (supervisord, systemd, etc.).
+Use `Ctrl+C` in the terminal where Zope is running.
 
 (migrate-from-filestorage-step-4-write-the-zodb-convert-configuration)=
 
@@ -132,7 +133,8 @@ mkdir -p instance/var/blobtemp
 
 :::{note}
 Remove or comment out the old `<filestorage>` and `<blobstorage>` sections.
-Do not delete the original `Data.fs` and blob directory yet -- keep them as a backup until we verify the migration.
+Do not delete the original `Data.fs` and blob directory yet.
+Keep them as a backup until we verify the migration.
 :::
 
 (migrate-from-filestorage-step-7-start-and-verify)=
