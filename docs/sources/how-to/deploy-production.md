@@ -70,10 +70,12 @@ See {ref}`cache-tiers` for the model.
 ## Roll out without a DDL stampede
 
 When you run several replicas and deploy with a rolling update, every pod starts up and wants to apply its deferred schema DDL.
+The storage serializes this DDL behind an advisory lock and skips it when the schema is already current, with no configuration needed.
+To tune it, use two environment variables:
 
 - Set `ZODB_PGJSONB_DDL_LOCK_TIMEOUT` (default `15min`) to bound how long a pod waits for the lock before requeuing its DDL for the next transaction.
-- Set `ZODB_PGJSONB_FORCE_DDL=1` on a single pod to bypass the gate and re-apply all deferred DDL, for example after you manually dropped an index.
-  Remove it again once that pod has started, so the rest of the fleet keeps using the fast path.
+- Set `ZODB_PGJSONB_FORCE_DDL=1` on a single pod to bypass the schema check and re-apply all deferred DDL, for example after you manually dropped an index.
+  Remove it again once that pod has started, so the rest of the fleet keeps skipping DDL that is already current.
 
 ```{seealso}
 {ref}`startup-ddl-gate` explains how the gate works and why it trades re-running idempotent DDL for skipping the lock.
