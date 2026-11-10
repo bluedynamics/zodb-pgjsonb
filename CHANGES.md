@@ -1,5 +1,14 @@
 # Changelog
 
+## unreleased
+
+### Documentation
+
+- **Documentation brought to the Plone documentation style.**
+  All pages now follow the Plone style guide: one sentence per line, labelled sections, explicit code block lexers and version directives.
+  Tutorials and guides were cleaned up along the Diataxis quadrants, and stale facts were corrected (constructor signature, deprecated `cache-local-mb`, DDL lock timeouts, the `zodb-convert` tool name).
+  CI now runs the prose check and builds the documentation with `-W`, so warnings fail the build.
+
 ## 1.19.2
 
 ### Bug fixes
@@ -125,7 +134,7 @@
   the affected objects and subtrees fail closed and recatalogs them
   afterwards. A more precise variant is in the backlog (#130,
   plone-pgcatalog#268).
-  Design: [docs/superpowers/specs/2026-10-12-undo-processor-columns-design.md](docs/superpowers/specs/2026-10-12-undo-processor-columns-design.md).
+  Design: [docs/superpowers/specs/2026-10-12-undo-processor-columns-design.md](https://github.com/bluedynamics/zodb-pgjsonb/blob/main/docs/superpowers/specs/2026-10-12-undo-processor-columns-design.md).
 
 - Undo design amended: the subtree rule only fires when the undone
   transaction changed security or location at a container (conservative
@@ -560,7 +569,7 @@
   window.  All pods serve traffic from T+0; this is the time-to-warm,
   not the time-to-ready.
 
-  Design: [docs/superpowers/specs/2026-05-29-cache-warmer-herd-mitigation-design.md](docs/superpowers/specs/2026-05-29-cache-warmer-herd-mitigation-design.md).
+  Design: [docs/superpowers/specs/2026-05-29-cache-warmer-herd-mitigation-design.md](https://github.com/bluedynamics/zodb-pgjsonb/blob/main/docs/superpowers/specs/2026-05-29-cache-warmer-herd-mitigation-design.md).
 
 ## 1.12.0
 
