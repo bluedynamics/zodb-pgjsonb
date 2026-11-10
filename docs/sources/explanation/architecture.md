@@ -57,6 +57,8 @@ sequenceDiagram
     participant PG as PostgreSQL
 
     App->>ZODB: modify persistent object
+    ZODB->>Inst: tpc_begin(transaction)
+    Inst->>PG: BEGIN#59; pg_advisory_xact_lock(0)
     ZODB->>Inst: store(oid, serial, pickle_bytes)
     Inst->>Codec: decode_zodb_record_for_pg_json(pickle_bytes)
     Codec-->>Inst: (class_mod, class_name, json_str, refs[])
@@ -64,7 +66,6 @@ sequenceDiagram
     SP-->>Inst: extra column values
     Note over Inst: Queue entry in _tmp list
     ZODB->>Inst: tpc_vote(transaction)
-    Inst->>PG: BEGIN#59; pg_advisory_xact_lock(0)
     Inst->>PG: Batch conflict check (SELECT WHERE zoid = ANY(zoids))
     Inst->>PG: executemany INSERT ON CONFLICT (pipelined)
     Inst->>PG: COMMIT
@@ -73,23 +74,26 @@ sequenceDiagram
 
 ### Step by step
 
-1. **store()** receives pickle bytes from ZODB and calls `zodb_json_codec.decode_zodb_record_for_pg_json()`.
+1. **tpc_begin()** opens the PostgreSQL transaction, takes the advisory lock (`pg_advisory_xact_lock(0)`) to serialize all write transactions, and generates the TID.
+This happens before any `store()` call.
+
+2. **store()** receives pickle bytes from ZODB and calls `zodb_json_codec.decode_zodb_record_for_pg_json()`.
 This Rust function decodes the two concatenated pickles (class + state) in a ZODB record.
 It returns a JSON string, the class module and name, and an array of referenced OIDs.
 The entire pipeline runs in Rust with the GIL released.
 No intermediate Python dicts are created for the store path.
 
-2. **State processors** run after decoding.
+3. **State processors** run after decoding.
 Registered processors (such as plone-pgcatalog's `CatalogStateProcessor`) can inspect the decoded state, pop keys, and return `ExtraColumn` values.
 The INSERT statement that writes the object state also writes these values.
 
-3. **tpc_vote()** acquires a PostgreSQL advisory lock (`pg_advisory_xact_lock(0)`) to serialize all write transactions.
-It then runs a single batch conflict check (`SELECT zoid, tid FROM object_state WHERE zoid = ANY(...)`) instead of per-object queries.
+4. **tpc_vote()** runs a single batch conflict check (`SELECT zoid, tid FROM object_state WHERE zoid = ANY(...)`) instead of per-object queries.
 Finally, it calls `_batch_write_objects()`, which uses psycopg3's `executemany()` in pipeline mode.
 All INSERT statements go in a single network round-trip.
 
-4. **tpc_finish()** commits the PostgreSQL transaction and inserts a row into `transaction_log`, which fires the NOTIFY trigger.
-It then releases the advisory lock and returns the TID bytes to ZODB.
+5. **tpc_finish()** commits the PostgreSQL transaction and inserts a row into `transaction_log`, which fires the NOTIFY trigger.
+The commit releases the advisory lock.
+Then `tpc_finish()` returns the TID bytes to ZODB.
 
 ### History-preserving writes
 
@@ -157,7 +161,7 @@ If the poll query keeps failing, every transaction flushes the cache and every r
 ### TID generation
 
 Transaction IDs must be globally unique and monotonically increasing.
-zodb-pgjsonb uses a PostgreSQL advisory lock (`pg_advisory_xact_lock(0)`) held during `tpc_vote` and `tpc_finish` to serialize all write transactions.
+zodb-pgjsonb uses a PostgreSQL advisory lock (`pg_advisory_xact_lock(0)`) acquired in `tpc_begin()` and held until `tpc_finish()` commits to serialize all write transactions.
 Within the lock, `_new_tid()` generates a timestamp-based TID that is guaranteed to be later than the previous one via `TimeStamp.laterThan()`.
 
 This is a simplicity trade-off: it limits write throughput to one transaction at a time, but guarantees correct TID ordering without complex distributed coordination.
@@ -280,7 +284,7 @@ In history-preserving mode with a pack time, objects created or modified after t
 4. **Clean history tables** (history-preserving mode only): remove history rows for unreachable objects and old revisions of reachable objects before the pack time.
 5. **Clean transaction log**: remove `transaction_log` entries no longer referenced by any `object_state` row.
 
-As a result, pack is faster than in RelStorage, which must load and unpickle every object in Python to discover references.
+As a result, pack is faster than in RelStorage.
 For the measured numbers, see {ref}`performance-pack-and-garbage-collection`.
 
 (architecture-blob-tiering)=
@@ -401,7 +405,7 @@ Batch writes are up to 33% faster and storage overhead is roughly 50% lower.
 
 ### Switching between modes
 
-Both directions are supported at runtime.
+Switching to history-preserving happens at startup, and switching to history-free needs all application instances stopped.
 Switching from history-free to history-preserving creates the `object_history` table and begins tracking changes on the next modification.
 Switching from history-preserving to history-free uses `convert_to_history_free()` to drop history tables, clean old blob versions, and remove orphaned transaction log entries.
-See {doc}`../how-to/index` for details.
+See {doc}`/how-to/switch-history-modes` for details.

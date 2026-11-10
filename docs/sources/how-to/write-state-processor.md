@@ -20,9 +20,11 @@ A state processor must implement two methods:
 
 Optionally implement:
 
-- `get_schema_sql()`: return DDL to apply at registration time (for example, `ALTER TABLE` or `CREATE INDEX` statements).
+- `get_schema_sql()`: return DDL that the storage applies after registration (for example, `ALTER TABLE` or `CREATE INDEX` statements).
 
 ```python
+import json
+
 from zodb_pgjsonb import ExtraColumn
 
 
@@ -48,8 +50,8 @@ CREATE INDEX IF NOT EXISTS idx_title_tsvector ON object_state USING gin (title_t
 """
 
     def process(self, zoid, class_mod, class_name, state):
-        if not isinstance(state, dict):
-            return None
+        if isinstance(state, str):
+            state = json.loads(state)
         portal_type = state.get("portal_type")
         title = state.get("title", "")
         if portal_type is None:
@@ -86,12 +88,12 @@ The `process` method receives four arguments:
 - **zoid**: integer object ID.
 - **class_mod**: Python module of the object class (for example, `plone.app.contenttypes.content`).
 - **class_name**: Python class name (for example, `Document`).
-- **state**: the decoded JSON state as a Python dict.
+- **state**: the object state, a JSON string on store, restore and conflict resolution, and an already-decoded dict when undo re-runs the processor.
+  Parse a string with `json.loads`, as the example above does.
 
 Return `None` when you have nothing to say about this object: your columns keep their stored values.
 Return a dict to write your columns: every column you declared is written, and columns missing from the dict become `NULL`.
 Return `{}` to clear all your columns.
-The `process` method may modify `state` in place (for example, to pop annotation keys that should not be stored in the JSONB column).
 
 (write-state-processor-provide-optional-ddl-via-get-schema-sql)=
 

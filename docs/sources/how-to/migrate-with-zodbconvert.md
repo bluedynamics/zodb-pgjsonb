@@ -49,15 +49,16 @@ Create a file named `migrate.cfg`:
 
 ## Run the migration
 
+`zodb-convert` is a standalone tool that works with any ZODB-compatible storage.
+Install it with `pip install zodb-convert`.
+With uv, run `uv pip install zodb-convert`.
+
 ```shell
 zodb-convert migrate.cfg
 ```
 
 This copies all transactions sequentially, including blobs.
 The destination storage creates its schema automatically.
-
-`zodb-convert` is a standalone tool that works with any ZODB-compatible storage.
-Install it with `pip install zodb-convert` (or `uv pip install zodb-convert`).
 
 (migrate-with-zodbconvert-run-a-parallel-migration)=
 

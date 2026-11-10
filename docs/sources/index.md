@@ -25,7 +25,7 @@ PostgreSQL sees queryable JSON internally.
 
 **Key capabilities:**
 
-- SQL queryability: query ZODB objects directly with PostgreSQL JSONB operators and GIN indexes
+- SQL queryability: query ZODB objects directly with PostgreSQL JSONB operators
 - Transparent transcoding via Rust-based codec (2x faster than CPython pickle)
 - Tiered blob storage: small blobs in PG bytea, large blobs in S3 (configurable threshold)
 - Full ZODB compatibility: IStorage, IMVCCStorage, IBlobStorage, IStorageUndoable, IStorageIteration
@@ -78,7 +78,7 @@ Architecture, caching, performance and design decisions.
 ## Quick start
 
 1. {doc}`Install zodb-pgjsonb <how-to/install>`
-2. {doc}`Run the Docker quickstart <tutorials/quickstart-docker>` (Plone + PostgreSQL + Garage in 5 minutes)
+2. {doc}`Run the Docker quickstart <tutorials/quickstart-docker>` (Plone + PostgreSQL + Garage in 10 minutes)
 3. {doc}`Migrate an existing site <tutorials/migrate-from-filestorage>`
 
 ```{toctree}

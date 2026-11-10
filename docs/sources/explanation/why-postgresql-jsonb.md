@@ -106,8 +106,9 @@ See {doc}`security` for the full security analysis.
 ### Transcode overhead on reads
 
 Every uncached load requires a JSONB-to-pickle transcode after the SQL SELECT.
-This adds roughly 50-60 microseconds per object compared to RelStorage, which returns raw bytea bytes with no post-processing.
-In benchmarks, uncached loads are 1.1-1.6x slower than RelStorage.
+This adds a cost per object compared to RelStorage, which returns raw bytea bytes with no post-processing.
+In benchmarks, uncached loads are slower than RelStorage.
+For the measured figures, see {ref}`performance-read-performance`.
 
 In practice, this matters less than it appears.
 The ZODB object cache handles the vast majority of reads in production, typically >95%.
@@ -118,11 +119,12 @@ The uncached load path is exercised primarily during cold starts and cache misse
 ### JSONB storage and indexing overhead on writes
 
 JSONB is larger than pickle bytea for the same data (JSON keys are repeated per-object, types are less compact).
-PostgreSQL must also maintain JSONB-aware indexes on write, which adds overhead compared to inserting raw bytes.
+That adds overhead compared to inserting raw bytes.
 
-In practice, single-object writes are actually 1.3-1.6x *faster* than RelStorage.
-The reason is zodb-pgjsonb's simpler 2PC path (direct SQL, no OID/TID tracking tables), which more than compensates for the indexing overhead.
+In practice, single-object writes are actually *faster* than RelStorage.
+The reason is zodb-pgjsonb's simpler 2PC path (direct SQL, no OID/TID tracking tables), which more than compensates for the larger JSONB.
 Batch writes of 100 objects are roughly on par.
+For the measured figures, see {ref}`performance-write-performance`.
 
 ### PostgreSQL JSONB null-byte limitation
 

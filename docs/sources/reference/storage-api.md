@@ -321,6 +321,9 @@ The constructor connects to PostgreSQL, creates a connection pool, installs the 
   That DSN carries a `connect_timeout` (`pool_timeout`), unless the configured DSN or `PGCONNECT_TIMEOUT` already sets one.
   If the callable raises `psycopg.OperationalError`, it is queued again and retried on the next transaction.
   Any other exception drops it until the next startup.
+  Pass `version`, a string that changes whenever the action's effect changes.
+  The schema-version gate then skips the action while its marker is current.
+  With `version=None` the action runs under the startup lock on every startup.
 
   ```python
   def create_my_index(dsn):

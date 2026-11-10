@@ -183,6 +183,7 @@ All ZODB data (objects, transactions, blobs stored in PG) is captured by standar
 
 ### S3 blob backup
 
+Because pack deletes orphaned S3 blobs, versioning keeps a safety net.
 Enable S3 bucket versioning to protect against accidental deletion:
 
 ```shell
@@ -192,8 +193,6 @@ aws s3api put-bucket-versioning \
 ```
 
 Set up S3 cross-region replication or lifecycle rules for additional durability.
-Pack deletes orphaned S3 blobs.
-Versioning therefore preserves a safety net.
 
 (deploy-production-monitor-the-database)=
 

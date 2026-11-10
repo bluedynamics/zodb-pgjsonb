@@ -50,7 +50,7 @@ WHERE class_mod LIKE 'plone.app.contenttypes.content%';
 
 The PostgreSQL documentation lists all JSONB operators in [JSON Functions and Operators](https://www.postgresql.org/docs/current/functions-json.html).
 
-### Containment query (GIN-indexed)
+### Containment query
 
 ```sql
 SELECT zoid, state->>'title'

@@ -28,7 +28,7 @@ git clone https://github.com/bluedynamics/zodb-pgjsonb.git
 cd zodb-pgjsonb/example
 ```
 
-The commands of this step assume we are inside the `example/` directory.
+Step 2 runs inside the `example/` directory.
 
 (quickstart-docker-step-2-start-the-infrastructure)=
 
@@ -38,7 +38,7 @@ The commands of this step assume we are inside the `example/` directory.
 docker compose up -d
 ```
 
-This starts two services:
+This starts two containers, which expose three ports:
 
 | Service      | Port | Purpose                     | Credentials                      |
 |--------------|------|-----------------------------|----------------------------------|

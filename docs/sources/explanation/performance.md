@@ -3,7 +3,7 @@
 # Performance characteristics
 
 zodb-pgjsonb's performance profile reflects a fundamental trade-off.
-zodb-pgjsonb pays a transcode cost on every uncached read.
+It pays a transcode cost on every uncached read.
 In exchange it offers SQL queryability, faster writes, dramatically faster garbage collection, and a richer ecosystem of integrations.
 
 This page presents benchmark data, explains where time is spent on each operation, and traces the optimization history that shaped the current implementation.
@@ -251,7 +251,7 @@ The same pattern was applied to all deletion phases (objects, blobs, transaction
 ### Batch object loading (1.8.0)
 
 `load_multiple(oids)` on `PGJsonbStorageInstance` loads multiple objects in a single `SELECT ... WHERE zoid = ANY(...)` query instead of individual roundtrips.
-The method checks the per-instance LRU cache first and only queries misses.
+The method checks the per-connection L1 and the shared L2 caches first and only queries misses.
 This is the building block for the refs prefetch feature (1.9.0+).
 
 (performance-refs-prefetch)=
@@ -338,7 +338,7 @@ A per-object N+1 pattern keeps the ratio near 1.
 
 The psycopg3 `ConnectionPool` with configurable min/max size allows tuning for different deployment sizes.
 Each ZODB Connection gets its own storage instance with its own pool connection.
-The pool max_size should match the expected number of concurrent ZODB Connections.
+For the sizing rule, see {ref}`deploy-production-tune-connection-pool-settings`.
 
 ### Prepared statements
 
@@ -384,7 +384,8 @@ Three levers reduce the exposure:
 ### Write serialization
 
 The advisory lock serialization model (`pg_advisory_xact_lock(0)`) limits write throughput to one transaction at a time.
-This is rarely a bottleneck because ZODB write transactions are typically short (a few milliseconds) and the lock is held only during `tpc_vote` and `tpc_finish`.
+The lock is acquired in `tpc_begin()` and held until `tpc_finish()` commits.
+This is rarely a bottleneck because ZODB write transactions are typically short (a few milliseconds).
 For workloads with sustained high write concurrency, OID-range-based advisory locks could partition the lock space, but this has not been necessary in practice.
 
 ### Pack scaling

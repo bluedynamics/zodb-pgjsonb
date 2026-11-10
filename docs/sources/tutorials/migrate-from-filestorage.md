@@ -24,14 +24,12 @@ By the end we will have a running Plone site backed entirely by PostgreSQL, with
 
 ## Step 1: install zodb-pgjsonb
 
-Activate the virtual environment that our Plone site uses and install zodb-pgjsonb:
+Activate the virtual environment that our Plone site uses and install zodb-pgjsonb and zodb-convert:
 
 ```shell
 source .venv/bin/activate
 uv pip install zodb-pgjsonb zodb-convert
 ```
-
-This also installs the `zodb-convert` command.
 
 (migrate-from-filestorage-step-2-prepare-the-postgresql-database)=
 
@@ -99,10 +97,10 @@ A typical Plone installation uses `instance/var/filestorage/Data.fs` and `instan
 Run `zodb-convert` to copy all transactions from FileStorage to PostgreSQL:
 
 ```shell
-.venv/bin/zodb-convert migrate.cfg
+.venv/bin/zodb-convert -v migrate.cfg
 ```
 
-zodb-convert logs progress while it copies and logs a summary when it finishes.
+With `-v`, zodb-convert logs progress while it copies and logs a summary when it finishes.
 
 For large databases, {doc}`/how-to/migrate-with-zodbconvert` shows how to run the copy with several workers.
 

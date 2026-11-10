@@ -149,7 +149,7 @@ Under sustained writes a reader still falls through to PostgreSQL for the object
 The durable answer there is to make falling through cheap by reducing the per-object round-trip cost.
 
 ```{seealso}
-{doc}`/explanation/architecture` for the read path and MVCC snapshots,
-{doc}`/explanation/performance` for cached-versus-uncached benchmarks, and
-{doc}`/reference/configuration` for the cache and warmer configuration keys.
+{doc}`/explanation/architecture` explains the read path and MVCC snapshots.
+{doc}`/explanation/performance` lists the cached-versus-uncached benchmarks.
+{doc}`/reference/configuration` lists the cache and warmer configuration keys.
 ```

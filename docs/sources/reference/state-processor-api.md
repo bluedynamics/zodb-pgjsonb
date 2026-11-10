@@ -18,10 +18,11 @@ A processor must implement the following methods:
 : Return the list of extra columns this processor writes.
   Called once during registration and during each `tpc_vote()`.
 
-`process(zoid: int, class_mod: str, class_name: str, state: str) -> dict | None`
+`process(zoid: int, class_mod: str, class_name: str, state: str | dict) -> dict | None`
 : Extract extra column data from an object's state.
-  `state` is a JSON string (the decoded object state, pre-sanitization).
-  The method may modify `state` in-place (for example, pop annotation keys to prevent them from being persisted).
+  `state` is the object state as a JSON string on `store()`, `restore()` and conflict resolution.
+  When undo re-runs the processor, `state` is the already-decoded JSON value, a dict.
+  A processor must accept both and parse a string with `json.loads`.
   The return value decides what happens to this processor's columns for the object:
 
   - `None`: the columns are left untouched (a new row gets the column defaults).
@@ -136,7 +137,7 @@ The following sequence describes when each method is called during a ZODB write 
 
 1. **Registration** (`register_state_processor()`):
    `get_extra_columns()` and `get_schema_sql()` are called.
-   DDL is applied (or deferred).
+   The DDL from `get_schema_sql()` is queued.
 
 2. **Store** (`store()` / `restore()`):
    `process(zoid, class_mod, class_name, state)` is called for each object after pickle-to-JSON decoding.
@@ -174,8 +175,9 @@ The queue is processed as follows:
 
 - The schema-version gate skips entries whose version marker is current.
   It runs before the lock and is checked again under the lock.
-- It takes a session-level advisory lock.
+- `_apply_pending_ddl()` takes a session-level advisory lock.
   Acquiring it waits at most `lock_timeout` = `ZODB_PGJSONB_DDL_LOCK_TIMEOUT` (default `15min`).
+  A failure while connecting or acquiring the lock, including that timeout, requeues the whole queue.
 - Each queue entry (one processor's whole `get_schema_sql()` text) runs on its own direct autocommit connection (not the pool connection) with `lock_timeout = '30s'`.
 - An entry that fails with `psycopg.OperationalError` is requeued.
   Any other error drops the entry until the next startup.
