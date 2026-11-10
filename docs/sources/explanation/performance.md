@@ -3,7 +3,7 @@
 # Performance characteristics
 
 zodb-pgjsonb's performance profile reflects a fundamental trade-off.
-It pays a transcode cost on every uncached read.
+zodb-pgjsonb pays a transcode cost on every uncached read.
 In exchange it offers SQL queryability, faster writes, dramatically faster garbage collection, and a richer ecosystem of integrations.
 
 This page presents benchmark data, explains where time is spent on each operation, and traces the optimization history that shaped the current implementation.
@@ -14,9 +14,9 @@ This page presents benchmark data, explains where time is spent on each operatio
 
 The numbers below were refreshed in 2026-07 on a developer workstation:
 
-- Python 3.14, PostgreSQL 17.9 (Docker on `localhost`), ZODB 6.2, psycopg 3.3
-- zodb-json-codec 1.6.1
-- Comparison baseline: RelStorage 4.2.0 on the same PostgreSQL server
+- Python 3.14, PostgreSQL 17.9 (Docker on `localhost`), ZODB 6.2, psycopg 3.3.
+- zodb-json-codec 1.6.1.
+- Comparison baseline: RelStorage 4.2.0 on the same PostgreSQL server.
 - Each figure is the median of 100 measured iterations after 10 warmup iterations.
   Pack figures are the mean over 3 runs.
 
@@ -42,7 +42,7 @@ The benchmark suite covers raw storage API operations (bypassing ZODB's object c
 Single-object and small-batch writes are faster than RelStorage.
 Large batches are on par.
 The speedup comes from zodb-pgjsonb's simpler 2PC path.
-It uses direct SQL INSERT with advisory lock serialization, no OID/TID tracking tables, and no separate commit lock table.
+That path uses direct SQL INSERT with advisory lock serialization, no OID/TID tracking tables, and no separate commit lock table.
 The Rust codec's transcode cost is negligible.
 Processing 100 objects from pickle to JSON takes under 0.2 ms.
 That is a small fraction of the total operation time, which PostgreSQL I/O and 2PC overhead dominate.
@@ -102,8 +102,7 @@ The uncached path fires primarily during cold starts and after large invalidatio
 
 Through ZODB.DB the object cache dominates cached reads.
 Both storages land within microseconds of each other.
-The connection cycle (open a `ZODB.Connection`, poll, close) is slower.
-Each cycle acquires a pooled connection and opens a fresh REPEATABLE READ snapshot.
+The connection cycle (open a `ZODB.Connection`, poll, close) is slower because each cycle acquires a pooled connection and opens a fresh REPEATABLE READ snapshot.
 Since 1.14.2 the pooled connection is validated with a liveness check on checkout.
 
 (performance-pack-and-garbage-collection)=
@@ -118,7 +117,8 @@ Since 1.14.2 the pooled connection is validated with a liveness check on checkou
 
 Pack is the standout advantage.
 zodb-pgjsonb's pure SQL graph traversal via the pre-extracted `refs` column runs entirely inside PostgreSQL.
-No objects are loaded, and no Python unpickling occurs.
+No objects are loaded.
+No Python unpickling occurs.
 RelStorage must load and unpickle every object to discover references via `referencesf()`.
 
 The performance gap widens with database size.
@@ -126,7 +126,7 @@ RelStorage's cost scales linearly with the number of objects, because each must 
 zodb-pgjsonb's recursive CTE operates on integer arrays and benefits from PostgreSQL's index-driven join strategies.
 zodb-pgjsonb's own pack time grows only slowly with object count.
 A fixed temp-table and index-build overhead dominates at small sizes.
-100 and 1,000 objects pack in a similar time.
+As a result, packing 100 and 1,000 objects takes a similar time.
 
 (performance-history-preserving-mode)=
 
@@ -291,7 +291,7 @@ A lagging reader is served an entry only when it is not newer than the reader's 
 
 A learning cache warmer records the objects loaded right after startup.
 On the next start it pre-loads the highest-scored ones into L2.
-A fresh pod is not cold.
+A fresh pod therefore starts warm.
 On rolling deploys the warmer is deliberately un-synchronized (baseline delay, jitter, a cluster-wide concurrency cap).
 This keeps N replicas from warming at once and multiplying the database's startup load.
 
@@ -350,13 +350,13 @@ Since pool connections are reused across ZODB Connection cycles, the prepared st
 ### GIL convoy under concurrency
 
 Under CPython, a worker thread that has issued a query parks on the PostgreSQL socket.
-While it waits for the response it releases the GIL, and other threads run.
+While it waits for the response it releases the GIL so other threads can run.
 When the response arrives, the thread must re-acquire the GIL before `psycopg` returns the row to the caller.
 Other threads in the same process may be doing CPU-heavy work at that moment, such as template rendering, theme transformation, or pickling.
 The returning thread then queues behind them for the GIL.
-The wall-clock time attributed to a single object load then inflates.
+As a result, the wall-clock time attributed to a single object load inflates.
 It grows from a few milliseconds of real query time to tens or hundreds of milliseconds of GIL-scheduling delay.
-PostgreSQL itself answered promptly.
+Yet PostgreSQL answered promptly.
 
 This is a property of the Python runtime.
 It is not a property of the storage.
