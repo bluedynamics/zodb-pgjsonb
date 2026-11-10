@@ -74,14 +74,12 @@ You do not need a running Zope instance.
 
 **Pure SQL garbage collection.** Object references are extracted at write time into a `refs` BIGINT[] column.
 The pack algorithm uses a recursive CTE to traverse the reference graph entirely within PostgreSQL, never loading a single object.
-This is 13-28x faster than RelStorage's approach of loading and unpickling every object.
-See {doc}`performance` for detailed numbers.
+This is faster than RelStorage's approach of loading and unpickling every object.
+For the measured numbers, see {ref}`performance-pack-and-garbage-collection`.
 
 (why-postgresql-jsonb-security-no-code-execution-attack-surface)=
 
 ## Security: no code execution attack surface
-
-This deserves its own emphasis because it is often overlooked.
 
 Pickle deserialization is inherently unsafe.
 A pickle can contain instructions to import any module and call any function.
@@ -156,6 +154,3 @@ zodb-pgjsonb is not just a storage backend -- it is the foundation for an ecosys
 See {doc}`architecture` for how state processors work.
 - **plone-pgthumbor** reads blob data directly from the `blob_state` table for Thumbor image processing, without going through ZODB.
 - **Direct SQL access** from Grafana, Metabase, or any SQL-capable tool provides visibility into ZODB data that was previously impossible without Python code.
-
-All of these integrations depend on the data being stored as queryable JSONB rather than opaque pickle bytes.
-The storage format is the enabling decision that makes the rest possible.

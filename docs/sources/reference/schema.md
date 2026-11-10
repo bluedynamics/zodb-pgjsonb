@@ -141,7 +141,7 @@ The storage sanitizes on write and unsanitizes on read automatically.
 ## Schema installation
 
 The `install_schema()` function in `schema.py` applies DDL idempotently.
-It skips DDL when core tables already exist to avoid `ACCESS EXCLUSIVE` locks that would block concurrent instances holding `REPEATABLE READ` snapshots.
+It skips the full schema DDL when core tables already exist.
 
 The installation sequence:
 
@@ -155,3 +155,4 @@ State processor DDL (from `get_schema_sql()`) is applied separately.
 `register_state_processor()` only queues it, tagged with a version of `sha256` of its text.
 The queue runs at the next `poll_invalidations()` or `tpc_begin()` after the read snapshot has ended, and again on later calls while entries remain queued.
 Each queue entry runs on its own direct autocommit connection.
+For why this DDL is deferred, see {ref}`startup-ddl-gate`.

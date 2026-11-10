@@ -21,7 +21,7 @@ ZODB sees pickle bytes at its boundaries; PostgreSQL sees queryable JSON interna
 - Full ZODB compatibility: IStorage, IMVCCStorage, IBlobStorage, IStorageUndoable, IStorageIteration
 - Configurable history modes (history-free or history-preserving with undo)
 - State processor plugins for writing extra columns atomically alongside object state
-- Pure SQL pack/GC via pre-extracted refs column (15-28x faster than RelStorage)
+- Pure SQL pack and garbage collection through the pre-extracted refs column
 - Instant cache invalidation via PostgreSQL LISTEN/NOTIFY
 
 **Requirements:** Python 3.12+, PostgreSQL 15+ (tested with 17), [zodb-json-codec](https://pypi.org/project/zodb-json-codec/)

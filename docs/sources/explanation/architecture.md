@@ -95,19 +95,12 @@ This model avoids writing duplicate JSONB data on every commit and is 33% faster
 
 ## Read path
 
-The read path converts JSONB back to pickle bytes, with an LRU cache to avoid redundant transcoding.
-
-1. **load()** checks the per-instance `LoadCache` first.
-On a hit, it returns cached pickle bytes and TID immediately -- no database round-trip, no transcoding.
-The cache is an `OrderedDict`-based LRU bounded by byte size (default 16 MB per instance).
-
-2. On a cache miss, the instance executes `SELECT state, tid, class_mod, class_name FROM object_state WHERE zoid = %s` using a prepared statement (`prepare=True`).
-
-3. The returned JSONB state is passed to `zodb_json_codec.encode_zodb_record()`, which produces pickle bytes in Rust.
-The result is stored in the load cache before being returned.
-
-In production, the ZODB object cache sits above the storage cache and handles the vast majority of reads.
-The storage LRU cache catches objects evicted from the ZODB object cache but still hot at the storage level, avoiding PostgreSQL round-trips for warm data.
+The ZODB object cache sits above the storage and serves live objects without calling `load()` at all.
+On a miss there, `load()` checks the per-connection L1 `LoadCache` first and then the process-wide L2 `SharedLoadCache`.
+When both miss, the instance runs a single-row `SELECT` on `object_state` as a prepared statement (`prepare=True`).
+`zodb_json_codec.encode_zodb_record()` transcodes the returned JSONB state to pickle bytes, and the result fills L2 and L1 on the way out.
+Only this path pays the transcode cost.
+For the cache sizes, the consensus gate and the cache warmer, see {ref}`cache-tiers`.
 
 (architecture-mvcc-and-snapshot-isolation)=
 
@@ -253,8 +246,8 @@ In history-preserving mode with a pack time, objects created or modified after t
 4. **Clean history tables** (history-preserving mode only): remove history rows for unreachable objects and old revisions of reachable objects before the pack time.
 5. **Clean transaction log**: remove `transaction_log` entries no longer referenced by any `object_state` row.
 
-The result is 13-28x faster pack compared to RelStorage, which must load and unpickle every object in Python to discover references.
-See {doc}`performance` for benchmark numbers.
+As a result, pack is faster than in RelStorage, which must load and unpickle every object in Python to discover references.
+For the measured numbers, see {ref}`performance-pack-and-garbage-collection`.
 
 (architecture-blob-tiering)=
 

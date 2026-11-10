@@ -111,7 +111,7 @@ In the `ON CONFLICT ... SET` clause, `EXCLUDED.{name}` holds the value already c
 ### Security
 
 `value_expr` and `update_expr` are interpolated directly into SQL `INSERT` statements without escaping.
-Only register processors from trusted, audited code.
+You must register only processors from trusted, audited code.
 A compromised processor can read, modify, or delete any data in the database.
 Column names are validated against a strict identifier pattern; expressions are not validated because they may legitimately contain SQL function calls.
 
@@ -153,9 +153,7 @@ The following sequence describes when each method is called during a ZODB write 
 
 `register_state_processor()` does not execute DDL from `get_schema_sql()`.
 It queues the DDL, tagged with a version of `sha256` of its text.
-
-At Zope startup, IDatabaseOpenedWithRoot subscribers fire while a ZODB Connection still holds an `ACCESS SHARE` lock via its `REPEATABLE READ` snapshot.
-`ALTER TABLE` requires `ACCESS EXCLUSIVE`, which would deadlock.
+For why the DDL is deferred and how the schema-version gate works, see {ref}`startup-ddl-gate`.
 
 `_apply_pending_ddl()` runs the queue at the next `poll_invalidations()` or `tpc_begin()` after the read snapshot has ended, and again on later calls while entries remain queued:
 

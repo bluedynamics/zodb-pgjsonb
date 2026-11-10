@@ -196,6 +196,9 @@ The constructor connects to PostgreSQL, creates a connection pool, installs the 
   The main thread reads from the source, decodes pickles, and tracks OID-level dependencies to guarantee correct write ordering.
   When `start_tid` is set, iteration begins at that TID (for incremental imports).
   A `migration_watermark` table tracks contiguous commit progress during parallel copies so interrupted imports can resume safely without losing transactions.
+  On resume, copying starts at the lower of `start_tid` and the watermark plus one.
+  This fills gaps left by out-of-order worker commits, even when `start_tid` comes from `lastTransaction()`.
+  Dropping the table on clean completion leaves non-incremental imports with no lasting overhead.
 
 ### IBlobStorage methods
 
@@ -284,20 +287,18 @@ The constructor connects to PostgreSQL, creates a connection pool, installs the 
 : Register a SQL expression for automatic refs prefetching on `load()`.
 
   When set, `load()` includes the expression as an extra column aliased `refs` in its SELECT query.
+  The expression is arbitrary SQL, evaluated per row.
   If the expression evaluates to a non-NULL integer array, the referenced objects are prefetched into the load cache via `load_multiple()`.
-  This turns N+1 individual loads into 1+1 batch loads when traversing object trees.
-
+  A NULL result suppresses prefetch for that row.
   Call with `None` to disable prefetching (the default).
 
-  The expression is arbitrary SQL evaluated per row, so it can filter which objects trigger prefetch.
-  For example, plone-pgcatalog registers an expression that only prefetches for cataloged content objects:
+  This example prefetches only for rows with a non-NULL `idx` column:
 
   ```python
   storage.register_prefetch_refs_expr("CASE WHEN idx IS NOT NULL THEN refs END")
   ```
 
-  Non-content objects (BTrees, PersistentMappings, etc.) have `idx IS NULL` and produce a NULL result, suppressing prefetch.
-  This avoids the cascade problem where internal ZODB structures reference thousands of objects that are never accessed.
+  For the reasons to filter the expression, see {ref}`performance-refs-prefetch`.
 
   ```{versionadded} 1.9.2
   ```
@@ -312,9 +313,6 @@ The constructor connects to PostgreSQL, creates a connection pool, installs the 
 
 `defer_startup_action(action: callable, name: str, version: str | None = None) -> None`
 : Defer a callable until the next `poll_invalidations()` or `tpc_begin()` after startup.
-
-  At Zope startup, a ZODB Connection holds an open `REPEATABLE READ` snapshot with `ACCESS SHARE` on `object_state`.
-  DDL statements (`ALTER TABLE`, `CREATE INDEX`) need `ACCESS EXCLUSIVE`, which would deadlock against that snapshot.
 
   This method queues a callable that will be executed during the first `poll_invalidations()` or `tpc_begin()` call after the read snapshot has ended, and again on later calls while entries remain queued.
   The callable receives the DSN string as its only argument and should open its own autocommit connection.
@@ -338,6 +336,7 @@ The constructor connects to PostgreSQL, creates a connection pool, installs the 
   ```
 
   State processor DDL (from `get_schema_sql()`) is automatically deferred — plugins only need this method for additional DDL that is not part of the processor's schema.
+  For why startup DDL is deferred and how the schema-version gate skips it, see {ref}`startup-ddl-gate`.
 
   ```{versionadded} 1.10.3
   ```
@@ -397,9 +396,7 @@ Inherits from: `ConflictResolvingStorage`.
   Only includes OIDs that exist; missing OIDs are silently omitted.
   Checks the per-instance LRU cache first and only queries the database for cache misses using a single `SELECT ... WHERE zoid = ANY(...)` statement.
   All results are cached.
-
-  This method is the foundation for batch object loading.
-  plone-pgcatalog uses it to prefetch the next N objects when `brain.getObject()` is called on a search result, reducing per-object SQL roundtrips from N individual queries to 1 batch query.
+  For its role in batch loading and refs prefetch, see {ref}`performance-batch-object-loading`.
 
   ```{versionadded} 1.8.0
   ```
