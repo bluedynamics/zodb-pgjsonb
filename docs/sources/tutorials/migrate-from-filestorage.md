@@ -2,11 +2,15 @@
 
 # Migrate a Plone site from FileStorage
 
+(migrate-from-filestorage-what-we-will-build)=
+
 ## What we will build
 
 In this tutorial we will migrate an existing Plone site from FileStorage (the default `Data.fs` + blob directory) to zodb-pgjsonb, storing all object state as queryable JSONB in PostgreSQL.
 
 By the end we will have a running Plone site backed entirely by PostgreSQL, with the original FileStorage preserved as a backup.
+
+(migrate-from-filestorage-prerequisites)=
 
 ## Prerequisites
 
@@ -15,27 +19,31 @@ By the end we will have a running Plone site backed entirely by PostgreSQL, with
 - Python 3.12+ with the same virtual environment as the Plone site
 - [uv](https://docs.astral.sh/uv/) (recommended) or pip
 
+(migrate-from-filestorage-step-1-install-zodb-pgjsonb)=
+
 ## Step 1: install zodb-pgjsonb
 
 Activate the virtual environment that our Plone site uses and install zodb-pgjsonb:
 
-```bash
+```shell
 source .venv/bin/activate
 uv pip install zodb-pgjsonb zodb-convert
 ```
 
 This also installs the `zodb-convert` command.
 
+(migrate-from-filestorage-step-2-prepare-the-postgresql-database)=
+
 ## Step 2: prepare the PostgreSQL database
 
 Create a dedicated database for the ZODB data.
 Connect to PostgreSQL as a superuser and run:
 
-```bash
+```shell
 psql -h localhost -p 5432 -U postgres
 ```
 
-```sql
+```psql
 CREATE USER zodb WITH PASSWORD 'zodb';
 CREATE DATABASE zodb OWNER zodb;
 \q
@@ -43,23 +51,27 @@ CREATE DATABASE zodb OWNER zodb;
 
 Verify the connection:
 
-```bash
+```shell
 psql -h localhost -p 5432 -U zodb -d zodb -c "SELECT version();"
 ```
 
 We should see the PostgreSQL version string.
 zodb-pgjsonb creates all required tables (`object_state`, `transaction_log`, `blob_state`, etc.) automatically on first connection.
 
+(migrate-from-filestorage-step-3-stop-the-plone-site)=
+
 ## Step 3: stop the Plone site
 
 We must stop Plone before migrating to avoid writes to the source FileStorage during the copy.
 Use `Ctrl+C` in the terminal where Zope is running, or stop the process through your process manager (supervisord, systemd, etc.).
 
+(migrate-from-filestorage-step-4-write-the-zodb-convert-configuration)=
+
 ## Step 4: write the zodb-convert configuration
 
 Create a file called `migrate.cfg` in the project directory:
 
-```xml
+```ini
 <source>
     <filestorage>
         path /path/to/var/filestorage/Data.fs
@@ -76,26 +88,20 @@ Create a file called `migrate.cfg` in the project directory:
 ```
 
 Replace `/path/to/var/filestorage/Data.fs` and `/path/to/var/blobstorage` with the actual paths from the existing Zope configuration.
-
-:::{tip}
 Look in the current `zope.conf` for the `<filestorage>` section to find the exact paths.
 A typical Plone installation uses `instance/var/filestorage/Data.fs` and `instance/var/blobstorage`.
-:::
+
+(migrate-from-filestorage-step-5-run-the-migration)=
 
 ## Step 5: run the migration
 
 Run `zodb-convert` to copy all transactions from FileStorage to PostgreSQL:
 
-```bash
+```shell
 .venv/bin/zodb-convert migrate.cfg
 ```
 
 zodb-convert logs progress while it copies and logs a summary when it finishes.
-
-:::{note}
-The migration speed depends on database size, network latency, and disk I/O.
-A typical Plone site with 50,000 objects migrates in under 5 minutes.
-:::
 
 ### Parallel migration for large databases
 
@@ -128,7 +134,7 @@ dest.close()
 
 Run the script:
 
-```bash
+```shell
 python migrate_parallel.py
 ```
 
@@ -151,11 +157,13 @@ Set `pool_max_size` to at least the number of workers.
 Using 4 to 6 workers provides the best throughput for most deployments.
 :::
 
+(migrate-from-filestorage-step-6-update-zope-conf)=
+
 ## Step 6: update zope.conf
 
 Replace the `<filestorage>` section in `zope.conf` with a `<pgjsonb>` section:
 
-```xml
+```ini
 %import zodb_pgjsonb
 
 <zodb_db main>
@@ -170,7 +178,7 @@ Replace the `<filestorage>` section in `zope.conf` with a `<pgjsonb>` section:
 
 Create the blob temp directory:
 
-```bash
+```shell
 mkdir -p instance/var/blobtemp
 ```
 
@@ -179,11 +187,13 @@ Remove or comment out the old `<filestorage>` and `<blobstorage>` sections.
 Do not delete the original `Data.fs` and blob directory yet -- keep them as a backup until we verify the migration.
 :::
 
+(migrate-from-filestorage-step-7-start-and-verify)=
+
 ## Step 7: start and verify
 
 Start the Plone site:
 
-```bash
+```shell
 .venv/bin/runwsgi instance/etc/zope.ini
 ```
 
@@ -203,7 +213,7 @@ Open the site in a browser and verify:
 
 Open a second terminal and connect to PostgreSQL:
 
-```bash
+```shell
 psql -h localhost -p 5432 -U zodb -d zodb
 ```
 
@@ -226,6 +236,8 @@ LIMIT 10;
 
 We should see the same objects that existed in the original FileStorage.
 
+(migrate-from-filestorage-what-we-learned)=
+
 ## What we learned
 
 - zodb-pgjsonb implements `IStorageRestoreable`, making it compatible with `zodb-convert`
@@ -233,6 +245,8 @@ We should see the same objects that existed in the original FileStorage.
 - For large databases, the Python API `copyTransactionsFrom(source, workers=N)` uses parallel PostgreSQL connections for higher throughput
 - After migration, we swap the `<filestorage>` section for `<pgjsonb>` in `zope.conf`
 - All ZODB data is now queryable JSON in PostgreSQL
+
+(migrate-from-filestorage-next-steps)=
 
 ## Next steps
 

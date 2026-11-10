@@ -5,6 +5,8 @@
 Goal-oriented guides that show you how to solve specific problems.
 Each guide assumes you already have a working PostgreSQL instance and a Python environment.
 
+(index-setup-and-operations)=
+
 ## Setup and operations
 
 ```{toctree}
@@ -18,6 +20,8 @@ switch-history-modes
 deploy-production
 ```
 
+(index-migration)=
+
 ## Migration
 
 ```{toctree}
@@ -27,6 +31,8 @@ titlesonly: true
 ---
 migrate-with-zodbconvert
 ```
+
+(index-development)=
 
 ## Development
 

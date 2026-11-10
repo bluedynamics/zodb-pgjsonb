@@ -4,11 +4,13 @@
 
 This guide shows you how to configure zodb-pgjsonb for production workloads.
 
+(deploy-production-tune-connection-pool-settings)=
+
 ## Tune connection pool settings
 
 Set `pool-size` and `pool-max-size` based on your expected concurrency:
 
-```xml
+```ini
 <pgjsonb>
     dsn dbname=zodb user=zodb host=localhost port=5432
     pool-size 4
@@ -20,11 +22,9 @@ Set `pool-size` and `pool-max-size` based on your expected concurrency:
 - **pool-size**: minimum connections kept open (default: 1).
   Set this to the number of Zope threads for steady-state workloads.
 - **pool-max-size**: maximum connections (default: 10).
-  Every *open or idle* ZODB connection holds one pool connection, and
-  ZODB keeps up to its own `pool-size` (Zope default: 7) idle connections
-  around. Size it to at least ZODB `pool-size` + Zope worker threads +
-  cache-warmer concurrency + 2. Multiply by the number of processes when
-  you size PostgreSQL's `max_connections`.
+  Every *open or idle* ZODB connection holds one pool connection, and ZODB keeps up to its own `pool-size` (Zope default: 7) idle connections around.
+  Size it to at least ZODB `pool-size` + Zope worker threads + cache-warmer concurrency + 2.
+  Multiply by the number of processes when you size PostgreSQL's `max_connections`.
 - **pool-timeout**: seconds to wait for a connection before raising `StorageError` (default: 30.0).
 
 Each ZODB connection gets its own `PGJsonbStorageInstance` with a dedicated PostgreSQL connection from the pool.
@@ -46,11 +46,13 @@ Prefer more processes with fewer threads each over fewer processes with many thr
 {ref}`gil-convoy` explains why per-load timings inflate under concurrency even when PostgreSQL is fast.
 ```
 
+(deploy-production-tune-the-object-cache)=
+
 ## Tune the object cache
 
 Set `cache-shared-mb` to size the process-wide load cache (L2) and `cache-per-connection-mb` to size the per-connection cache (L1):
 
-```xml
+```ini
 <pgjsonb>
     dsn dbname=zodb user=zodb host=localhost
     cache-shared-mb 512
@@ -62,6 +64,8 @@ The caches store pickle bytes keyed by object ID, avoiding repeated PostgreSQL r
 The default is 256 MB for `cache-shared-mb` and 16 MB for `cache-per-connection-mb`.
 Set either to 0 to disable that tier.
 See {ref}`cache-tiers` for the model.
+
+(deploy-production-roll-out-without-a-ddl-stampede)=
 
 ## Roll out without a DDL stampede
 
@@ -82,6 +86,8 @@ Two environment variables let you tune the behavior:
 {ref}`startup-ddl-gate` explains how the gate works and why it trades re-running idempotent DDL for skipping the lock.
 For the variables themselves, see {doc}`/reference/configuration`.
 ```
+
+(deploy-production-schedule-periodic-pack)=
 
 ## Schedule periodic pack
 
@@ -104,12 +110,14 @@ storage.close()
 
 Save this as `pack_db.py` and add a cron entry:
 
-```
+```text
 0 3 * * * /path/to/venv/bin/python /path/to/pack_db.py
 ```
 
 Pack runs pure SQL (recursive CTE on the pre-extracted `refs` column) and does not load any objects.
 It also deletes orphaned S3 blobs when S3 tiering is configured.
+
+(deploy-production-monitor-blob-statistics)=
 
 ## Monitor blob statistics
 
@@ -130,11 +138,13 @@ storage.close()
 
 When running under Zope, blob statistics are available in the ZMI database management tab.
 
+(deploy-production-postgresql-tuning)=
+
 ## PostgreSQL tuning
 
 Key `postgresql.conf` settings for a dedicated PostgreSQL instance:
 
-```
+```ini
 shared_buffers = 256MB          # 25% of RAM for dedicated PG
 work_mem = 32MB                 # For complex queries and sorts
 effective_cache_size = 1GB      # Available OS cache
@@ -144,7 +154,7 @@ max_connections = 100           # Match pool-max-size * instances + overhead
 
 Enable slow query logging to identify performance issues:
 
-```
+```ini
 log_min_duration_statement = 100   # Log queries slower than 100 ms
 ```
 
@@ -156,13 +166,15 @@ Configure autovacuum for `object_state` if you have high write throughput:
 ALTER TABLE object_state SET (autovacuum_analyze_threshold = 5000);
 ```
 
+(deploy-production-backup-strategy)=
+
 ## Backup strategy
 
 ### PostgreSQL backup
 
 Use `pg_dump` for logical backups:
 
-```bash
+```shell
 pg_dump -Fc -f zodb_backup.dump "dbname=zodb user=zodb host=localhost"
 ```
 
@@ -173,7 +185,7 @@ All ZODB data (objects, transactions, blobs stored in PG) is captured by standar
 
 Enable S3 bucket versioning to protect against accidental deletion:
 
-```bash
+```shell
 aws s3api put-bucket-versioning \
     --bucket my-zodb-blobs \
     --versioning-configuration Status=Enabled
@@ -181,6 +193,8 @@ aws s3api put-bucket-versioning \
 
 Set up S3 cross-region replication or lifecycle rules for additional durability.
 Pack deletes orphaned S3 blobs, so versioning preserves a safety net.
+
+(deploy-production-monitoring-queries)=
 
 ## Monitoring queries
 

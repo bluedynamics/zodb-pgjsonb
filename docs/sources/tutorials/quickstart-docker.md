@@ -2,6 +2,8 @@
 
 # Quickstart with Docker
 
+(quickstart-docker-what-we-will-build)=
+
 ## What we will build
 
 In this tutorial we will run a Plone 6 site whose entire ZODB lives in PostgreSQL JSONB, with large blobs tiered to [Garage](https://garagehq.deuxfleurs.fr/) (S3-compatible storage).
@@ -9,24 +11,30 @@ We will create content in Plone, then query it directly with SQL using `psql`.
 
 By the end we will have a working Plone instance backed by zodb-pgjsonb and the ability to inspect every ZODB object as queryable JSON.
 
+(quickstart-docker-prerequisites)=
+
 ## Prerequisites
 
 - Docker and Docker Compose v2+
 - Python 3.12+
 - [uv](https://docs.astral.sh/uv/) (recommended) or pip
 
+(quickstart-docker-step-1-clone-the-repository)=
+
 ## Step 1: clone the repository
 
-```bash
+```shell
 git clone https://github.com/bluedynamics/zodb-pgjsonb.git
 cd zodb-pgjsonb/example
 ```
 
 All remaining commands assume we are inside the `example/` directory.
 
+(quickstart-docker-step-2-start-the-infrastructure)=
+
 ## Step 2: start the infrastructure
 
-```bash
+```shell
 docker compose up -d
 ```
 
@@ -42,7 +50,7 @@ Garage runs in single-node mode and creates the `zodb-blobs` bucket and its acce
 
 Wait a few seconds, then verify that PostgreSQL is healthy:
 
-```bash
+```shell
 docker compose ps
 ```
 
@@ -54,9 +62,11 @@ example-postgres-1    Up (healthy)
 example-garage-1      Up
 ```
 
+(quickstart-docker-step-3-install-python-dependencies)=
+
 ## Step 3: install Python dependencies
 
-```bash
+```shell
 cd ..
 uv venv -p 3.13
 source .venv/bin/activate
@@ -66,9 +76,11 @@ uv pip install -r example/requirements.txt
 This installs Plone 6, zodb-pgjsonb with S3 support, and all dependencies.
 The `example/constraints.txt` file pins known-good versions from the Plone 6.1 release line.
 
+(quickstart-docker-step-4-generate-a-zope-instance)=
+
 ## Step 4: generate a Zope instance
 
-```bash
+```shell
 uvx cookiecutter -f --no-input --config-file /dev/null \
     gh:plone/cookiecutter-zope-instance \
     target=instance \
@@ -79,7 +91,7 @@ uvx cookiecutter -f --no-input --config-file /dev/null \
 
 Now copy the example configuration files into the instance:
 
-```bash
+```shell
 cp example/zope.conf instance/etc/zope.conf
 cp example/zope.ini instance/etc/zope.ini
 cp example/site.zcml instance/etc/site.zcml
@@ -88,7 +100,7 @@ mkdir -p instance/var/blobtemp instance/var/blobcache
 
 The `zope.conf` file configures the `<pgjsonb>` storage section:
 
-```xml
+```ini
 %import zodb_pgjsonb
 
 <zodb_db main>
@@ -114,9 +126,11 @@ The `zope.conf` file configures the `<pgjsonb>` storage section:
 Blobs smaller than 100 KB stay in PostgreSQL as `bytea`.
 Blobs larger than 100 KB are uploaded to Garage.
 
+(quickstart-docker-step-5-start-zope)=
+
 ## Step 5: start Zope
 
-```bash
+```shell
 .venv/bin/runwsgi instance/etc/zope.ini
 ```
 
@@ -126,35 +140,41 @@ We should see log output ending with:
 INFO  [waitress:486] Serving on http://0.0.0.0:8081
 ```
 
+(quickstart-docker-step-6-create-a-plone-site)=
+
 ## Step 6: create a Plone site
 
 Open <http://localhost:8081> in a browser.
-Log in with **admin / admin**.
-Click **Create a new Plone site** and accept the defaults.
-Click **Create Plone Site**.
+Log in with `admin` / `admin`.
+Click {guilabel}`Create a new Plone site` and accept the defaults.
+Click {guilabel}`Create Plone Site`.
 
 After a few seconds, we land on the new Plone site at <http://localhost:8081/Plone>.
+
+(quickstart-docker-step-7-add-some-content)=
 
 ## Step 7: add some content
 
 Let's create a test page so we have something to query.
 
-1. Click **Add new** and select **Page**.
+1. Click {guilabel}`Add new` and select {guilabel}`Page`.
 2. Set the title to `Hello PostgreSQL` and add some body text.
-3. Click **Save**.
-4. In the toolbar, click **State: Private** and select **Publish**.
+3. Click {guilabel}`Save`.
+4. In the toolbar, click {menuselection}`State: Private --> Publish`.
 
 Now upload an image to exercise blob storage:
 
-1. Click **Add new** and select **Image**.
+1. Click {guilabel}`Add new` and select {guilabel}`Image`.
 2. Set the title to `Test Image` and upload any image file larger than 100 KB.
-3. Click **Save**.
+3. Click {guilabel}`Save`.
+
+(quickstart-docker-step-8-query-zodb-data-with-sql)=
 
 ## Step 8: query ZODB data with SQL
 
 Open a new terminal and connect to PostgreSQL:
 
-```bash
+```shell
 psql -h localhost -p 5433 -U zodb -d zodb
 ```
 
@@ -212,21 +232,23 @@ If we uploaded an image larger than 100 KB, we should see at least one row for "
 
 Garage has no web console, so we ask its CLI for the bucket contents:
 
-```bash
+```shell
 docker compose exec garage /garage bucket info zodb-blobs
 ```
 
 The `Objects` and `Size` lines should count the uploaded image.
 
+(quickstart-docker-step-9-start-pgadmin-optional)=
+
 ## Step 9: start pgAdmin (optional)
 
 For a graphical SQL interface, start the pgAdmin container:
 
-```bash
+```shell
 docker compose --profile tools up -d
 ```
 
-Open <http://localhost:5050> and log in with **admin@example.com / admin**.
+Open <http://localhost:5050> and log in with `admin@example.com` / `admin`.
 Add a server connection with these settings:
 
 - **Host**: `postgres`
@@ -239,17 +261,21 @@ Add a server connection with these settings:
 Use `postgres` (the Docker service name) as the host and port `5432` (the internal port), because pgAdmin runs inside the same Docker network.
 :::
 
+(quickstart-docker-step-10-clean-up)=
+
 ## Step 10: clean up
 
 Stop Zope with `Ctrl+C` in the terminal where it is running.
 
 Remove all Docker containers and volumes:
 
-```bash
+```shell
 docker compose --profile tools down -v
 ```
 
 Omit `-v` to keep the data volumes for next time.
+
+(quickstart-docker-what-we-learned)=
 
 ## What we learned
 
@@ -257,6 +283,8 @@ Omit `-v` to keep the data volumes for next time.
 - Blobs are tiered between PostgreSQL `bytea` (small) and S3/Garage (large)
 - Every ZODB object is directly queryable with standard SQL and JSONB operators
 - The `<pgjsonb>` ZConfig section plugs into any standard Zope/Plone deployment
+
+(quickstart-docker-next-steps)=
 
 ## Next steps
 

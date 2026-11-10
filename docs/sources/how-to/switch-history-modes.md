@@ -11,11 +11,13 @@ zodb-pgjsonb supports two history modes:
 - **History-preserving**: previous revisions are stored in `object_history`.
   Enables undo and `loadBefore` for historical queries.
 
+(switch-history-modes-enable-history-preserving-mode)=
+
 ## Enable history-preserving mode
 
 Change `history-preserving` to `true` in your `zope.conf`:
 
-```xml
+```ini
 <pgjsonb>
     dsn dbname=zodb user=zodb host=localhost port=5432
     history-preserving true
@@ -25,6 +27,8 @@ Change `history-preserving` to `true` in your `zope.conf`:
 Restart your application.
 The storage creates the `object_history` and `pack_state` tables automatically on startup.
 Existing objects gain history tracking on their next modification.
+
+(switch-history-modes-disable-history-preserving-mode)=
 
 ## Disable history-preserving mode
 
@@ -62,7 +66,7 @@ All undo history is permanently deleted.
 
 3. Change `history-preserving` to `false` in your `zope.conf`:
 
-   ```xml
+   ```ini
    <pgjsonb>
        dsn dbname=zodb user=zodb host=localhost port=5432
        history-preserving false
@@ -70,6 +74,8 @@ All undo history is permanently deleted.
    ```
 
 4. Restart your application.
+
+(switch-history-modes-compact-history-without-switching-modes)=
 
 ## Compact history without switching modes
 

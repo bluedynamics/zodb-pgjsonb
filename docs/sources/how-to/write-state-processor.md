@@ -4,6 +4,8 @@
 
 This guide shows you how to write a state processor that adds custom columns to the `object_state` table, written atomically alongside ZODB object state.
 
+(write-state-processor-define-the-processor-class)=
+
 ## Define the processor class
 
 A state processor must implement two methods:
@@ -53,6 +55,8 @@ CREATE INDEX IF NOT EXISTS idx_title_tsvector ON object_state USING gin (title_t
         }
 ```
 
+(write-state-processor-declare-extra-columns-with-extracolumn)=
+
 ## Declare extra columns with ExtraColumn
 
 Each `ExtraColumn` describes a PostgreSQL column that the storage writes during `tpc_vote`:
@@ -68,6 +72,8 @@ ExtraColumn(name, value_expr, update_expr=None)
   Defaults to `EXCLUDED.{name}` when set to `None`.
   In it, `EXCLUDED.{name}` holds the value already computed by `value_expr`, and `object_state.{name}` the stored value.
 
+(write-state-processor-implement-the-process-method)=
+
 ## Implement the process method
 
 The `process` method receives four arguments:
@@ -82,6 +88,8 @@ Return a dict to write your columns: every column you declared is written, and c
 Return `{}` to clear all your columns.
 The `process` method may modify `state` in place (for example, to pop annotation keys that should not be stored in the JSONB column).
 
+(write-state-processor-provide-optional-ddl-via-get-schema-sql)=
+
 ## Provide optional DDL via get_schema_sql
 
 Return a SQL string with `ALTER TABLE`, `CREATE INDEX`, or other DDL statements.
@@ -94,6 +102,8 @@ Use `IF NOT EXISTS` clauses to make the DDL idempotent:
 def get_schema_sql(self):
     return "ALTER TABLE object_state ADD COLUMN IF NOT EXISTS my_col TEXT;"
 ```
+
+(write-state-processor-react-to-undo-with-undone)=
 
 ## React to undo with undone
 
@@ -116,6 +126,8 @@ Raise an exception to abort the undo.
 `entries` gives, per zoid, the revision the undone transaction wrote (`before`) and the one the undo writes (`after`, `None` for a delete), each with `class_mod`, `class_name`, `state` and `refs`.
 Objects that the undone transaction changed only in `finalize` are not listed in `restored`.
 
+(write-state-processor-register-the-processor-with-the-storage)=
+
 ## Register the processor with the storage
 
 Call `register_state_processor()` on the main `PGJsonbStorage` instance:
@@ -128,6 +140,8 @@ storage.register_state_processor(MyProcessor())
 ```
 
 In a Zope/Plone application, register the processor in an `IDatabaseOpenedWithRoot` subscriber so it runs after the storage is initialized.
+
+(write-state-processor-security-considerations)=
 
 ## Security considerations
 

@@ -4,14 +4,24 @@
 
 This guide shows you how to query your ZODB objects directly in PostgreSQL using SQL and JSONB operators.
 
+```{warning}
+Never modify `object_state`, `transaction_log`, or `blob_state` directly via SQL.
+All writes must go through the ZODB transaction lifecycle.
+Direct SQL updates will cause data corruption or be overwritten on the next ZODB transaction.
+```
+
+(query-with-sql-connect-to-the-database)=
+
 ## Connect to the database
 
 Use psql, pgAdmin, DBeaver, or any PostgreSQL client.
 The connection details match the `dsn` in your storage configuration:
 
-```bash
+```shell
 psql "dbname=zodb user=zodb host=localhost port=5432"
 ```
+
+(query-with-sql-the-object-state-table)=
 
 ## The object_state table
 
@@ -27,6 +37,8 @@ All ZODB object data lives in `object_state`:
 | `state_size` | `INTEGER` | Serialized state size in bytes |
 | `refs` | `BIGINT[]` | Referenced object IDs |
 
+(query-with-sql-list-all-object-types)=
+
 ## List all object types
 
 ```sql
@@ -36,6 +48,8 @@ GROUP BY 1
 ORDER BY 2 DESC;
 ```
 
+(query-with-sql-query-plone-content-by-type)=
+
 ## Query Plone content by type
 
 ```sql
@@ -43,6 +57,8 @@ SELECT zoid, state->>'title' AS title, state->>'portal_type' AS type
 FROM object_state
 WHERE class_mod LIKE 'plone.app.contenttypes.content%';
 ```
+
+(query-with-sql-jsonb-operators)=
 
 ## JSONB operators
 
@@ -81,6 +97,8 @@ FROM object_state
 WHERE class_mod LIKE 'plone.app.contenttypes%';
 ```
 
+(query-with-sql-search-text-across-objects)=
+
 ## Search text across objects
 
 ```sql
@@ -90,6 +108,8 @@ WHERE state::text ILIKE '%search term%';
 ```
 
 For better performance on large databases, create a GIN trigram index or use full-text search via plone.pgcatalog.
+
+(query-with-sql-join-with-blob-state-for-blob-metadata)=
 
 ## Join with blob_state for blob metadata
 
@@ -123,6 +143,8 @@ GROUP BY 1
 ORDER BY min(blob_size);
 ```
 
+(query-with-sql-connect-grafana-or-metabase)=
+
 ## Connect Grafana or Metabase
 
 Point Grafana, Metabase, or any BI tool at your PostgreSQL database using the same connection string.
@@ -138,9 +160,3 @@ FROM object_state
 GROUP BY 1
 ORDER BY 1;
 ```
-
-## Important: read-only
-
-Never modify `object_state`, `transaction_log`, or `blob_state` directly via SQL.
-All writes must go through the ZODB transaction lifecycle.
-Direct SQL updates will cause data corruption or be overwritten on the next ZODB transaction.

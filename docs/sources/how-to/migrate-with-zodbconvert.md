@@ -4,6 +4,8 @@
 
 This guide shows you how to migrate an existing ZODB database (FileStorage or RelStorage) to zodb-pgjsonb using [zodb-convert](https://github.com/bluedynamics/zodb-convert) or the Python API.
 
+(migrate-with-zodbconvert-write-a-zodb-convert-configuration-file)=
+
 ## Write a zodb-convert configuration file
 
 Create a file named `migrate.cfg`:
@@ -43,9 +45,11 @@ Create a file named `migrate.cfg`:
 </destination>
 ```
 
+(migrate-with-zodbconvert-run-the-migration)=
+
 ## Run the migration
 
-```bash
+```shell
 zodb-convert migrate.cfg
 ```
 
@@ -55,11 +59,13 @@ The destination storage creates its schema automatically.
 `zodb-convert` is a standalone tool that works with any ZODB-compatible storage.
 Install it with `pip install zodb-convert` (or `uv pip install zodb-convert`).
 
+(migrate-with-zodbconvert-run-a-parallel-migration)=
+
 ## Run a parallel migration
 
 For large databases, use multiple worker threads for faster migration:
 
-```bash
+```shell
 zodb-convert -w 4 migrate.cfg
 ```
 
@@ -86,21 +92,20 @@ dest.close()
 source.close()
 ```
 
+(migrate-with-zodbconvert-resume-an-interrupted-migration)=
+
 ## Resume an interrupted migration
 
 If a migration is interrupted (Ctrl-C, crash, network failure), resume with `--incremental`:
 
-```bash
+```shell
 zodb-convert --incremental -w 4 migrate.cfg
 ```
 
-During parallel copy, the storage tracks a *watermark* — the highest TID where all
-prior TIDs are also committed.
-On resume, iteration starts from the watermark (not `lastTransaction()`) to fill any
-gaps left by out-of-order worker commits.
+During parallel copy, the storage tracks a *watermark* — the highest TID where all prior TIDs are also committed.
+On resume, iteration starts from the watermark (not `lastTransaction()`) to fill any gaps left by out-of-order worker commits.
 Already-committed transactions are skipped automatically.
-The watermark table is dropped on successful completion, adding zero overhead to
-non-incremental imports.
+The watermark table is dropped on successful completion, adding zero overhead to non-incremental imports.
 
 ### Python API
 
@@ -123,6 +128,8 @@ dest.close()
 source.close()
 ```
 
+(migrate-with-zodbconvert-migrate-blobs)=
+
 ## Migrate blobs
 
 Blobs are migrated automatically by both `zodb-convert` and `copyTransactionsFrom`.
@@ -130,41 +137,48 @@ The destination storage applies its blob tiering rules (PG bytea vs S3) based on
 
 If you have S3 tiering configured on the destination, large blobs are uploaded to S3 during the migration.
 
+(migrate-with-zodbconvert-faster-blob-migration-with-s3)=
+
 ## Faster blob migration with S3
 
-When migrating large databases with many blobs to S3-backed storage, S3 upload
-latency can be the bottleneck. Two modes decouple S3 uploads from PostgreSQL writes:
+When migrating large databases with many blobs to S3-backed storage, S3 upload latency can be the bottleneck.
+Two modes decouple S3 uploads from PostgreSQL writes:
 
 ### Background mode (recommended)
 
-Uploads blobs to S3 in a background thread pool while PostgreSQL writes continue
-independently:
+Uploads blobs to S3 in a background thread pool while PostgreSQL writes continue independently:
 
-```bash
+```shell
 zodb-convert -w 8 --background-blobs migrate.cfg
 ```
 
-PostgreSQL throughput is no longer gated by S3 latency. All uploads complete before
-the migration finishes. If any upload fails (after retries), the migration aborts.
+PostgreSQL throughput is no longer gated by S3 latency.
+All uploads complete before the migration finishes.
+If any upload fails (after retries), the migration aborts.
 
 ### Deferred mode
 
 Skips S3 uploads entirely during migration, writing a manifest file instead.
 Upload blobs later in a separate step:
 
-```bash
-# Step 1: Fast PG-only migration
-zodb-convert -w 8 --deferred-blobs /tmp/blob-manifest.tsv migrate.cfg
+First, run a fast PG-only migration:
 
-# Step 2: Upload blobs from manifest
+```shell
+zodb-convert -w 8 --deferred-blobs /tmp/blob-manifest.tsv migrate.cfg
+```
+
+Then upload the blobs from the manifest:
+
+```shell
 zodb-convert --upload-blobs /tmp/blob-manifest.tsv --dest-zope-conf zope.conf -w 16
 ```
 
-This is useful when S3 is temporarily unavailable or when you want to run the
-PG import at maximum speed and handle S3 as a separate operational step.
+This is useful when S3 is temporarily unavailable or when you want to run the PG import at maximum speed and handle S3 as a separate operational step.
 
-**Note:** Temp blob files are preserved during deferred mode (they are needed for
-the upload step). Ensure the staging directory has sufficient disk space.
+```{note}
+Temp blob files are preserved during deferred mode.
+The staging directory needs enough disk space for them.
+```
 
 ### Python API
 
@@ -175,6 +189,8 @@ dest.copyTransactionsFrom(source, workers=4, blob_mode="background")
 # Deferred mode
 dest.copyTransactionsFrom(source, workers=4, blob_mode="deferred:/tmp/manifest.tsv")
 ```
+
+(migrate-with-zodbconvert-verify-the-migration)=
 
 ## Verify the migration
 
