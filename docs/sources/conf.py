@@ -43,6 +43,7 @@ mermaid_output_format = "raw"
 html_theme = "shibuya"
 
 html_theme_options = {
+    "og_image_url": "https://bluedynamics.github.io/zodb-pgjsonb/_static/og-image.png",
     "logo_target": "/zodb-pgjsonb/",
     "accent_color": "cyan",
     "color_mode": "dark",
@@ -105,6 +106,7 @@ html_theme_options = {
     ],
 }
 
+html_baseurl = "https://bluedynamics.github.io/zodb-pgjsonb/"
 html_extra_path = ["llms.txt"]
 html_static_path = ["_static"]
 html_logo = "_static/logo-web.png"

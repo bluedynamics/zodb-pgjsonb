@@ -8,6 +8,8 @@
   All pages now follow the Plone style guide: one sentence per line, labelled sections, explicit code block lexers and version directives.
   Tutorials and guides were cleaned up along the Diataxis quadrants, and stale facts were corrected (constructor signature, deprecated `cache-local-mb`, DDL lock timeouts, the `zodb-convert` tool name).
   CI now runs the prose check and builds the documentation with `-W`, so warnings fail the build.
+- **Page metadata renders under the shibuya theme.**
+  Page descriptions now use the frontmatter field the theme reads, the Open Graph image and canonical URLs are configured through the theme option `og_image_url` and `html_baseurl`, and the dead layout override was removed.
 
 ## 1.19.2
 
